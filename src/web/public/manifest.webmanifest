@@ -1,0 +1,56 @@
+{
+  "name": "学习守护 — 课程表与作业提醒",
+  "short_name": "学习守护",
+  "description": "课程表、课件在线预览与作业 DDL 手机提醒，自托管的学习助手",
+  "lang": "zh-CN",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#f6f7f8",
+  "theme_color": "#f6f7f8",
+  "categories": ["education", "productivity"],
+  "icons": [
+    {
+      "src": "/static/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icon-maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "课程表",
+      "url": "/timetable",
+      "description": "查看本周课表"
+    },
+    {
+      "name": "作业",
+      "url": "/assignments",
+      "description": "查看待办作业与 DDL"
+    },
+    {
+      "name": "资料库",
+      "url": "/materials",
+      "description": "查看课件资料"
+    }
+  ]
+}

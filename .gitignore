@@ -1,0 +1,24 @@
+# 运行时数据：数据库、上传的课件、转换缓存、密钥、日志
+# 这些内容包含个人隐私（课表、成绩、账号），永远不要提交
+/data/
+/logs/
+
+# 本地环境变量（含 SMTP 授权码、Bark Key 等敏感信息）
+.env
+.env.local
+
+# 测试与临时产物
+/tmp/
+*.log
+npm-debug.log*
+# 开发过程中随手写的临时脚本 / 检查文件，形如 tmp-check.mjs、tmp-health.mjs
+tmp-*
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# npm（本项目零依赖，通常不会产生 node_modules；npm 缓存目录也放这里）
+node_modules/

@@ -1,0 +1,25 @@
+{
+  "name": "study-guardian",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "学习守护平台 — 课程表 / 课件在线预览 / 作业 DDL 手机提醒。零第三方依赖，一条命令自托管。",
+  "keywords": [
+    "timetable",
+    "course",
+    "homework",
+    "reminder",
+    "self-hosted",
+    "zero-dependency"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node --test tests/",
+    "doctor": "node scripts/doctor.js"
+  }
+}

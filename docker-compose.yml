@@ -1,0 +1,43 @@
+# 学习守护平台 · docker compose
+#
+# 用法：
+#   docker compose up -d          启动
+#   docker compose logs -f        看日志
+#   docker compose down           停止（数据保留在 volume 里）
+#
+# 数据都存在名为 study-data 的 volume 里。
+# 备份就是把它导出：docker run --rm -v study-data:/d -v ${PWD}:/b alpine tar czf /b/backup.tgz -C /d .
+
+services:
+  study-guardian:
+    build: .
+    image: study-guardian:latest
+    container_name: study-guardian
+    restart: unless-stopped
+
+    ports:
+      # 左边是宿主机端口，想换端口改这里（比如 8080:3081）
+      # 只绑本机就写 127.0.0.1:3081:3081
+      - "3081:3081"
+
+    volumes:
+      - study-data:/data
+
+    environment:
+      TZ: Asia/Shanghai
+      APP_NAME: 学习守护
+      # 提醒调度：容器常开，这里是真正 7×24 的提醒
+      SCHEDULER_INTERVAL_SEC: "60"
+      # 上传大小上限（MB）
+      MAX_UPLOAD_MB: "200"
+      # 想给整个平台加一层访问密码，就在宿主机上放个反向代理（Caddy / Nginx）
+      # 并开启 HTTPS。直接暴露到公网是不安全的。
+
+    # LibreOffice 转换比较吃内存，给个上限避免把宿主机拖垮
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+volumes:
+  study-data:

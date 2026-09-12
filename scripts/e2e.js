@@ -1,0 +1,2553 @@
+#!/usr/bin/env node
+/**
+ * 端到端自测。
+ *
+ * 在**临时数据目录**里起一个真实的服务实例，然后用 HTTP 把所有主流程走一遍：
+ * 初始化账号 → 建课程 → 排课 → 设成绩构成 → 建作业 → 验证提醒生成
+ * → 上传课件 → 访问文件 → ICS 导出 → CSV 导入 → 日历订阅 → 改设置。
+ *
+ * 用途：
+ *   - 开发时改完代码跑一下，确认没有把别的地方弄坏
+ *   - 别人 clone 下来后跑一下，确认自己的环境装对了
+ *
+ * 用法：node scripts/e2e.js
+ * 加 --keep 保留临时目录便于排查。
+ */
+
+import { spawn, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import http from 'node:http';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { buildZip } from '../tests/_zipfixture.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(__dirname, '..');
+const KEEP = process.argv.includes('--keep');
+
+// ============================================================
+// 迷你测试框架
+// ============================================================
+
+let passed = 0;
+let failed = 0;
+const failures = [];
+
+function ok(name, condition, detail = '') {
+  if (condition) {
+    passed += 1;
+    console.log(`  \u001b[32m✓\u001b[0m ${name}`);
+  } else {
+    failed += 1;
+    failures.push({ name, detail });
+    console.log(`  \u001b[31m✗\u001b[0m ${name}${detail ? `\n      ${detail}` : ''}`);
+  }
+}
+
+function section(title) {
+  console.log(`\n\u001b[1m${title}\u001b[0m`);
+}
+
+/** 带 Cookie 的 HTTP 客户端 */
+function createClient(baseUrl) {
+  const jar = new Map();
+
+  return async function request(method, urlPath, options = {}) {
+    const headers = { ...(options.headers || {}) };
+    if (jar.size) {
+      headers.Cookie = [...jar.entries()].map(([k, v]) => `${k}=${v}`).join('; ');
+    }
+
+    let body = options.body;
+    if (options.json !== undefined) {
+      headers['Content-Type'] = 'application/json';
+      body = JSON.stringify(options.json);
+    } else if (options.form !== undefined) {
+      headers['Content-Type'] = 'application/x-www-form-urlencoded';
+      body = new URLSearchParams(options.form).toString();
+    }
+
+    const res = await fetch(baseUrl + urlPath, {
+      method,
+      headers,
+      body,
+      redirect: 'manual',
+    });
+
+    // 收集 Set-Cookie
+    const setCookie = res.headers.getSetCookie?.() || [];
+    for (const cookie of setCookie) {
+      const [pair] = cookie.split(';');
+      const idx = pair.indexOf('=');
+      if (idx > 0) jar.set(pair.slice(0, idx).trim(), pair.slice(idx + 1).trim());
+    }
+
+    const text = await res.text();
+    let json = null;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      /* 非 JSON 响应 */
+    }
+
+    return { status: res.status, headers: res.headers, text, json };
+  };
+}
+
+/** 构造 multipart 请求体 */
+function multipart(fields, file) {
+  const boundary = `----sgtest${Math.random().toString(16).slice(2)}`;
+  const chunks = [];
+
+  for (const [key, value] of Object.entries(fields)) {
+    chunks.push(Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="${key}"\r\n\r\n${value}\r\n`,
+      'utf8',
+    ));
+  }
+
+  if (file) {
+    chunks.push(Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="${file.field}"; filename="${file.filename}"\r\n`
+      + `Content-Type: ${file.mime || 'application/octet-stream'}\r\n\r\n`,
+      'utf8',
+    ));
+    chunks.push(file.data);
+    chunks.push(Buffer.from('\r\n', 'utf8'));
+  }
+
+  chunks.push(Buffer.from(`--${boundary}--\r\n`, 'utf8'));
+
+  return {
+    body: Buffer.concat(chunks),
+    contentType: `multipart/form-data; boundary=${boundary}`,
+  };
+}
+
+// ============================================================
+// 测试数据构造
+// ============================================================
+
+/**
+ * 造一个结构最小的 PPTX。
+ * 用它验证「上传 PPT → 抽文本 → 网页版预览」这条链路。
+ */
+function makeTestPptx() {
+  const NS_A = 'http://schemas.openxmlformats.org/drawingml/2006/main';
+  const NS_P = 'http://schemas.openxmlformats.org/presentationml/2006/main';
+  const NS_R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+
+  const slide = (title, body) => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sld xmlns:p="${NS_P}" xmlns:a="${NS_A}" xmlns:r="${NS_R}">
+<p:cSld><p:spTree>
+<p:sp><p:nvSpPr><p:cNvPr id="2" name="Title"/><p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr>
+<p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>${title}</a:t></a:r></a:p></p:txBody></p:sp>
+<p:sp><p:nvSpPr><p:cNvPr id="3" name="Body"/><p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr><p:ph idx="1"/></p:nvPr></p:nvSpPr>
+<p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>${body}</a:t></a:r></a:p></p:txBody></p:sp>
+</p:spTree></p:cSld></p:sld>`;
+
+  return buildZip([
+    {
+      name: '[Content_Types].xml',
+      method: 'deflate',
+      data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+<Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
+<Override PartName="/ppt/slides/slide1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>
+<Override PartName="/ppt/slides/slide2.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>
+</Types>`,
+    },
+    {
+      name: '_rels/.rels',
+      method: 'deflate',
+      data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="${NS_R}/officeDocument" Target="ppt/presentation.xml"/>
+</Relationships>`,
+    },
+    {
+      name: 'ppt/presentation.xml',
+      method: 'deflate',
+      data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:presentation xmlns:p="${NS_P}" xmlns:r="${NS_R}">
+<p:sldIdLst><p:sldId id="256" r:id="rId1"/><p:sldId id="257" r:id="rId2"/></p:sldIdLst>
+</p:presentation>`,
+    },
+    {
+      name: 'ppt/_rels/presentation.xml.rels',
+      method: 'deflate',
+      data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="${NS_R}/slide" Target="slides/slide1.xml"/>
+<Relationship Id="rId2" Type="${NS_R}/slide" Target="slides/slide2.xml"/>
+</Relationships>`,
+    },
+    { name: 'ppt/slides/slide1.xml', method: 'deflate', data: slide('第一章 导论', '微观经济学的研究对象') },
+    { name: 'ppt/slides/slide2.xml', method: 'deflate', data: slide('需求与供给', '均衡价格的决定') },
+  ]);
+}
+
+/** 教务系统风格的课表 CSV */
+const TEST_CSV = [
+  '课程名称,课程号,教师,学分,课程性质,考核方式,星期,上课时间,周次,上课地点',
+  '高等数学(上),MATH101,张三,5,必修,考试,星期一,08:00-09:40,1-16,之远楼301',
+  '高等数学(上),MATH101,张三,5,必修,考试,星期三,10:00-11:40,1-16,之远楼301',
+  '微观经济学,ECON201,李四,3,必修,考试,星期二,13:30-15:10,1-16单,博学楼205',
+].join('\n');
+
+/**
+ * 教务系统风格的 ICS（含 RRULE、TZID、折行、中文）
+ *
+ * 刻意复刻真实教务系统的写法：
+ *   - LOCATION 里教室和教师用空格连在一起（`校本部之远楼401 王五`）
+ *   - DESCRIPTION 里节次 / 教室 / 教师 各占一行，后面还跟一行元信息
+ *   这是真实踩过的坑：整串被当成教室，教师字段永远是空的。
+ *
+ * 学分同样故意写在三个不同位置，验证三处都能认出来。
+ *
+ * 时间要和默认作息表对得上（第1节 08:00-08:45、第2节 08:50-09:35、
+ * 第3节 09:55-10:40、第4节 10:45-11:30），这样后面的课表按节次分行才成立。
+ */
+const TEST_ICS = [
+  'BEGIN:VCALENDAR',
+  'VERSION:2.0',
+  'PRODID:-//Test//JWC//CN',
+  // ① 学分写在描述里
+  'BEGIN:VEVENT',
+  'UID:course-1@jwc',
+  'SUMMARY:会计学原理',
+  'DTSTART;TZID=Asia/Shanghai:20250901T080000',
+  'DTEND;TZID=Asia/Shanghai:20250901T093500',
+  'LOCATION:校本部之远楼401 王五',
+  'DESCRIPTION:第1 - 2节\\n校本部之远楼401\\n王五\\n学分：4',
+  'RRULE:FREQ=WEEKLY;BYDAY=MO;COUNT=16',
+  'END:VEVENT',
+  // ② 学分写在课程名里，③ 学时写在自定义属性里
+  'BEGIN:VEVENT',
+  'UID:course-2@jwc',
+  'SUMMARY:统计学(3学分)',
+  'DTSTART;TZID=Asia/Shanghai:20250903T095500',
+  'DTEND;TZID=Asia/Shanghai:20250903T113000',
+  'LOCATION:校本部笃行楼108 赵六',
+  'DESCRIPTION:第3 - 4节\\n校本部笃行楼108\\n赵六',
+  'X-HOURS:48',
+  'RRULE:FREQ=WEEKLY;BYDAY=WE;COUNT=16',
+  'END:VEVENT',
+  'END:VCALENDAR',
+].join('\r\n');
+
+// ============================================================
+// 启动被测服务
+// ============================================================
+
+function pickPort() {
+  return 20000 + Math.floor(Math.random() * 20000);
+}
+
+/**
+ * 可靠地结束被测服务进程。
+ *
+ * 为什么不用 child.kill()：Windows 上它只终止直接子进程，
+ * 而且如果服务是通过 shell 拉起来的，会留下孤儿进程占着端口和内存。
+ * taskkill /T 会连整棵进程树一起收掉。
+ */
+function killTree(child) {
+  if (!child || child.exitCode !== null) return;
+  try {
+    if (process.platform === 'win32') {
+      spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+      return;
+    }
+    child.kill('SIGTERM');
+  } catch {
+    try {
+      child.kill('SIGKILL');
+    } catch {
+      /* 已经退出了 */
+    }
+  }
+}
+
+async function startServer(dataDir, port) {
+  // 把服务端日志写到文件而不是管道。
+  // 管道在本机沙箱里是被禁的；同时文件日志在测试失败时能直接看，便于排障。
+  const serverLog = path.join(dataDir, 'server.log');
+  const logFd = fs.openSync(serverLog, 'a');
+
+  const child = spawn(process.execPath, [path.join(ROOT, 'server.js')], {
+    cwd: ROOT,
+    stdio: ['ignore', logFd, logFd],
+    env: {
+      ...process.env,
+      DATA_DIR: dataDir,
+      PORT: String(port),
+      HOST: '127.0.0.1',
+      // 关掉 Office→PDF 转换：自测要快，而且不依赖本机装没装 Office。
+      // 网页版预览（文本抽取）这条兜底链路反而能被完整覆盖。
+      ENABLE_OFFICE_CONVERT: 'false',
+      SCHEDULER_RUN_ON_START: 'false',
+      SCHEDULER_INTERVAL_SEC: '3600',
+      NODE_ENV: 'test',
+    },
+  });
+
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  const readLog = () => {
+    try {
+      return fs.readFileSync(serverLog, 'utf8');
+    } catch {
+      return '';
+    }
+  };
+
+  for (let i = 0; i < 120; i += 1) {
+    if (child.exitCode !== null) {
+      throw new Error(`服务进程过早退出（exit ${child.exitCode}）\n--- 服务端日志 ---\n${readLog()}`);
+    }
+    try {
+      const res = await fetch(`${baseUrl}/login`);
+      if (res.status === 200 || res.status === 302) {
+        return { child, baseUrl, readLog, serverLog };
+      }
+    } catch {
+      /* 还没起来，继续等 */
+    }
+    await new Promise((r) => setTimeout(r, 150));
+  }
+
+  killTree(child);
+  throw new Error(`服务在 18 秒内没有就绪\n--- 服务端日志 ---\n${readLog()}`);
+}
+
+// ============================================================
+// 主流程
+// ============================================================
+
+async function run() {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sg-e2e-'));
+  const port = pickPort();
+
+  console.log(`\u001b[1m学习守护平台 · 端到端自测\u001b[0m`);
+  console.log(`临时数据目录：${dataDir}`);
+  console.log(`服务端口：${port}`);
+
+  let server = null;
+
+  try {
+    server = await startServer(dataDir, port);
+    const { baseUrl } = server;
+    const req = createClient(baseUrl);
+
+    // --------------------------------------------------------
+    section('1. 首次访问与账号初始化');
+
+    const loginPage = await req('GET', '/login');
+    ok('登录页可访问', loginPage.status === 200, `状态码 ${loginPage.status}`);
+    ok('首次访问引导创建账号', loginPage.text.includes('创建账号'));
+
+    const rootRedirect = await req('GET', '/');
+    ok('未登录访问首页会跳转登录', rootRedirect.status === 302
+      && rootRedirect.headers.get('location')?.includes('/login'), `状态码 ${rootRedirect.status}`);
+
+    const setup = await req('POST', '/setup', {
+      form: {
+        username: '测试同学',
+        password: 'test123456',
+        password2: 'test123456',
+        displayName: '小王',
+        school: '东北财经大学',
+      },
+    });
+    ok('创建账号成功并跳转首页', setup.status === 302, `状态码 ${setup.status}`);
+
+    const home = await req('GET', '/');
+    ok('首页渲染成功', home.status === 200, `状态码 ${home.status}`);
+    ok('首页显示问候语', home.text.includes('小王'));
+    ok('首页提示配置手机提醒',
+      home.text.includes('还没有配置手机提醒渠道'));
+    ok('默认学期已自动创建', home.text.includes('第 ') && home.text.includes(' 周'));
+
+    // --------------------------------------------------------
+    section('2. 课程与课表');
+
+    const createCourse = await req('POST', '/api/courses', {
+      json: {
+        name: '高等数学(上)',
+        code: 'MATH101',
+        teacher: '张三',
+        teacherContact: 'zhangsan@dufe.edu.cn',
+        credits: 5,
+        hours: 80,
+        category: '必修',
+        examType: '考试',
+        classroom: '之远楼301',
+      },
+    });
+    ok('创建课程成功', createCourse.status === 201, `状态码 ${createCourse.status}：${createCourse.text.slice(0, 120)}`);
+    const courseId = createCourse.json?.course?.id;
+    ok('返回课程 ID', Number.isFinite(courseId));
+
+    const dup = await req('POST', '/api/courses', { json: { name: '高等数学(上)' } });
+    ok('同名课程被拒绝', dup.status === 400 && dup.json?.error?.includes('已经有一门'),
+      `状态码 ${dup.status}：${dup.json?.error}`);
+
+    const setSessions = await req('PUT', `/api/courses/${courseId}/sessions`, {
+      json: {
+        sessions: [
+          { weekday: 1, startTime: '08:00', endTime: '09:40', weeks: '1-16', location: '之远楼301' },
+          { weekday: 3, startTime: '10:00', endTime: '11:40', weeks: '1-16', location: '之远楼301' },
+        ],
+      },
+    });
+    ok('设置上课时间成功', setSessions.status === 200, `状态码 ${setSessions.status}`);
+    ok('返回两条上课时间', setSessions.json?.sessions?.length === 2);
+
+    const badSession = await req('PUT', `/api/courses/${courseId}/sessions`, {
+      json: { sessions: [{ weekday: 9, startTime: '08:00', endTime: '09:40' }] },
+    });
+    ok('非法星期被拒绝', badSession.status === 400, `状态码 ${badSession.status}`);
+
+    // --------------------------------------------------------
+    // 编辑课程（PATCH /api/courses/:id）
+    //
+    // 这条路径以前完全没有测试覆盖，结果漏掉了一个很隐蔽的 bug：
+    // <input type="number"> 遇到「3学分」这类带单位的输入时，
+    // 界面上显示着文字但 input.value 是空串，提交上去就成了空值——
+    // 用户看到的现象是「明明填了、也保存了，但值没变」。
+    //
+    // 现在前后端都做了处理，这里把关键行为钉死。
+    // --------------------------------------------------------
+
+    // 浏览器发过来的都是字符串
+    const patchCredits = await req('PATCH', `/api/courses/${courseId}`, {
+      json: { credits: '5', hours: '80' },
+    });
+    ok('PATCH 课程成功', patchCredits.status === 200, `状态码 ${patchCredits.status}`);
+    ok('★ 字符串形式的学分被正确保存',
+      patchCredits.json?.course?.credits === 5, `实际 ${patchCredits.json?.course?.credits}`);
+    ok('★ 字符串形式的学时被正确保存',
+      patchCredits.json?.course?.hours === 80, `实际 ${patchCredits.json?.course?.hours}`);
+
+    const patchUnit = await req('PATCH', `/api/courses/${courseId}`, {
+      json: { credits: '3学分' },
+    });
+    ok('带单位的「3学分」也能保存',
+      patchUnit.json?.course?.credits === 3, `实际 ${patchUnit.json?.course?.credits}`);
+
+    const patchFullWidth = await req('PATCH', `/api/courses/${courseId}`, {
+      json: { credits: '２.５' },
+    });
+    ok('全角数字「２.５」也能保存',
+      patchFullWidth.json?.course?.credits === 2.5,
+      `实际 ${patchFullWidth.json?.course?.credits}`);
+
+    const patchGarbage = await req('PATCH', `/api/courses/${courseId}`, {
+      json: { credits: '不知道' },
+    });
+    ok('★ 填了非数字时明确报错，而不是静默写成空值',
+      patchGarbage.status === 400 && /不是数字/.test(patchGarbage.json?.error || ''),
+      `状态码 ${patchGarbage.status}：${patchGarbage.json?.error}`);
+
+    const afterGarbage = await req('GET', `/api/courses/${courseId}`);
+    ok('报错时原来的学分没有被破坏',
+      afterGarbage.json?.course?.credits === 2.5,
+      `实际 ${afterGarbage.json?.course?.credits}`);
+
+    const patchOutOfRange = await req('PATCH', `/api/courses/${courseId}`, {
+      json: { credits: '999' },
+    });
+    ok('学分超出合理范围被拒绝', patchOutOfRange.status === 400, `状态码 ${patchOutOfRange.status}`);
+
+    const patchNoCredits = await req('PATCH', `/api/courses/${courseId}`, {
+      json: { notes: '只改备注' },
+    });
+    ok('请求里没带学分时保持原值',
+      patchNoCredits.json?.course?.credits === 2.5,
+      `实际 ${patchNoCredits.json?.course?.credits}`);
+
+    const patchClear = await req('PATCH', `/api/courses/${courseId}`, {
+      json: { credits: '' },
+    });
+    ok('学分填成空串表示清空',
+      patchClear.json?.course?.credits === null,
+      `实际 ${patchClear.json?.course?.credits}`);
+
+    // 还原成后面测试期待的值
+    await req('PATCH', `/api/courses/${courseId}`, { json: { credits: '5', hours: '80' } });
+
+    // --------------------------------------------------------
+    // 批量填学分
+    //
+    // 批量操作最容易出的两类问题是「改了一半失败」和「越权改到别人的数据」，
+    // 所以这里重点测**原子性**和**校验**，而不是只测顺利路径。
+    // --------------------------------------------------------
+
+    const bc1 = await req('POST', '/api/courses', { json: { name: '批量测试甲' } });
+    const bc2 = await req('POST', '/api/courses', { json: { name: '批量测试乙' } });
+    const bc3 = await req('POST', '/api/courses', { json: { name: '批量测试丙' } });
+    const idA = bc1.json?.course?.id;
+    const idB = bc2.json?.course?.id;
+    const idC = bc3.json?.course?.id;
+    ok('批量测试用的三门课创建成功',
+      [idA, idB, idC].every(Number.isFinite), JSON.stringify([idA, idB, idC]));
+
+    // ---- 正常批量设置 ----
+    const batchOk = await req('POST', '/api/courses/batch-credits', {
+      json: {
+        items: [
+          { id: idA, credits: '3', hours: '48' },
+          { id: idB, credits: '3' },
+        ],
+      },
+    });
+    ok('批量设置请求成功', batchOk.status === 200, `状态码 ${batchOk.status}`);
+    ok('返回实际修改了 2 行', batchOk.json?.changed === 2, `实际 ${batchOk.json?.changed}`);
+
+    const afterA = (await req('GET', `/api/courses/${idA}`)).json?.course;
+    const afterB = (await req('GET', `/api/courses/${idB}`)).json?.course;
+    const afterC = (await req('GET', `/api/courses/${idC}`)).json?.course;
+
+    ok('★ 第一门课：学分和学时都写入了',
+      afterA?.credits === 3 && afterA?.hours === 48,
+      `学分=${afterA?.credits} 学时=${afterA?.hours}`);
+    ok('★ 第二门课：学分写了，学时保持原值（请求里没带 hours）',
+      afterB?.credits === 3 && afterB?.hours === null,
+      `学分=${afterB?.credits} 学时=${afterB?.hours}`);
+    ok('★ 没提交的第三门课完全没被改动',
+      afterC?.credits === null && afterC?.hours === null,
+      `学分=${afterC?.credits} 学时=${afterC?.hours}`);
+
+    // ---- 原子性：一条不合法就整体拒绝，前面合法的也不能生效 ----
+    const batchMixed = await req('POST', '/api/courses/batch-credits', {
+      json: {
+        items: [
+          { id: idA, credits: '9' },              // 合法：本来会被改成 9
+          { id: idB, credits: '不是数字' },        // 不合法
+        ],
+      },
+    });
+    ok('★ 有一条不合法时整体拒绝',
+      batchMixed.status === 400 && /不是数字/.test(batchMixed.json?.error || ''),
+      `状态码 ${batchMixed.status}：${batchMixed.json?.error}`);
+    ok('★ 报错信息里指明是哪门课出的问题',
+      /批量测试乙/.test(batchMixed.json?.error || ''),
+      batchMixed.json?.error);
+    ok('★ 报错信息里说明「没有修改任何课程」',
+      /没有修改任何课程/.test(batchMixed.json?.error || ''),
+      batchMixed.json?.error);
+
+    const afterMixed = (await req('GET', `/api/courses/${idA}`)).json?.course;
+    ok('★ 整体拒绝后，前面那条合法修改也没有生效（原子性）',
+      afterMixed?.credits === 3, `期望仍是 3，实际 ${afterMixed?.credits}`);
+
+    // ---- 不存在的课程 id：也不能改到任何东西 ----
+    const batchGhost = await req('POST', '/api/courses/batch-credits', {
+      json: { items: [{ id: idA, credits: '9' }, { id: 999999, credits: '9' }] },
+    });
+    ok('★ 不存在的课程编号被拒绝', batchGhost.status === 400, `状态码 ${batchGhost.status}`);
+    const afterGhost = (await req('GET', `/api/courses/${idA}`)).json?.course;
+    ok('★ 有不存在的编号时，前面的修改同样没生效',
+      afterGhost?.credits === 3, `实际 ${afterGhost?.credits}`);
+
+    // ---- 重复提交同一门课 ----
+    const batchDup = await req('POST', '/api/courses/batch-credits', {
+      json: { items: [{ id: idA, credits: '1' }, { id: idA, credits: '2' }] },
+    });
+    ok('重复提交同一门课被拒绝',
+      batchDup.status === 400 && /重复/.test(batchDup.json?.error || ''),
+      `状态码 ${batchDup.status}：${batchDup.json?.error}`);
+    const afterDup = (await req('GET', `/api/courses/${idA}`)).json?.course;
+    ok('重复提交被拒后原值不变', afterDup?.credits === 3, `实际 ${afterDup?.credits}`);
+
+    // ---- 各种非法输入 ----
+    const batchEmpty = await req('POST', '/api/courses/batch-credits', { json: { items: [] } });
+    ok('空列表被拒绝', batchEmpty.status === 400, `状态码 ${batchEmpty.status}`);
+
+    const batchNoItems = await req('POST', '/api/courses/batch-credits', { json: {} });
+    ok('缺少 items 字段被拒绝', batchNoItems.status === 400, `状态码 ${batchNoItems.status}`);
+
+    const batchNoCredits = await req('POST', '/api/courses/batch-credits', {
+      json: { items: [{ id: idA }] },
+    });
+    ok('缺少学分值时被拒绝',
+      batchNoCredits.status === 400 && /缺少学分/.test(batchNoCredits.json?.error || ''),
+      `状态码 ${batchNoCredits.status}：${batchNoCredits.json?.error}`);
+
+    const batchRange = await req('POST', '/api/courses/batch-credits', {
+      json: { items: [{ id: idA, credits: '999' }] },
+    });
+    ok('学分超出合理范围被拒绝', batchRange.status === 400, `状态码 ${batchRange.status}`);
+
+    const batchBadId = await req('POST', '/api/courses/batch-credits', {
+      json: { items: [{ id: 'abc', credits: '3' }] },
+    });
+    ok('非法课程编号被拒绝', batchBadId.status === 400, `状态码 ${batchBadId.status}`);
+
+    const batchNegative = await req('POST', '/api/courses/batch-credits', {
+      json: { items: [{ id: idA, credits: '-1' }] },
+    });
+    ok('负数学分被拒绝',
+      batchNegative.status === 400 && /负数/.test(batchNegative.json?.error || ''),
+      `状态码 ${batchNegative.status}：${batchNegative.json?.error}`);
+
+    // 这条是关键：数字正则里没有负号，一不小心就会把「-1」解析成「1」，
+    // 静默把负数变成正数。必须确认没有发生这种事。
+    const afterNegative = (await req('GET', `/api/courses/${idA}`)).json?.course;
+    ok('★ 负数没有被静默改成正数',
+      afterNegative?.credits === 3,
+      `期望仍是 3，实际 ${afterNegative?.credits}`);
+
+    const patchNegative = await req('PATCH', `/api/courses/${idA}`, {
+      json: { credits: '-2' },
+    });
+    ok('单个修改时负数同样被拒绝',
+      patchNegative.status === 400, `状态码 ${patchNegative.status}`);
+    ok('★ 单个修改时负数也没被改成正数',
+      (await req('GET', `/api/courses/${idA}`)).json?.course?.credits === 3,
+      `实际 ${(await req('GET', `/api/courses/${idA}`)).json?.course?.credits}`);
+
+    const manyItems = Array.from({ length: 301 }, (_, i) => ({ id: i + 1, credits: '3' }));
+    const batchTooMany = await req('POST', '/api/courses/batch-credits', {
+      json: { items: manyItems },
+    });
+    ok('超过 300 条被拒绝', batchTooMany.status === 400, `状态码 ${batchTooMany.status}`);
+
+    // ---- 未登录不能批量改数据 ----
+    const anonBatch = createClient(baseUrl);
+    const batchAnon = await anonBatch('POST', '/api/courses/batch-credits', {
+      json: { items: [{ id: idA, credits: '3' }] },
+    });
+    ok('未登录不能批量修改',
+      batchAnon.status === 401 || batchAnon.status === 302, `状态码 ${batchAnon.status}`);
+
+    // ---- 清空 ----
+    const batchClear = await req('POST', '/api/courses/batch-credits', {
+      json: { items: [{ id: idA, credits: '' }] },
+    });
+    ok('学分传空串表示清空',
+      batchClear.json?.courses?.find((c) => c.id === idA)?.credits === null,
+      `实际 ${batchClear.json?.courses?.find((c) => c.id === idA)?.credits}`);
+    ok('清空学分时学时不受影响（请求里没带 hours）',
+      (await req('GET', `/api/courses/${idA}`)).json?.course?.hours === 48,
+      `实际 ${(await req('GET', `/api/courses/${idA}`)).json?.course?.hours}`);
+
+    // ---- 界面入口 ----
+    const coursesPageRes = await req('GET', '/courses');
+    ok('课程页有「批量填学分」按钮',
+      coursesPageRes.text.includes('data-batch-credits'), '页面上找不到按钮');
+    const appJsSrc = (await req('GET', '/static/app.js')).text;
+    ok('前端 JS 里有批量的处理逻辑',
+      appJsSrc.includes('data-batch-credits') && appJsSrc.includes('/api/courses/batch-credits'),
+      'app.js 里找不到相关逻辑');
+
+    // 数据层必须带 user_id 归属校验（防止越权改到别人的课程）
+    const coursesLibSrc = fs.readFileSync(path.join(ROOT, 'src/lib/courses.js'), 'utf8');
+    ok('批量更新的 SQL 带 user_id 归属校验',
+      /batchUpdateCourseAmounts[\s\S]{0,900}?WHERE id = \? AND user_id = \?/.test(coursesLibSrc),
+      'WHERE 子句里没有 user_id');
+
+    const setGrades = await req('PUT', `/api/courses/${courseId}/grades`, {
+      json: {
+        items: [
+          { name: '平时成绩', weight: 30, score: 88, fullScore: 100 },
+          { name: '期中考试', weight: 20, score: 76, fullScore: 100 },
+          { name: '期末考试', weight: 50, fullScore: 100 },
+        ],
+      },
+    });
+    ok('保存成绩构成成功', setGrades.status === 200, `状态码 ${setGrades.status}`);
+
+    const courseDetail = await req('GET', `/api/courses/${courseId}`);
+    const summary = courseDetail.json?.course?.gradeSummary;
+    ok('成绩构成权重合计正确', summary?.totalWeight === 100, `实际 ${summary?.totalWeight}`);
+    // 88×0.3 + 76×0.2 = 26.4 + 15.2 = 41.6
+    ok('已得分数计算正确', Math.abs((summary?.earnedPoints ?? 0) - 41.6) < 0.01,
+      `期望 41.6，实际 ${summary?.earnedPoints}`);
+    // 41.6 ÷ 50 × 100 = 83.2
+    ok('已出分部分得分率计算正确', Math.abs((summary?.scoredRate ?? 0) - 83.2) < 0.01,
+      `期望 83.2，实际 ${summary?.scoredRate}`);
+    ok('剩余权重计算正确', summary?.remainingWeight === 50, `实际 ${summary?.remainingWeight}`);
+    ok('最终总评上限计算正确', Math.abs((summary?.bestPossible ?? 0) - 91.6) < 0.01,
+      `期望 91.6，实际 ${summary?.bestPossible}`);
+
+    const overWeight = await req('PUT', `/api/courses/${courseId}/grades`, {
+      json: { items: [{ name: 'A', weight: 80 }, { name: 'B', weight: 50 }] },
+    });
+    ok('权重超过 100% 被拒绝', overWeight.status === 400, `状态码 ${overWeight.status}`);
+
+    // 课表页应当能算出周次并显示课程
+    const timetable = await req('GET', '/timetable');
+    ok('课程表页可访问', timetable.status === 200, `状态码 ${timetable.status}`);
+    ok('课程表显示课程名', timetable.text.includes('高等数学'));
+    ok('课程表渲染了周次网格', timetable.text.includes('week-grid'));
+    ok('课程表显示学分汇总', timetable.text.includes('5'));
+
+    // --------------------------------------------------------
+    section('3. 作业与提醒生成');
+
+    const dueAt = new Date(Date.now() + 2 * 86_400_000);
+    const pad = (n) => String(n).padStart(2, '0');
+    const dueStr = `${dueAt.getFullYear()}-${pad(dueAt.getMonth() + 1)}-${pad(dueAt.getDate())}T23:59`;
+
+    const createAssignment = await req('POST', '/api/assignments', {
+      json: {
+        title: '第三章课后习题 1-15 题',
+        courseId,
+        dueAt: dueStr,
+        priority: 2,
+        description: '写在作业本上，下次课交。',
+        remindOffsets: '1440,120',
+      },
+    });
+    ok('创建作业成功', createAssignment.status === 201,
+      `状态码 ${createAssignment.status}：${createAssignment.text.slice(0, 120)}`);
+    const assignmentId = createAssignment.json?.assignment?.id;
+
+    const assignmentDetail = await req('GET', `/api/assignments/${assignmentId}`);
+    const reminders = assignmentDetail.json?.assignment?.reminders || [];
+    ok('自动生成了 2 条提醒', reminders.length === 2, `实际 ${reminders.length} 条`);
+    ok('提醒时间按提前量倒推正确',
+      reminders.every((r) => r.fire_at < (dueStr || '').replace('T', ' ')),
+      JSON.stringify(reminders.map((r) => r.fire_at)));
+    ok('提醒内容包含课程名与作业名',
+      reminders[0]?.title.includes('高等数学') && reminders[0]?.title.includes('第三章'));
+
+    // 改 DDL 后提醒要重建
+    const newDue = new Date(Date.now() + 5 * 86_400_000);
+    const newDueStr = `${newDue.getFullYear()}-${pad(newDue.getMonth() + 1)}-${pad(newDue.getDate())}T12:00`;
+    await req('PATCH', `/api/assignments/${assignmentId}`, { json: { dueAt: newDueStr } });
+    const afterUpdate = await req('GET', `/api/assignments/${assignmentId}`);
+    const newReminders = afterUpdate.json?.assignment?.reminders || [];
+    ok('修改 DDL 后提醒被重建', newReminders.length === 2
+      && newReminders[0].fire_at !== reminders[0].fire_at);
+    ok('新提醒时间基于新 DDL', newReminders.some((r) => r.fire_at.startsWith(newDueStr.slice(0, 10))));
+
+    // 标记完成后提醒应被取消
+    await req('PATCH', `/api/assignments/${assignmentId}`, { json: { status: 'done' } });
+    const afterDone = await req('GET', `/api/assignments/${assignmentId}`);
+    ok('作业完成后待发提醒被清除',
+      (afterDone.json?.assignment?.reminders || []).filter((r) => r.status === 'pending').length === 0);
+
+    // 恢复成未完成，后续统计用
+    await req('PATCH', `/api/assignments/${assignmentId}`, { json: { status: 'todo' } });
+
+    const assignmentPage = await req('GET', '/assignments');
+    ok('作业页可访问', assignmentPage.status === 200);
+    ok('作业页显示作业', assignmentPage.text.includes('第三章课后习题'));
+    ok('作业页显示提醒标签', assignmentPage.text.includes('提前 1 天'));
+    ok('作业页提示未配置渠道', assignmentPage.text.includes('未配置提醒渠道'));
+
+    // ---- 勾选框：二次确认 + 完成动画 ----
+    // 用户原话：「作业做完了点击方格消除时，加一些确认按键，防止误触，
+    // 如果可以再加一些简单动画更有仪式感」
+    ok('★ 作业页的勾选框是真按钮（键盘也能用）',
+      /<button[^>]*class="sg-check__box[^"]*"[^>]*data-toggle-assignment/.test(assignmentPage.text));
+    ok('★ 勾选框带上了作业名（读屏能听出是哪一项）',
+      assignmentPage.text.includes('data-check-title="第三章课后习题 1-15 题"'));
+    ok('★ 读屏标签也带上了作业名',
+      assignmentPage.text.includes('aria-label="标记为已完成：第三章课后习题 1-15 题"'));
+    ok('★ 勾选框没有写死 tabindex 冒充按钮', !assignmentPage.text.includes('class="task__check"'));
+    ok('★ 打勾标记用 pathLength 归一化（这样才画得出描边动画）',
+      assignmentPage.text.includes('pathLength="1"'));
+    ok('★ 待办视图的列表标了 data-hides-done（前端据此决定要不要做退场动画）',
+      assignmentPage.text.includes('data-hides-done="1"'));
+
+    // 「全部」视图里完成的作业不会消失，就不该标记成会隐藏
+    const allView = await req('GET', '/assignments?status=all');
+    ok('★ 「全部」视图不标记 data-hides-done', !allView.text.includes('data-hides-done'));
+
+    // 课程详情页也用了同一个勾选框组件。
+    // 这里曾经有个真 bug：课程页的勾选框是个 <span role="button">，
+    // 而绑事件的 initAssignments() 在没有作业表单模板的页面上会提前返回，
+    // 所以点了完全没反应、按回车也没反应。
+    const coursePage = await req('GET', `/courses/${courseId}`);
+    ok('★ 课程详情页也渲染了勾选框',
+      coursePage.text.includes('data-toggle-assignment'));
+    ok('★ 课程详情页的勾选框同样是真的 button，不是 span',
+      /<button[^>]*class="sg-check__box[^"]*"[^>]*data-toggle-assignment/.test(coursePage.text));
+    ok('★ 课程详情页不会把已完成的作业做退场处理（列表本来就不隐藏它们）',
+      !coursePage.text.includes('data-hides-done'));
+
+    // 绑事件的初始化不能挂在只有作业页才有的模板上
+    const appJsChecks = await req('GET', '/static/app.js');
+    ok('★ 勾选逻辑在独立的初始化函数里（不依赖作业表单模板）',
+      appJsChecks.text.includes('initAssignmentChecks'));
+    // 断言「在 boot() 里被调用」，而不是「紧跟在某一行后面」——
+    // 以前写成后者，中间插一个新初始化函数就把测试写挂了
+    const bootBody = /function boot\(\)\s*\{([\s\S]*?)\n\}/.exec(appJsChecks.text)?.[1] || '';
+    ok('★ 勾选逻辑被无条件调用（课程页才会生效）',
+      bootBody.includes('initAssignmentChecks()'), 'boot() 里没有调用 initAssignmentChecks');
+    ok('★ 有确认条的实现', appJsChecks.text.includes('askCheckConfirm'));
+    ok('★ 有粒子动画的实现', appJsChecks.text.includes('burstConfetti'));
+    ok('★ 尊重系统的「减弱动态效果」设置',
+      appJsChecks.text.includes('prefers-reduced-motion')
+      && appJsChecks.text.includes('prefersReducedMotion'));
+    ok('★ 接口失败时会把勾选状态退回去（界面不能骗人）',
+      /catch[\s\S]{0,240}paintCheckBox\(box, !toDone\)/.test(appJsChecks.text));
+
+    // 确认条和粒子都必须挂到 body 上。
+    // 课程详情页的作业列表在 .card 里，而 .card 是 overflow: hidden，
+    // 挂在方格里面的话它们会被卡片边缘整块裁掉。
+    ok('★ 确认条挂到 body 上（否则会被 .card 的 overflow 裁掉）',
+      /document\.body\.appendChild\(el\)/.test(appJsChecks.text));
+    ok('★ 粒子图层也挂到 body 上', appJsChecks.text.includes('sg-confetti-layer')
+      && /document\.body\.appendChild\(layer\)/.test(appJsChecks.text));
+
+    // 勾选成功后马上要 reload，直接 toast 会被一起刷掉（只闪一下）。
+    // 所以成功提示要寄存在 sessionStorage 里，由新页面取出来显示。
+    ok('★ 成功提示能跨刷新存活（否则 300ms 后就没了）',
+      appJsChecks.text.includes('toastAfterReload')
+      && appJsChecks.text.includes('flushPendingToast'));
+    ok('★ 新页面启动时会把上次留下的提示显示出来',
+      /function boot\(\)[\s\S]{0,200}flushPendingToast\(\)/.test(appJsChecks.text));
+    // 失败时不刷新页面，直接 toast 就行，别绕一圈 sessionStorage
+    ok('★ 失败提示是立即显示，不是留给下次刷新',
+      /catch[\s\S]{0,320}toast\(err\.message, 'error'\)/.test(appJsChecks.text));
+
+    // ---- 样式表不能有语法错误 ----
+    // 一段没闭合的大括号会静默吞掉后面所有规则，页面看着就是「样式没生效」，
+    // 而且不会有任何报错。真实踩过，所以这里强行查一遍。
+    const cssRes = await req('GET', '/static/app.css');
+    const cssText = cssRes.text;
+    let depth = 0;
+    let minDepth = 0;
+    for (const ch of cssText) {
+      if (ch === '{') depth += 1;
+      else if (ch === '}') { depth -= 1; minDepth = Math.min(minDepth, depth); }
+    }
+    ok('★ 样式表的大括号是配平的', depth === 0, `结束时深度 ${depth}`);
+    ok('★ 样式表没有多余的右括号', minDepth === 0, `最小深度 ${minDepth}`);
+    for (const sel of ['.sg-check__box', '.sg-check__mark', '.check-confirm', '.sg-confetti',
+      '.sg-confetti-layer', '.is-just-checked', '.is-flashing', '.is-leaving']) {
+      ok(`★ 样式里有 ${sel}`, cssText.includes(sel));
+    }
+    // 确认条是 fixed 定位的，靠 JS 算坐标；用 absolute 就会被祖先的
+    // overflow: hidden 裁掉（.card 就有），所以这里钉住定位方式
+    ok('★ 确认条用 fixed 定位且在 body 上（不被卡片裁剪）',
+      /\.check-confirm\s*\{[^}]*position:\s*fixed/.test(cssText));
+    ok('★ 确认条的层级在弹窗(100)和 toast(200)之间',
+      /\.check-confirm\s*\{[^}]*z-index:\s*90/.test(cssText));
+    ok('★ 确认条默认隐藏，摆好坐标再显示（避免在左上角闪一下）',
+      /\.check-confirm\s*\{[^}]*visibility:\s*hidden/.test(cssText)
+      && cssText.includes('.check-confirm.is-positioned'));
+
+    // ---- 分组标题要如实说明离 DDL 多远 ----
+    // 用户原话：「我觉得在三天外的 ddl 不能叫做稍后截止」。
+    // 那一组的范围是 3 天以上、上不封顶，把三周后的作业叫「稍后」是在淡化它。
+    //
+    // 注意：分组标题只在组内有内容时才渲染，所以不能断言「页面上有全部标题」。
+    // 上面这门作业的 DDL 是 5 天后，落在「3 天以后截止」那一组。
+    ok('★ 作业页不再把三天外说成「稍后截止」', !assignmentPage.text.includes('稍后截止'));
+    ok('★ 三天外那一组如实写出边界', assignmentPage.text.includes('3 天以后截止'));
+    ok('★ 5 天后的作业没有被塞进「3 天内截止」那一组',
+      !assignmentPage.text.includes('3 天内截止'));
+
+    // 再从另一侧验证一次边界：临时造一门 1 天后到期的作业，
+    // 它应该出现在「3 天内截止」里，而不是「3 天以后截止」里。
+    const soonDue = new Date(Date.now() + 1 * 86_400_000);
+    const soonDueStr = `${soonDue.getFullYear()}-${pad(soonDue.getMonth() + 1)}-${pad(soonDue.getDate())}T23:59`;
+    const soonCreated = await req('POST', '/api/assignments', {
+      json: { title: '【边界检查】明天到期', courseId, dueAt: soonDueStr },
+    });
+    const soonId = soonCreated.json?.assignment?.id;
+
+    const soonPage = await req('GET', '/assignments');
+    ok('★ 1 天后的作业落在「3 天内截止」那一组',
+      soonPage.text.includes('3 天内截止') && soonPage.text.includes('【边界检查】明天到期'));
+    ok('★ 两个分组同时出现时，标题各自都写对了',
+      soonPage.text.includes('3 天内截止') && soonPage.text.includes('3 天以后截止'));
+    ok('★ 分组标题按紧急程度排列（3 天内在前，3 天以后在后）',
+      soonPage.text.indexOf('3 天内截止') < soonPage.text.indexOf('3 天以后截止'));
+    ok('★ 两个分组同时出现时也没有「稍后截止」', !soonPage.text.includes('稍后截止'));
+
+    // 清理，后面的统计和调度器不该被这门临时作业影响
+    await req('DELETE', `/api/assignments/${soonId}`);
+    const afterCleanup = await req('GET', '/assignments');
+    ok('★ 清理后分组标题不再出现（空组不渲染）',
+      !afterCleanup.text.includes('【边界检查】明天到期')
+      && !afterCleanup.text.includes('3 天内截止'));
+
+    // --------------------------------------------------------
+    section('4. 课件上传与在线预览');
+
+    const pptx = makeTestPptx();
+    ok('构造出的 PPTX 是合法 zip', pptx[0] === 0x50 && pptx[1] === 0x4b);
+
+    const upload = multipart(
+      { courseId: String(courseId), category: 'courseware', week: '3', tags: '重点,期中' },
+      { field: 'file', filename: '第3章 需求与供给.pptx', data: pptx, mime: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' },
+    );
+    const uploadRes = await req('POST', '/api/materials', {
+      body: upload.body,
+      headers: { 'Content-Type': upload.contentType },
+    });
+    ok('上传 PPTX 成功', uploadRes.status === 201,
+      `状态码 ${uploadRes.status}：${uploadRes.text.slice(0, 200)}`);
+
+    const material = uploadRes.json?.material;
+    const materialId = material?.id;
+    ok('识别为演示文稿类型', material?.kind === 'ppt', `实际 ${material?.kind}`);
+    ok('中文文件名正确保存', material?.original_name === '第3章 需求与供给.pptx',
+      `实际 ${material?.original_name}`);
+    ok('标题默认取文件名（去掉扩展名）', material?.title === '第3章 需求与供给',
+      `实际 ${material?.title}`);
+    ok('文件大小记录正确', material?.size === pptx.length, `${material?.size} vs ${pptx.length}`);
+
+    // 预览是异步生成的，轮询等待
+    let status = null;
+    for (let i = 0; i < 60; i += 1) {
+      const res = await req('GET', `/api/materials/${materialId}/status`);
+      status = res.json;
+      if (status?.status === 'ready' || status?.status === 'failed') break;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    ok('预览生成完成', status?.status === 'ready',
+      `状态 ${status?.status}，错误 ${status?.error || '无'}`);
+    ok('降级为网页版预览（本测试关闭了 Office 转换）', status?.previewMode === 'office',
+      `实际 ${status?.previewMode}`);
+
+    const previewPage = await req('GET', `/materials/${materialId}`);
+    ok('预览页可访问', previewPage.status === 200, `状态码 ${previewPage.status}`);
+    ok('预览页渲染出 PPT 文本内容', previewPage.text.includes('第一章 导论')
+      && previewPage.text.includes('微观经济学的研究对象'));
+    ok('预览页渲染出第二页', previewPage.text.includes('需求与供给'));
+    ok('预览页对幻灯片正确编号', previewPage.text.includes('第 1 页') && previewPage.text.includes('第 2 页'));
+    ok('预览页给出降级说明', previewPage.text.includes('这是网页版预览'));
+    ok('预览页显示所属课程', previewPage.text.includes('高等数学'));
+
+    // 标题不应重复显示
+    const titleOccurrences = (previewPage.text.match(/第一章 导论/g) || []).length;
+    ok('PPT 标题没有重复渲染', titleOccurrences === 1, `出现 ${titleOccurrences} 次`);
+
+    const rawFile = await req('GET', `/materials/${materialId}/raw`);
+    ok('可以取到原始文件', rawFile.status === 200, `状态码 ${rawFile.status}`);
+    ok('原始文件字节数一致', Buffer.byteLength(rawFile.text, 'utf8') > 0 && rawFile.status === 200);
+
+    // 文本文件走另一条预览路径
+    const txtUpload = multipart(
+      { courseId: String(courseId), category: 'reference' },
+      { field: 'file', filename: '复习提纲.txt', data: Buffer.from('第一章重点\n第二章重点\n', 'utf8'), mime: 'text/plain' },
+    );
+    const txtRes = await req('POST', '/api/materials', {
+      body: txtUpload.body,
+      headers: { 'Content-Type': txtUpload.contentType },
+    });
+    ok('上传文本文件成功', txtRes.status === 201);
+    ok('识别为文本类型', txtRes.json?.material?.kind === 'text', `实际 ${txtRes.json?.material?.kind}`);
+
+    let txtStatus = null;
+    for (let i = 0; i < 40; i += 1) {
+      const res = await req('GET', `/api/materials/${txtRes.json.material.id}/status`);
+      txtStatus = res.json;
+      if (txtStatus?.status === 'ready') break;
+      await new Promise((r) => setTimeout(r, 150));
+    }
+    const txtPage = await req('GET', `/materials/${txtRes.json.material.id}`);
+    ok('文本预览页显示正文', txtPage.text.includes('第一章重点'));
+
+    // 全文检索
+    const search = await req('GET', '/materials?q=' + encodeURIComponent('微观经济学'));
+    ok('可以按课件正文全文检索', search.text.includes('第3章 需求与供给'));
+
+    // 资料库页
+    const materialsPage = await req('GET', '/materials');
+    ok('资料库页可访问', materialsPage.status === 200);
+    ok('资料库显示文件卡片', materialsPage.text.includes('material-card'));
+    ok('资料库按类型统计', materialsPage.text.includes('演示文稿'));
+    ok('上传表单模板已注入', materialsPage.text.includes('upload-form-template'));
+
+    // ---- 编辑已上传课件的属性 ----
+    // 用户反馈：「已加入的课件资料无法重新选择属性，比如属于什么学科等」。
+    // 这条路径此前完全没有测试覆盖，所以先把它整条走一遍。
+    const editForm = await req('GET', `/materials/${materialId}`);
+    ok('★ 预览页渲染了编辑表单模板', editForm.text.includes('material-edit-template'));
+    ok('★ 编辑表单里有「归属课程」下拉',
+      editForm.text.includes('name="courseId"'));
+    ok('★ 编辑表单里有「分类」下拉', editForm.text.includes('name="category"'));
+    ok('★ 编辑表单里列出了可选课程',
+      editForm.text.includes(`<option value="${courseId}">`));
+
+    const listPageForEdit = await req('GET', '/materials');
+    ok('★ 资料库页也有编辑表单模板', listPageForEdit.text.includes('material-edit-template'));
+    ok('★ 资料库页每一行都有编辑入口',
+      listPageForEdit.text.includes(`data-edit-material="${materialId}"`));
+    // 纯图标按钮在手机上没法悬停，title 提示永远不会出现 ——
+    // 用户只会看到一个不知道是什么的小图标。主操作要有文字。
+    // （不能用「属性后面多少字符内出现 span」这种断言：中间夹着的
+    //   SVG 图标本身就好几百字符，窗口一开就假阴性。）
+    ok('★ 资料库页的编辑按钮带文字（不是纯图标，手机上才找得到）',
+      listPageForEdit.text.includes('<span>编辑</span>'));
+    ok('★ 编辑按钮有 aria-label（读屏能说清是编辑哪一份）',
+      /aria-label="编辑「[^"]+」/.test(listPageForEdit.text));
+
+    // 接口回给客户端的数据要带上当前值，表单才能正确回填
+    const editData = await req('GET', `/api/materials/${materialId}`);
+    ok('★ 接口返回了 course_id（表单靠它回填下拉框）',
+      editData.json?.material?.course_id != null,
+      `course_id=${editData.json?.material?.course_id}`);
+    ok('★ 接口返回了 category', Boolean(editData.json?.material?.category));
+
+    // 造一门新课程，把课件改挂过去
+    const otherCourse = await req('POST', '/api/courses', {
+      json: { name: '【编辑测试】线性代数', teacher: '李老师' },
+    });
+    const otherCourseId = otherCourse.json?.course?.id;
+
+    const patched = await req('PATCH', `/api/materials/${materialId}`, {
+      json: { courseId: otherCourseId, category: 'reference', week: 7, tags: 'a,b', description: '改过了' },
+    });
+    ok('★ 能改课件的归属课程', patched.status === 200, `状态码 ${patched.status}`);
+
+    const afterPatch = (await req('GET', `/api/materials/${materialId}`)).json?.material;
+    ok('★ 归属课程真的变了', String(afterPatch?.course_id) === String(otherCourseId),
+      `期望 ${otherCourseId}，实际 ${afterPatch?.course_id}`);
+    ok('★ 分类也变了', afterPatch?.category === 'reference', `实际 ${afterPatch?.category}`);
+    ok('★ 周次也变了', Number(afterPatch?.week) === 7, `实际 ${afterPatch?.week}`);
+    ok('★ 标签也变了', afterPatch?.tags === 'a,b', `实际 ${afterPatch?.tags}`);
+    ok('★ 说明也变了', afterPatch?.description === '改过了');
+
+    // 再改回去，并验证「暂不归类」能清空归属
+    await req('PATCH', `/api/materials/${materialId}`, { json: { courseId: '' } });
+    const cleared = (await req('GET', `/api/materials/${materialId}`)).json?.material;
+    ok('★ 选「暂不归类」能把课程清掉', cleared?.course_id === null,
+      `实际 ${JSON.stringify(cleared?.course_id)}`);
+
+    await req('PATCH', `/api/materials/${materialId}`, { json: { courseId } });
+    const restored = (await req('GET', `/api/materials/${materialId}`)).json?.material;
+    ok('★ 能改回原来的课程', String(restored?.course_id) === String(courseId));
+
+    // 编辑后列表页要跟着变
+    const listAfterEdit = await req('GET', '/materials');
+    ok('★ 改完之后资料库页显示新的课程名',
+      listAfterEdit.text.includes('线性代数') || listAfterEdit.text.includes('高等数学'));
+
+    // 别人的课件改不了
+    const editAnon = createClient(baseUrl);
+    const anonPatch = await editAnon('PATCH', `/api/materials/${materialId}`, {
+      json: { title: '被人改了' },
+    });
+    ok('★ 未登录不能编辑课件',
+      anonPatch.status === 302 || anonPatch.status === 401 || anonPatch.status === 403,
+      `状态码 ${anonPatch.status}`);
+
+    if (otherCourseId) await req('DELETE', `/api/courses/${otherCourseId}`);
+
+    // ---- 按钮真的绑上事件了吗 ----
+    // 用户反馈的是「点了没反应」，这种问题接口测试看不出来：
+    // 数据层完全正常，坏的是前端根本没绑事件。
+    //
+    // 根因是同一个反模式（这已经是第二次踩）：
+    // 绑事件的函数开头写着「页面上没有某个模板就 return」，
+    // 而那个模板只在部分页面存在 —— 于是别的页面上的按钮全成了摆设。
+    //   · 第一次：作业勾选框（模板只有作业页有 → 课程页点了没反应）
+    //   · 这一次：资料的「编辑」和「重新转换」（上传模板只有资料库页有
+    //     → 预览页上这两个按钮点了没反应）
+    const appJsMat = await req('GET', '/static/app.js');
+
+    ok('★ initMaterials 不再因为「页面缺上传模板」就整体退出',
+      !/const tpl = document\.getElementById\('upload-form-template'\);[\s\S]{0,20}if \(!tpl\) return;/
+        .test(appJsMat.text),
+      '又出现了那个反模式：绑事件的函数拿页面级模板做提前返回');
+
+    ok('★ 资料的编辑按钮在共用处理器里绑定（两个页面才都能用）',
+      appJsMat.text.includes("closest('[data-edit-material]')"));
+    ok('★ 「重新转换」按钮也一样绑定（它只出现在预览页）',
+      appJsMat.text.includes("closest('[data-rebuild-preview]')"));
+    ok('★ 上传弹窗改成点击时才检查模板（而不是初始化时就退出）',
+      /function openUploadModal\(\)\s*\{[\s\S]{0,200}getElementById\('upload-form-template'\)/
+        .test(appJsMat.text));
+
+    // 预览页确实同时具备「编辑按钮」和「编辑表单模板」——
+    // 两者缺一，用户点了都会是没反应
+    const previewForEdit = await req('GET', `/materials/${materialId}`);
+    ok('★ 预览页同时有编辑按钮和编辑表单模板',
+      previewForEdit.text.includes(`data-edit-material="${materialId}"`)
+      && previewForEdit.text.includes('material-edit-template'));
+
+    // 未登录不能下载别人的文件
+    const anon = createClient(baseUrl);
+    const anonFetch = await anon('GET', `/materials/${materialId}/raw`);
+    ok('未登录无法下载课件', anonFetch.status === 302 || anonFetch.status === 401,
+      `状态码 ${anonFetch.status}`);
+
+    // ---- 幻灯片图片渲染路径 ----
+    // 用户问：「能不能让课件直接渲染出来，有没有什么办法」。
+    // 这条路的由来：Office 导 PDF 依赖打印管线，没有打印机的会话里
+    // PowerPoint 会直接崩，但同一份文件导出 PNG 完全正常。
+    //
+    // 本测试跑在临时数据目录里，没法真的调 PowerPoint 导出，
+    // 所以直接铺好产物来验证「存下来的图片能不能被正确服务出去、页面能不能渲染」。
+    const slidesDir = path.join(dataDir, 'cache', 'slides', 'e2e-fake');
+    fs.mkdirSync(slidesDir, { recursive: true });
+    const PNG_1PX = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==',
+      'base64',
+    );
+    for (const n of [1, 2, 3]) {
+      fs.writeFileSync(path.join(slidesDir, `slide-${n}.png`), PNG_1PX);
+    }
+    // 混一个不该被当成幻灯片的文件，验证过滤
+    fs.writeFileSync(path.join(slidesDir, 'thumb.png'), PNG_1PX);
+
+    const { DatabaseSync } = await import('node:sqlite');
+    const db = new DatabaseSync(path.join(dataDir, 'app.db'));
+    // slides_dir 和 pdf_name 一样，存的是相对 uploads 目录的路径
+    const relSlides = path.relative(path.join(dataDir, 'uploads'), slidesDir).replace(/\\/g, '/');
+    db.prepare("UPDATE materials SET slides_dir = ?, slide_count = 3 WHERE id = ?")
+      .run(relSlides, materialId);
+    db.close();
+
+    const slideRes = await req('GET', `/materials/${materialId}/slide/1`);
+    ok('★ 幻灯片图片能取到', slideRes.status === 200, `状态码 ${slideRes.status}`);
+    ok('★ 返回的是 PNG',
+      (slideRes.headers.get('content-type') || '').includes('image/png'),
+      slideRes.headers.get('content-type') || '');
+
+    const slideDeckPage = await req('GET', `/materials/${materialId}`);
+    ok('★ 预览页改用幻灯片模式', slideDeckPage.text.includes('slide-deck'));
+    ok('★ 每一页都渲染成一张图',
+      slideDeckPage.text.includes('/slide/1') && slideDeckPage.text.includes('/slide/3'));
+    ok('★ 页面如实说明共几页', slideDeckPage.text.includes('共 3 页'));
+    ok('★ 有幻灯片时就不再是文字版降级',
+      !slideDeckPage.text.includes('这个文件还是文字版预览'));
+    ok('★ 图片用懒加载，长课件不会一次性拉几百张',
+      slideDeckPage.text.includes('loading="lazy"'));
+
+    // ---- 页面内看图器 ----
+    // 用户反馈：「点进 ppt 单页图片有 bug，退不出来，然后也不能翻页」。
+    // 原来每一页是个 target="_blank" 的链接，点开只有一张裸图：
+    // 没有返回、不能翻页；装成 PWA 后链接可能开在同一个 webview 里，
+    // 连后退键都没有 —— 就真的退不出来了。
+    // 现在改成页面内的浮层，所以这些钩子必须在。
+    ok('★ 幻灯片容器带上了看图器需要的基准路径和总页数',
+      slideDeckPage.text.includes('data-slide-deck')
+      && slideDeckPage.text.includes(`data-slide-base="/materials/${materialId}/slide"`)
+      && slideDeckPage.text.includes('data-slide-total="3"'));
+    ok('★ 每一页都标了页码，看图器才知道从第几页打开',
+      slideDeckPage.text.includes('data-slide-viewer="1"')
+      && slideDeckPage.text.includes('data-slide-viewer="3"'));
+
+    const appJsViewer = await req('GET', '/static/app.js');
+    ok('★ 有看图器的实现', appJsViewer.text.includes('initSlideViewer'));
+    ok('★ 看图器在启动时被调用',
+      (/function boot\(\)\s*\{([\s\S]*?)\n\}/.exec(appJsViewer.text)?.[1] || '')
+        .includes('initSlideViewer()'),
+      'boot() 里没有调用 initSlideViewer');
+    ok('★ 看图器有上一页/下一页', appJsViewer.text.includes('data-sv-prev')
+      && appJsViewer.text.includes('data-sv-next'));
+    ok('★ 看图器有关闭按钮', appJsViewer.text.includes('data-sv-close'));
+    ok('★ 支持 Esc 关闭和左右方向键翻页',
+      appJsViewer.text.includes("'Escape'") && appJsViewer.text.includes("'ArrowLeft'")
+      && appJsViewer.text.includes("'ArrowRight'"));
+    ok('★ 支持手机左右滑动翻页', appJsViewer.text.includes('touchstart')
+      && appJsViewer.text.includes('touchend'));
+    ok('★ 会拦截链接默认行为，不再跳到裸图页面',
+      appJsViewer.text.includes('e.preventDefault()')
+      && appJsViewer.text.includes("closest('[data-slide-viewer]')"));
+    ok('★ 按住 Ctrl/Cmd 点仍然能在新标签页打开（尊重用户意图）',
+      /e\.metaKey \|\| e\.ctrlKey/.test(appJsViewer.text));
+    // 手机用户的本能是右滑返回。如果那一下直接退出整个课件页，还是「退不出来」。
+    ok('★ 手机右滑返回是关看图器，而不是退出课件页',
+      appJsViewer.text.includes('pushState') && appJsViewer.text.includes('popstate'));
+    ok('★ 翻页到头会禁用按钮，不会点了没反应',
+      /\[data-sv-prev\]'\)\.disabled/.test(appJsViewer.text));
+
+    const cssViewer = await req('GET', '/static/app.css');
+    ok('★ 有看图器的样式', cssViewer.text.includes('.slide-viewer')
+      && cssViewer.text.includes('.slide-viewer__nav'));
+    ok('★ 看图器的层级盖过弹窗和提示',
+      /\.slide-viewer\s*\{[^}]*z-index:\s*300/.test(cssViewer.text));
+
+    // 页码必须校验，不能让 URL 变成任意文件读取
+    const badPage = await req('GET', `/materials/${materialId}/slide/abc`);
+    ok('★ 非法页码被拒绝', badPage.status === 404, `状态码 ${badPage.status}`);
+    const slideTraversal = await req('GET', `/materials/${materialId}/slide/${encodeURIComponent('../../secret')}`);
+    ok('★ 页码里的路径穿越被挡住', slideTraversal.status === 404,
+      `状态码 ${slideTraversal.status}`);
+
+    const otherAnon = createClient(baseUrl);
+    const anonSlide = await otherAnon('GET', `/materials/${materialId}/slide/1`);
+    ok('★ 未登录取不到幻灯片图片',
+      anonSlide.status === 302 || anonSlide.status === 401 || anonSlide.status === 403,
+      `状态码 ${anonSlide.status}`);
+
+    // ---- PDF 预览路径 ----
+    // 用户反馈：「第二节 ppt 为什么打不开」。
+    // 根因：pdf_name 存的是 '../cache/pdf/xxx.pdf'（相对于 uploads 目录），
+    // 而 PDF 路由用的是 uploadPath() —— 那个函数会把任何跑出 uploads 的路径
+    // 判为非法并抛异常。于是转换明明成功、PDF 就在磁盘上，点开却打不开。
+    //
+    // 之所以一直没被发现：本测试为了跑得快关掉了 Office 转换，
+    // pdf_name 永远是空的，这条路由从来没被走到过。
+    // 现在铺一个 PDF 出来，把这条路由真正测一遍。
+    const pdfDir = path.join(dataDir, 'cache', 'pdf');
+    fs.mkdirSync(pdfDir, { recursive: true });
+    const fakePdfPath = path.join(pdfDir, 'e2e-fake.pdf');
+    // 前缀和结尾按 PDF 规范写，中间内容不重要 —— 路由只负责把文件发出去
+    const fakePdf = Buffer.from(
+      '%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Size 1>>\n%%EOF\n',
+      'latin1',
+    );
+    fs.writeFileSync(fakePdfPath, fakePdf);
+
+    const db3 = new DatabaseSync(path.join(dataDir, 'app.db'));
+    // 和代码里的写法保持一致：相对 uploads 目录
+    const relPdf = path.relative(path.join(dataDir, 'uploads'), fakePdfPath).replace(/\\/g, '/');
+    db3.prepare("UPDATE materials SET pdf_name = ?, slides_dir = '' WHERE id = ?")
+      .run(relPdf, materialId);
+    db3.close();
+
+    const pdfRes = await req('GET', `/materials/${materialId}/pdf`);
+    ok('★ 转换出来的 PDF 能取到（这条路由以前是 500）', pdfRes.status === 200,
+      `状态码 ${pdfRes.status}`);
+    ok('★ 返回的是 PDF',
+      (pdfRes.headers.get('content-type') || '').includes('application/pdf'),
+      pdfRes.headers.get('content-type') || '');
+    ok('★ 发出去的确实是 PDF 内容', pdfRes.text.startsWith('%PDF-'),
+      JSON.stringify(pdfRes.text.slice(0, 20)));
+    ok('★ 内容长度正确',
+      Number(pdfRes.headers.get('content-length')) === fakePdf.length,
+      `声明 ${pdfRes.headers.get('content-length')}，实际 ${fakePdf.length}`);
+
+    // 浏览器的 PDF 阅读器靠 Range 请求分段加载，这条不通就会显示空白
+    const rangeRes = await req('GET', `/materials/${materialId}/pdf`, {
+      headers: { Range: 'bytes=0-7' },
+    });
+    ok('★ 支持 Range 请求（PDF 阅读器要靠它加载）',
+      rangeRes.status === 206 && rangeRes.headers.get('content-range'),
+      `状态码 ${rangeRes.status}，content-range=${rangeRes.headers.get('content-range')}`);
+    ok('★ Range 返回的是请求的那一段', rangeRes.text.startsWith('%PDF-1.4'),
+      JSON.stringify(rangeRes.text));
+
+    const pdfPage = await req('GET', `/materials/${materialId}`);
+    ok('★ 有 PDF 时预览页用内嵌 PDF 阅读器',
+      pdfPage.text.includes(`/materials/${materialId}/pdf`)
+      && pdfPage.text.includes('<iframe'));
+    ok('★ 有 PDF 就不再是文字版降级', !pdfPage.text.includes('这个文件还是文字版预览'));
+
+    const downloadRes = await req('GET', `/materials/${materialId}/pdf?download=1`);
+    ok('★ 带 download=1 时作为附件下载',
+      /attachment/i.test(downloadRes.headers.get('content-disposition') || ''),
+      downloadRes.headers.get('content-disposition') || '');
+
+    const anonPdf = createClient(baseUrl);
+    const anonPdfRes = await anonPdf('GET', `/materials/${materialId}/pdf`);
+    ok('★ 未登录取不到 PDF',
+      anonPdfRes.status === 302 || anonPdfRes.status === 401 || anonPdfRes.status === 403,
+      `状态码 ${anonPdfRes.status}`);
+
+    // 恢复，别影响后面的统计断言
+    const db4 = new DatabaseSync(path.join(dataDir, 'app.db'));
+    db4.prepare("UPDATE materials SET pdf_name = '' WHERE id = ?").run(materialId);
+    db4.close();
+    fs.rmSync(fakePdfPath, { force: true });
+
+    // 把幻灯片那一路也恢复掉
+    const db2 = new DatabaseSync(path.join(dataDir, 'app.db'));
+    db2.prepare("UPDATE materials SET slides_dir = '', slide_count = NULL WHERE id = ?").run(materialId);
+    db2.close();
+    fs.rmSync(slidesDir, { recursive: true, force: true });
+
+    // --------------------------------------------------------
+    section('5. 通知渠道');
+
+    const catalog = await req('GET', '/api/channels/catalog');
+    ok('渠道目录可访问', catalog.status === 200);
+    ok('内置了 Bark 渠道', catalog.json?.channels?.some((c) => c.type === 'bark'));
+    ok('内置了邮件渠道', catalog.json?.channels?.some((c) => c.type === 'email'));
+    ok('渠道数量不少于 10 种', (catalog.json?.channels?.length || 0) >= 10,
+      `实际 ${catalog.json?.channels?.length} 种`);
+
+    // ---- Bark 引导 ----
+    // 用户的原话：「bark推送设置还是有点问题，你再修改一下，把引导做更详细一点」
+    const barkDef = catalog.json?.channels?.find((c) => c.type === 'bark');
+    ok('★ Bark 渠道带上了详细引导文案', typeof barkDef?.guide === 'string' && barkDef.guide.length > 300,
+      `长度 ${barkDef?.guide?.length || 0}`);
+    ok('★ 引导里写了去 App Store 装 Bark',
+      (barkDef?.guide || '').includes('App Store'));
+    ok('★ 引导里写了要允许通知权限', /允许/.test(barkDef?.guide || ''));
+    ok('★ 引导里写了怎么复制 Key（长按）', /长按/.test(barkDef?.guide || ''));
+    ok('★ 引导里有「没收到怎么排查」的清单', /排查/.test(barkDef?.guide || ''));
+    ok('★ 引导里讲了 iOS 时效性通知的开关位置',
+      /时效性通知/.test(barkDef?.guide || '') && /设置 → 通知/.test(barkDef?.guide || ''));
+    ok('★ 引导里讲了自建服务器怎么填', /自建/.test(barkDef?.guide || ''));
+
+    ok('★ 引导是折叠块起头（设置页用 details 包住）',
+      (barkDef?.guide || '').trimStart().startsWith('<ol'));
+
+    const barkKeyField = barkDef?.fields?.find((f) => f.key === 'key');
+    ok('★ Key 字段的说明里提到可以整段粘贴网址',
+      /网址/.test(barkKeyField?.help || ''));
+    const barkSoundField = barkDef?.fields?.find((f) => f.key === 'sound');
+    ok('★ 提示音是下拉选择而不是自由文本（打错字不会静默失效）',
+      barkSoundField?.type === 'select' && (barkSoundField?.options?.length || 0) >= 5,
+      `类型 ${barkSoundField?.type}，选项 ${barkSoundField?.options?.length}`);
+    const barkLevelField = barkDef?.fields?.find((f) => f.key === 'level');
+    ok('★ 通知级别默认是时效性通知',
+      barkLevelField?.default === 'timeSensitive', `默认 ${barkLevelField?.default}`);
+    ok('★ 通知级别的说明里写了要去 iOS 设置里开开关',
+      /设置/.test(barkLevelField?.help || '') && /时效性通知/.test(barkLevelField?.help || ''));
+
+    // ---- 起一个本地假 Bark 服务器 ----
+    // POST /api/channels 会「先试发一条」再保存，所以想验证「保存时也做了
+    // 规范化」就必须有一个真能回 200 的推送端。用它同时验证完整的发送链路。
+    const barkRequests = [];
+    // 先按「成功」应答；后面要测报错文案时把它切成「拒绝」
+    let barkMode = 'success';
+    const fakeBark = http.createServer((req, res) => {
+      let raw = '';
+      req.on('data', (c) => { raw += c; });
+      req.on('end', () => {
+        let body = null;
+        try { body = JSON.parse(raw); } catch { /* 忽略 */ }
+        barkRequests.push({ url: req.url, body });
+        res.writeHead(barkMode === 'success' ? 200 : 400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(
+          barkMode === 'success'
+            ? { code: 200, message: 'success' }
+            : { code: 400, message: 'device token is not exists' },
+        ));
+      });
+    });
+    await new Promise((r) => fakeBark.listen(0, '127.0.0.1', r));
+    const fakeBarkBase = `http://127.0.0.1:${fakeBark.address().port}`;
+
+    /**
+     * 找一个当前没人监听的端口，用来测「连接被拒绝」。
+     *
+     * 不能图省事写 127.0.0.1:1 —— 端口 1、7、25、5060 这类在 fetch 规范里
+     * 属于「禁用端口」，请求在客户端就被拒了，拿到的错误是 "bad port"
+     * 而不是 ECONNREFUSED，测不到真正想测的那条路径。
+     * 先占用再释放可以拿到一个确定空闲的高位端口。
+     */
+    async function findClosedPort() {
+      const probe = http.createServer();
+      await new Promise((r) => probe.listen(0, '127.0.0.1', r));
+      const { port } = probe.address();
+      await new Promise((r) => probe.close(r));
+      return port;
+    }
+    const closedPort = await findClosedPort();
+
+    // ---- Bark 配置自动修正：把整段网址拆成服务器地址 + Key ----
+    // Bark App 首页显示的就是这一段网址，用户很容易整段复制。
+    // 以前直接当 Key 发出去，Bark 只回一句英文报错。
+    const pastedUrl = await req('POST', '/api/channels/test', {
+      json: {
+        type: 'bark',
+        config: { key: 'https://api.day.app/AbCdEf123456', server: '' },
+      },
+    });
+    ok('★ 粘贴整段 Bark 网址时，接口会把服务器地址和 Key 拆开',
+      pastedUrl.json?.config?.server === 'https://api.day.app'
+      && pastedUrl.json?.config?.key === 'AbCdEf123456',
+      `server=${pastedUrl.json?.config?.server} key=${pastedUrl.json?.config?.key}`);
+    ok('★ 拆开之后的 Key 不会再被当成网址发出去（Bark 才认得）',
+      pastedUrl.json?.config?.key === 'AbCdEf123456');
+
+    const pastedNoScheme = await req('POST', '/api/channels/test', {
+      json: { type: 'bark', config: { key: 'api.day.app/AbCdEf123456', server: '' } },
+    });
+    ok('★ 不带协议头的网址也能拆开',
+      pastedNoScheme.json?.config?.key === 'AbCdEf123456'
+      && pastedNoScheme.json?.config?.server === 'https://api.day.app',
+      `server=${pastedNoScheme.json?.config?.server}`);
+
+    const trailingSlash = await req('POST', '/api/channels/test', {
+      json: { type: 'bark', config: { key: 'k123456', server: 'https://api.day.app/' } },
+    });
+    ok('★ 服务器地址结尾的斜杠会被去掉（否则拼出 //push）',
+      trailingSlash.json?.config?.server === 'https://api.day.app',
+      `server=${trailingSlash.json?.config?.server}`);
+
+    const dirtyKey = await req('POST', '/api/channels/test', {
+      json: { type: 'bark', config: { key: ' AbCdEf\n123456 ', server: '' } },
+    });
+    ok('★ Key 里的换行和空格会被清掉（复制粘贴常见）',
+      dirtyKey.json?.config?.key === 'AbCdEf123456',
+      `key=${JSON.stringify(dirtyKey.json?.config?.key)}`);
+
+    // ---- 真的发一条到假 Bark，验证规范化后的配置被用上了 ----
+    const realSend = await req('POST', '/api/channels/test', {
+      json: {
+        type: 'bark',
+        config: { key: 'https://api.day.app/FakeKey123', server: fakeBarkBase },
+      },
+    });
+    ok('★ 用假 Bark 服务器测试发送成功', realSend.status === 200 && realSend.json?.ok === true,
+      `状态码 ${realSend.status}：${realSend.json?.error}`);
+    ok('★ 请求打到了 POST /push',
+      barkRequests.at(-1)?.url === '/push', `实际 ${barkRequests.at(-1)?.url}`);
+    ok('★ 发出去的是拆好的 Key，而不是一整段网址',
+      barkRequests.at(-1)?.body?.device_key === 'FakeKey123',
+      `device_key=${barkRequests.at(-1)?.body?.device_key}`);
+    ok('★ 自建服务器地址没有被网址里的官方域名冲掉',
+      realSend.json?.config?.server === fakeBarkBase,
+      `server=${realSend.json?.config?.server}`);
+
+    // ---- 保存时同样会修正，不能只修测试那一遍 ----
+    const created = await req('POST', '/api/channels', {
+      json: {
+        type: 'bark',
+        name: 'Bark 测试',
+        config: { key: 'https://api.day.app/FakeKey123', server: fakeBarkBase },
+      },
+    });
+    ok('★ 新建 Bark 渠道成功', created.status === 201 || created.status === 200,
+      `状态码 ${created.status}：${created.json?.error}`);
+
+    const savedChannel = (await req('GET', '/api/channels')).json?.channels
+      ?.find((c) => c.name === 'Bark 测试');
+    // 注意：列表接口会把 Key 打码（AbC•••••56），所以只能比对首尾。
+    // 首三字符足够区分——存的是拆好的 FakeKey123 还是整段网址
+    // https://api.day.app/FakeKey123，两者打码后的开头完全不同。
+    ok('★ 保存进数据库的 Key 已经是拆好的（不是整段网址）',
+      savedChannel?.config?.key?.startsWith('Fak') && !savedChannel?.config?.key?.startsWith('htt'),
+      `打码后 key=${savedChannel?.config?.key}`);
+    ok('★ 保存进数据库的服务器地址也拆好了',
+      savedChannel?.config?.server === fakeBarkBase,
+      `server=${savedChannel?.config?.server}`);
+
+    // ---- 编辑已存在的渠道时也要修正 ----
+    if (savedChannel) {
+      await req('PATCH', `/api/channels/${savedChannel.id}`, {
+        json: { config: { key: 'https://api.day.app/PatchedKey99' } },
+      });
+      const patched = (await req('GET', '/api/channels')).json?.channels
+        ?.find((c) => c.id === savedChannel.id);
+      ok('★ 编辑渠道时同样会拆网址（打码后开头是 Pat 而不是 htt）',
+        patched?.config?.key?.startsWith('Pat') && !patched?.config?.key?.startsWith('htt'),
+        `打码后 key=${patched?.config?.key}`);
+
+      // 「测试已保存的渠道」这个入口也要能跑通
+      const savedTest = await req('POST', `/api/channels/${savedChannel.id}/test`);
+      ok('★ 测试已保存的渠道能跑通', savedTest.status === 200,
+        `状态码 ${savedTest.status}：${savedTest.json?.error}`);
+
+      const del = await req('DELETE', `/api/channels/${savedChannel.id}`);
+      ok('清理测试渠道', del.status === 200 || del.status === 204, `状态码 ${del.status}`);
+    }
+
+    // ---- Bark 报错要说人话 ----
+    // 假 Bark 改成回一个真实会遇到的错误
+    barkMode = 'reject';
+
+    const badKeyTest = await req('POST', '/api/channels/test', {
+      json: { type: 'bark', config: { key: 'WrongKey123', server: fakeBarkBase } },
+    });
+    ok('★ Key 不对时给的是中文解释，不是 Bark 的英文原文',
+      badKeyTest.status === 400
+      && /推送 Key 不对/.test(badKeyTest.json?.error || '')
+      && !/^device token/.test(badKeyTest.json?.error || ''),
+      `${badKeyTest.json?.error}`);
+    ok('★ 中文解释里告诉用户去哪儿复制 Key',
+      /Bark App/.test(badKeyTest.json?.error || ''));
+    ok('★ 中文解释里带上用户填的前几位，方便对照',
+      /WrongK/.test(badKeyTest.json?.error || ''));
+    ok('★ 解释里保留了服务器原话，方便搜索',
+      /device token is not exists/.test(badKeyTest.json?.error || ''));
+
+    await new Promise((r) => fakeBark.close(r));
+
+    // ---- 设置页要把引导渲染出来 ----
+    const settingsForGuide = await req('GET', '/settings');
+    ok('★ 设置页有引导容器', settingsForGuide.text.includes('data-channel-guide'));
+    ok('★ 渠道表单模板里有引导容器',
+      /data-channel-form[\s\S]*data-channel-guide/.test(settingsForGuide.text));
+    const appJsForGuide = await req('GET', '/static/app.js');
+    ok('★ 前端 JS 会渲染渠道引导', appJsForGuide.text.includes('data-channel-guide')
+      && /guide__body/.test(appJsForGuide.text));
+    ok('★ 前端把修正后的配置回填进表单（不然用户以为没生效）',
+      appJsForGuide.text.includes('applyNormalizedConfig'));
+    const cssForGuide = await req('GET', '/static/app.css');
+    ok('★ 引导的样式已定义（步骤圆圈 + 折叠清单）',
+      cssForGuide.text.includes('.guide-steps') && cssForGuide.text.includes('.guide-details'));
+
+    // 用一个必然失败的地址测试「测试发送」错误处理
+    const badTest = await req('POST', '/api/channels/test', {
+      json: { type: 'bark', config: { key: 'testkey', server: `http://127.0.0.1:${closedPort}` } },
+    });
+    ok('★ 连不上时返回可读的中文错误',
+      badTest.status === 400 && /失败|超时|网络|连不上/.test(badTest.json?.error || ''),
+      `状态码 ${badTest.status}：${badTest.json?.error}`);
+    ok('★ 连接被拒时说明是服务器地址/端口的问题',
+      /服务器地址|端口|连不上/.test(badTest.json?.error || ''),
+      `${badTest.json?.error}`);
+    ok('★ 连接被拒时不会把 ECONNREFUSED / fetch failed 直接甩给用户',
+      !/ECONNREFUSED|fetch failed|POST \//i.test(badTest.json?.error || ''),
+      `${badTest.json?.error}`);
+
+    // 端口写成 fetch 规范里的禁用端口时，是另一种错，提示也要说人话
+    const badPort = await req('POST', '/api/channels/test', {
+      json: { type: 'bark', config: { key: 'testkey', server: 'http://127.0.0.1:1' } },
+    });
+    ok('★ 端口不合法时提示地址有问题',
+      badPort.status === 400 && /服务器地址不合法/.test(badPort.json?.error || ''),
+      `${badPort.json?.error}`);
+
+    const missingKey = await req('POST', '/api/channels/test', {
+      json: { type: 'bark', config: {} },
+    });
+    ok('缺少必填配置时给出明确提示',
+      missingKey.status === 400 && (missingKey.json?.error || '').includes('缺少'),
+      `${missingKey.json?.error}`);
+
+    const channelList = await req('GET', '/api/channels');
+    ok('渠道列表可访问（测试渠道已清理）', channelList.status === 200
+      && channelList.json?.channels?.length === 0,
+      `剩余 ${channelList.json?.channels?.length} 个`);
+
+    // --------------------------------------------------------
+    section('6. 日历导出与订阅');
+
+    const ics = await req('GET', '/calendar/download.ics');
+    ok('日历下载可访问', ics.status === 200, `状态码 ${ics.status}`);
+    ok('返回正确的 MIME 类型',
+      (ics.headers.get('content-type') || '').includes('text/calendar'),
+      ics.headers.get('content-type') || '');
+    ok('ICS 结构完整', ics.text.startsWith('BEGIN:VCALENDAR') && ics.text.includes('END:VCALENDAR'));
+    ok('ICS 包含课程事件', ics.text.includes('SUMMARY:高等数学(上)'));
+    ok('ICS 包含重复规则', ics.text.includes('RRULE:FREQ=WEEKLY'));
+    ok('ICS 包含作业事件', ics.text.includes('【作业】'));
+    ok('ICS 包含提醒闹钟', ics.text.includes('BEGIN:VALARM'));
+    ok('ICS 使用 CRLF 行尾', ics.text.includes('\r\n'));
+
+    const calendarPreview = await req('GET', '/api/calendar/preview');
+    ok('日历预览接口可用', calendarPreview.status === 200
+      && (calendarPreview.json?.eventCount || 0) > 0,
+      `事件数 ${calendarPreview.json?.eventCount}`);
+
+    const settingsPage = await req('GET', '/settings');
+    ok('设置页可访问', settingsPage.status === 200);
+    const subscribeMatch = /webcal:\/\/[^"'\s]+token=([A-Za-z0-9._-]+)/.exec(settingsPage.text);
+    ok('设置页给出订阅链接', Boolean(subscribeMatch), '未找到 webcal 链接');
+
+    if (subscribeMatch) {
+      const sub = await req('GET', `/calendar/subscribe.ics?token=${subscribeMatch[1]}`);
+      ok('用订阅令牌可以匿名拉取日历', sub.status === 200
+        && sub.text.includes('BEGIN:VCALENDAR'), `状态码 ${sub.status}`);
+
+      const badToken = await req('GET', '/calendar/subscribe.ics?token=forged.token.value');
+      ok('伪造的订阅令牌被拒绝', badToken.status === 403, `状态码 ${badToken.status}`);
+    }
+
+    // --------------------------------------------------------
+    section('7. 课表导入（CSV 与 ICS）');
+
+    const csvImport = await req('POST', '/api/import/csv', { json: { text: TEST_CSV } });
+    ok('CSV 解析成功', csvImport.status === 200, `状态码 ${csvImport.status}`);
+    const csvCourses = csvImport.json?.parsed?.courses || [];
+    ok('CSV 识别出 2 门课程', csvCourses.length === 2, `实际 ${csvCourses.length}`);
+    const mathCourse = csvCourses.find((c) => c.name === '高等数学(上)');
+    ok('CSV 合并了同一门课的多个时间段', mathCourse?.sessions?.length === 2,
+      `实际 ${mathCourse?.sessions?.length}`);
+    const econCourse = csvCourses.find((c) => c.name === '微观经济学');
+    ok('CSV 正确解析单周', econCourse?.sessions?.[0]?.weeks === '1-16单',
+      `实际 ${econCourse?.sessions?.[0]?.weeks}`);
+    ok('CSV 解析出教师与学分',
+      mathCourse?.teacher === '张三' && mathCourse?.credits === 5,
+      `教师 ${mathCourse?.teacher}，学分 ${mathCourse?.credits}`);
+    ok('CSV 解析出教室', mathCourse?.classroom === '之远楼301', `实际 ${mathCourse?.classroom}`);
+
+    const icsImport = await req('POST', '/api/import/ics', { json: { text: TEST_ICS } });
+    ok('ICS 解析成功', icsImport.status === 200, `状态码 ${icsImport.status}`);
+    const icsCourses = icsImport.json?.parsed?.courses || [];
+    ok('ICS 识别出 2 门课程', icsCourses.length === 2, `实际 ${icsCourses.length}`);
+    const accounting = icsCourses.find((c) => c.name === '会计学原理');
+    ok('ICS 还原出周次', accounting?.sessions?.[0]?.weeks === '1-16',
+      `实际 ${accounting?.sessions?.[0]?.weeks}`);
+    ok('ICS 还原出上课时间', accounting?.sessions?.[0]?.startTime === '08:00',
+      `实际 ${accounting?.sessions?.[0]?.startTime}`);
+    ok('ICS 从描述里抽出了教师', accounting?.teacher === '王五', `实际 ${accounting?.teacher}`);
+    ok('ICS 从描述里抽出了学分', accounting?.credits === 4, `实际 ${accounting?.credits}`);
+
+    // ---- 教室 / 教师 分离（核心回归）----
+    // 教务系统把两者塞在同一个字段里（`校本部之远楼401 王五`）。
+    // 旧实现把整串当成教室，教师字段永远为空，这是真实踩过的坑。
+    ok('ICS 教室字段是干净的教室名',
+      accounting?.classroom === '校本部之远楼401',
+      `实际 ${JSON.stringify(accounting?.classroom)}`);
+    ok('ICS 教室字段里没有混进教师名',
+      !(accounting?.classroom || '').includes('王五'),
+      `教室=${accounting?.classroom}`);
+    ok('ICS 时间段上的教室也是干净的',
+      accounting?.sessions?.[0]?.location === '校本部之远楼401',
+      `实际 ${JSON.stringify(accounting?.sessions?.[0]?.location)}`);
+    ok('ICS 时间段上带上了教师',
+      accounting?.sessions?.[0]?.teacher === '王五',
+      `实际 ${accounting?.sessions?.[0]?.teacher}`);
+    ok('ICS 保留了教务系统原话的节次',
+      accounting?.sessions?.[0]?.periodLabel === '第 1-2 节',
+      `实际 ${accounting?.sessions?.[0]?.periodLabel}`);
+
+    const stats2 = icsCourses.find((c) => c.name === '统计学');
+    ok('第二门课的教室教师也拆对了',
+      stats2?.classroom === '校本部笃行楼108' && stats2?.teacher === '赵六',
+      `教室=${stats2?.classroom} 教师=${stats2?.teacher}`);
+
+    // ---- 学分 / 学时：三个不同位置都要能认出来 ----
+    ok('① 描述里的学分被识别', accounting?.credits === 4, `实际 ${accounting?.credits}`);
+    ok('② 课程名里的学分被识别', stats2?.credits === 3, `实际 ${stats2?.credits}`);
+    ok('② 课程名里的「(3学分)」没有残留在名字里',
+      stats2?.name === '统计学', `实际「${stats2?.name}」`);
+    ok('③ 自定义属性里的学时被识别', stats2?.hours === 48, `实际 ${stats2?.hours}`);
+    ok('没有学分信息时不瞎猜（会计学原理没写学时）',
+      accounting?.hours === null, `实际 ${accounting?.hours}`);
+
+    // 「学分：4」里带数字，不能被当成门牌号
+    ok('元信息行（学分：4）没有被当成教室',
+      !(accounting?.classroom || '').includes('学分'),
+      `教室=${accounting?.classroom}`);
+    ok('备注里不再重复教室和教师',
+      accounting?.note === '第 1-2 节',
+      `实际 ${JSON.stringify(accounting?.note)}`);
+    ok('ICS 推断出学期起始日', Boolean(icsImport.json?.parsed?.termStart),
+      icsImport.json?.parsed?.termStart);
+
+    // 确认导入（走表单提交这条路径）
+    const confirmBody = multipart({
+      payload: JSON.stringify(icsImport.json.parsed),
+      source: 'ics',
+      termId: 'new',
+      termStart: icsImport.json.parsed.termStart,
+      onConflict: 'skip',
+    }, null);
+
+    const confirm = await req('POST', '/import', {
+      body: confirmBody.body,
+      headers: { 'Content-Type': confirmBody.contentType },
+    });
+    ok('确认导入成功', confirm.status === 200, `状态码 ${confirm.status}`);
+    ok('导入结果页显示新建数量', confirm.text.includes('导入完成'));
+
+    const afterImport = await req('GET', '/api/courses');
+    const names = (afterImport.json?.courses || []).map((c) => c.name);
+    ok('导入的课程已入库', names.includes('会计学原理') && names.includes('统计学'),
+      names.join('、'));
+    ok('原有课程未受影响', names.includes('高等数学(上)'));
+
+    // 重复导入应该被跳过
+    const confirmAgain = multipart({
+      payload: JSON.stringify(icsImport.json.parsed),
+      source: 'ics',
+      termId: 'new',
+      onConflict: 'skip',
+    }, null);
+    const again = await req('POST', '/import', {
+      body: confirmAgain.body,
+      headers: { 'Content-Type': confirmAgain.contentType },
+    });
+    ok('重复导入被跳过而非重复创建', again.status === 200 && again.text.includes('跳过 2 门'),
+      again.text.match(/跳过 \d+ 门/)?.[0] || '未找到跳过计数');
+
+    // --------------------------------------------------------
+    // 合并导入：把空着的学分/学时补上
+    //
+    // 这是用户真实反馈过的场景：「重新上传 ICS、选合并周次，学分还是空的」。
+    // 所以必须有一条测试把这条路走通——先建一门没学分的课，
+    // 再用带学分的 ICS 以「合并」方式导入，验证学分被补上。
+    // --------------------------------------------------------
+
+    const probeCourse = await req('POST', '/api/courses', {
+      json: { name: '财务管理', teacher: '', credits: null },
+    });
+    ok('新建一门没有学分的课程', probeCourse.status === 201, `状态码 ${probeCourse.status}`);
+    const probeId = probeCourse.json?.course?.id;
+    ok('新课程的学分确实是空的',
+      probeCourse.json?.course?.credits === null,
+      `实际 ${probeCourse.json?.course?.credits}`);
+
+    const MERGE_ICS = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'BEGIN:VEVENT',
+      'UID:merge-1@jwc',
+      'SUMMARY:财务管理',
+      'DTSTART;TZID=Asia/Shanghai:20250905T080000',
+      'DTEND;TZID=Asia/Shanghai:20250905T093500',
+      'LOCATION:校本部之远楼220 钱七',
+      'DESCRIPTION:第1 - 2节\\n校本部之远楼220\\n钱七',
+      'X-CREDITS:2',
+      'X-HOURS:32',
+      'RRULE:FREQ=WEEKLY;BYDAY=FR;COUNT=16',
+      'END:VEVENT',
+      'END:VCALENDAR',
+    ].join('\r\n');
+
+    const mergeParse = await req('POST', '/api/import/ics', { json: { text: MERGE_ICS } });
+    ok('合并用的 ICS 解析出学分 2',
+      mergeParse.json?.parsed?.courses?.[0]?.credits === 2,
+      `实际 ${mergeParse.json?.parsed?.courses?.[0]?.credits}`);
+    ok('合并用的 ICS 解析出教师与教室',
+      mergeParse.json?.parsed?.courses?.[0]?.teacher === '钱七'
+      && mergeParse.json?.parsed?.courses?.[0]?.classroom === '校本部之远楼220',
+      `教师=${mergeParse.json?.parsed?.courses?.[0]?.teacher} 教室=${mergeParse.json?.parsed?.courses?.[0]?.classroom}`);
+
+    const activeTermId = (await req('GET', '/api/terms')).json?.terms
+      ?.find((t) => Number(t.is_active) === 1)?.id;
+
+    const mergeForm = multipart({
+      payload: JSON.stringify(mergeParse.json.parsed),
+      source: 'ics',
+      termId: String(activeTermId),
+      onConflict: 'merge',
+    }, null);
+
+    const mergeRes = await req('POST', '/import', {
+      body: mergeForm.body,
+      headers: { 'Content-Type': mergeForm.contentType },
+    });
+    ok('合并导入执行成功', mergeRes.status === 200, `状态码 ${mergeRes.status}`);
+    ok('结果显示「合并 1 门」', /合并 1 门/.test(mergeRes.text),
+      mergeRes.text.match(/新建 \d+ 门[^<]*/)?.[0] || '未找到统计行');
+
+    const afterMerge = await req('GET', `/api/courses/${probeId}`);
+    ok('★ 合并后空着的学分被补上了',
+      afterMerge.json?.course?.credits === 2,
+      `实际 ${afterMerge.json?.course?.credits}`);
+    ok('★ 合并后空着的学时也被补上了',
+      afterMerge.json?.course?.hours === 32,
+      `实际 ${afterMerge.json?.course?.hours}`);
+    ok('合并也补上了空的教师与教室',
+      afterMerge.json?.course?.teacher === '钱七'
+      && afterMerge.json?.course?.classroom === '校本部之远楼220',
+      `教师=${afterMerge.json?.course?.teacher} 教室=${afterMerge.json?.course?.classroom}`);
+    ok('合并后新增了上课时间',
+      (afterMerge.json?.course?.sessions || []).length === 1,
+      `实际 ${(afterMerge.json?.course?.sessions || []).length} 条`);
+
+    // 已有学分不能被覆盖
+    const mergeAgain = multipart({
+      payload: JSON.stringify(mergeParse.json.parsed),
+      source: 'ics',
+      termId: String(activeTermId),
+      onConflict: 'merge',
+    }, null);
+    await req('POST', '/import', {
+      body: mergeAgain.body,
+      headers: { 'Content-Type': mergeAgain.contentType },
+    });
+    const afterMerge2 = await req('GET', `/api/courses/${probeId}`);
+    ok('已经填过的学分不会被重复导入覆盖',
+      afterMerge2.json?.course?.credits === 2,
+      `实际 ${afterMerge2.json?.course?.credits}`);
+    ok('重复的合并不会重复添加时间段',
+      (afterMerge2.json?.course?.sessions || []).length === 1,
+      `实际 ${(afterMerge2.json?.course?.sessions || []).length} 条`);
+
+    // --------------------------------------------------------
+    // 回归测试：走一遍「浏览器真实会发出来的请求」
+    //
+    // 之前这里有过一个很难发现的 bug：三个导入表单都漏写了 method="post"。
+    // HTML 表单默认是 GET，而 GET 请求**根本不会提交文件输入**。
+    // 用户看到的现象是「选好文件点导入 → 页面闪一下 → 文件没了 → 也没报错」。
+    //
+    // 当时的测试之所以没抓到，是因为它直接 POST 到 /import，绕过了 HTML 表单本身。
+    // 下面这些断言就是专门堵这个窟窿的。
+    // --------------------------------------------------------
+
+    const importPageRes = await req('GET', '/import');
+
+    /** 把 HTML 里的表单调出来，方便检查属性 */
+    const parseForms = (html) => {
+      const out = [];
+      const re = /<form\b([^>]*)>([\s\S]*?)<\/form>/gi;
+      let m = re.exec(html);
+      while (m !== null) {
+        out.push({ attrs: m[1], inner: m[2] });
+        m = re.exec(html);
+      }
+      return out;
+    };
+
+    const importForms = parseForms(importPageRes.text);
+    ok('导入页渲染出了 3 个表单（2 个导入 + 1 个退出登录）',
+      importForms.length === 3, `实际 ${importForms.length} 个`);
+
+    // 排除侧边栏的退出登录表单，它指向 /logout，不属于导入流程
+    const uploadForms = importForms.filter((f) => !/action\s*=\s*"\/logout"/i.test(f.attrs));
+    ok('页面主体里有 2 个导入表单', uploadForms.length === 2, `实际 ${uploadForms.length} 个`);
+
+    const fileForms = uploadForms.filter((f) => /type="file"/.test(f.inner));
+    ok('两个导入表单都含文件上传框', fileForms.length === 2, `实际 ${fileForms.length} 个`);
+
+    for (let i = 0; i < fileForms.length; i += 1) {
+      ok(`含文件上传的表单 #${i + 1} 用 POST 提交`,
+        /method\s*=\s*"post"/i.test(fileForms[i].attrs), fileForms[i].attrs.trim());
+    }
+
+    const nonPostForms = uploadForms.filter((f) => !/method\s*=\s*"post"/i.test(f.attrs));
+    ok('导入页所有表单都是 POST（GET 会丢数据）',
+      nonPostForms.length === 0,
+      nonPostForms.map((f) => f.attrs.trim()).join(' | '));
+    ok('导入表单都指向 /import',
+      uploadForms.every((f) => /action\s*=\s*"\/import"/i.test(f.attrs)),
+      uploadForms.map((f) => f.attrs.trim()).join(' | '));
+
+    // ---- 按浏览器的方式真实提交一遍 ICS 文件 ----
+    const icsUpload = multipart({ termId: '', onConflict: 'skip' }, {
+      field: 'file',
+      filename: '教务课表.ics',
+      data: Buffer.from(TEST_ICS, 'utf8'),
+      mime: 'text/calendar',
+    });
+
+    const icsViaForm = await req('POST', '/import', {
+      body: icsUpload.body,
+      headers: { 'Content-Type': icsUpload.contentType },
+    });
+    ok('通过表单上传 ICS 能进入预览页',
+      icsViaForm.status === 200 && icsViaForm.text.includes('解析成功'),
+      `状态码 ${icsViaForm.status}`);
+    ok('预览页列出了 ICS 里的课程', icsViaForm.text.includes('会计学原理'));
+    ok('预览页显示出待导入的上课时间', icsViaForm.text.includes('周一'));
+    ok('预览页有确认导入按钮', icsViaForm.text.includes('确认导入'));
+
+    // ---- 粘贴文本 + 空文件输入框 ----
+    // 浏览器对「没选文件」的输入框会发一个 filename="" 的空部分，
+    // 它不能盖掉真正有值的 text 字段（这正是修过的第二个 bug）
+    const pasteUpload = multipart({ text: TEST_CSV, termId: '', onConflict: 'skip' }, {
+      field: 'file',
+      filename: '',
+      data: Buffer.alloc(0),
+      mime: 'application/octet-stream',
+    });
+
+    const pasteViaForm = await req('POST', '/import', {
+      body: pasteUpload.body,
+      headers: { 'Content-Type': pasteUpload.contentType },
+    });
+    ok('粘贴文本 + 空文件框时仍能解析（空文件不覆盖文本）',
+      pasteViaForm.status === 200 && pasteViaForm.text.includes('解析成功'),
+      pasteViaForm.text.match(/<strong>([^<]{0,60})<\/strong>/)?.[1] || '未进入预览页');
+    ok('粘贴的 CSV 被解析出课程', pasteViaForm.text.includes('高等数学'));
+
+    // ---- 什么都没填时应该给出明确提示，而不是空白页 ----
+    const emptyUpload = multipart({ termId: '', onConflict: 'skip' }, {
+      field: 'file', filename: '', data: Buffer.alloc(0),
+    });
+    const emptyRes = await req('POST', '/import', {
+      body: emptyUpload.body,
+      headers: { 'Content-Type': emptyUpload.contentType },
+    });
+    ok('什么都没填时给出中文提示而不是空白页',
+      emptyRes.status === 200 && /没有收到文件或表格内容/.test(emptyRes.text),
+      `状态码 ${emptyRes.status}`);
+
+    // --------------------------------------------------------
+    section('8. 设置与调度');
+
+    const saveSettings = await req('POST', '/api/settings', {
+      json: { default_remind_offsets: '2880,60', daily_digest_enabled: '1', daily_digest_time: '07:00' },
+    });
+    ok('保存设置成功', saveSettings.status === 200, `状态码 ${saveSettings.status}`);
+    ok('设置已生效', saveSettings.json?.settings?.default_remind_offsets === '2880,60');
+
+    const badSetting = await req('POST', '/api/settings', {
+      json: { default_remind_offsets: 'abc' },
+    });
+    ok('非法设置值被拒绝', badSetting.status === 400, `状态码 ${badSetting.status}`);
+
+    const termsRes = await req('POST', '/api/terms', {
+      json: { name: '2026-2027学年第一学期', startDate: '2026-09-07', weekCount: 18, isActive: false },
+    });
+    ok('新增学期成功', termsRes.status === 201, `状态码 ${termsRes.status}`);
+
+    const schedulerRun = await req('POST', '/api/scheduler/run');
+    ok('手动触发调度器成功', schedulerRun.status === 200, `状态码 ${schedulerRun.status}`);
+    ok('调度器返回处理结果', schedulerRun.json?.result !== undefined);
+    ok('没有渠道时提醒会记为失败而不是崩溃',
+      schedulerRun.json?.result?.reminders?.failed >= 0);
+
+    const logsPage = await req('GET', '/settings');
+    ok('设置页显示发送日志', logsPage.text.includes('发送记录') || logsPage.text.includes('还没有任何发送记录'));
+    ok('设置页显示调度器状态', logsPage.text.includes('调度器'));
+    ok('设置页显示 Office 转换状态', logsPage.text.includes('Office 转 PDF'));
+    ok('设置页显示数据目录', logsPage.text.includes('data'));
+
+    // --------------------------------------------------------
+    section('9. 安全与边界');
+
+    const badPassword = await req('POST', '/api/password', {
+      json: { currentPassword: 'wrong-password', newPassword: 'newpass123' },
+    });
+    ok('错误的当前密码被拒绝', badPassword.status === 400, `状态码 ${badPassword.status}`);
+
+    const shortPassword = await req('POST', '/api/password', {
+      json: { currentPassword: 'test123456', newPassword: '123' },
+    });
+    ok('过短的新密码被拒绝', shortPassword.status === 400, `状态码 ${shortPassword.status}`);
+
+    const traversal = await req('GET', '/static/../../../package.json');
+    ok('静态资源路径穿越被阻止', traversal.status === 404 || traversal.status === 403,
+      `状态码 ${traversal.status}`);
+
+    const noSuchApi = await req('GET', '/api/does-not-exist');
+    ok('不存在的接口返回 JSON 404', noSuchApi.status === 404 && noSuchApi.json?.error,
+      `状态码 ${noSuchApi.status}`);
+
+    const noSuchPage = await req('GET', '/no-such-page');
+    ok('不存在的页面返回 404 页面', noSuchPage.status === 404, `状态码 ${noSuchPage.status}`);
+
+    const wrongMethod = await req('PUT', '/api/password');
+    ok('错误的方法返回 405', wrongMethod.status === 405, `状态码 ${wrongMethod.status}`);
+
+    const openPath = await req('POST', '/api/open-path', { json: { path: 'C:\\Windows' } });
+    ok('open-path 只允许数据目录', openPath.status === 400, `状态码 ${openPath.status}`);
+
+    // 登出后 API 不可用
+    const logout = await req('POST', '/logout');
+    ok('登出成功', logout.status === 302);
+    const afterLogout = await req('GET', '/api/courses');
+    ok('登出后 API 返回未授权', afterLogout.status === 401, `状态码 ${afterLogout.status}`);
+
+    // 重新登录
+    const relogin = await req('POST', '/login', {
+      form: { username: '测试同学', password: 'test123456' },
+    });
+    ok('重新登录成功', relogin.status === 302, `状态码 ${relogin.status}`);
+    const afterRelogin = await req('GET', '/api/courses');
+    ok('重新登录后数据仍在', (afterRelogin.json?.courses || []).length >= 3,
+      `${afterRelogin.json?.courses?.length} 门课`);
+
+    // --------------------------------------------------------
+    section('10. 全部页面可访问');
+
+    const pages = [
+      ['/', '总览'],
+      ['/timetable', '课程表'],
+      ['/courses', '课程'],
+      [`/courses/${courseId}`, '课程详情'],
+      ['/assignments', '作业'],
+      ['/materials', '资料库'],
+      [`/materials/${materialId}`, '预览'],
+      ['/settings', '设置'],
+      ['/import', '导入'],
+      ['/calendar', '日历'],
+    ];
+
+    for (const [url, name] of pages) {
+      const res = await req('GET', url);
+      const hasError = /出错了（\d+）/.test(res.text);
+      ok(`${name}页 (${url})`, res.status === 200 && !hasError,
+        `状态码 ${res.status}${hasError ? '，页面渲染出错' : ''}`);
+    }
+
+    // 静态资源
+    for (const asset of ['/static/app.css', '/static/app.js', '/static/manifest.webmanifest', '/static/favicon.svg', '/static/icon-192.png']) {
+      const res = await req('GET', asset);
+      ok(`静态资源 ${asset}`, res.status === 200, `状态码 ${res.status}`);
+    }
+
+    // --------------------------------------------------------
+    // 静态资源的类型要对
+    //
+    // 这一条是被「清单文件被当成 application/octet-stream 发出去」坑出来的：
+    // 状态码是 200，页面也能打开，看起来一切正常，
+    // 但浏览器认不出这是网页应用清单，手机上「添加到主屏幕」
+    // 就拿不到名字和图标 —— 一个只在真机上才暴露的问题。
+    // --------------------------------------------------------
+    {
+      const manifest = await req('GET', '/static/manifest.webmanifest');
+      ok('★ 清单文件用 application/manifest+json 发出去',
+        /application\/manifest\+json/.test(manifest.headers.get('content-type') || ''),
+        `实际是 ${manifest.headers.get('content-type')}`);
+
+      for (const [asset, want] of [
+        ['/static/app.css', /text\/css/],
+        ['/static/app.js', /javascript/],
+        ['/static/favicon.svg', /image\/svg\+xml/],
+        ['/static/icon-192.png', /image\/png/],
+      ]) {
+        const res = await req('GET', asset);
+        const type = res.headers.get('content-type') || '';
+        ok(`★ ${asset} 的类型正确`, want.test(type), `实际是 ${type}`);
+      }
+    }
+
+    // --------------------------------------------------------
+    // 静态资源版本号
+    //
+    // 加这个是因为反复踩过同一个坑：改了 app.js 之后，
+    // 页面上新按钮出来了，但点了没反应——因为浏览器还在用缓存的旧 JS。
+    // 所以给资源 URL 拼上「由文件推导的版本号」，文件一改 URL 就变。
+    // --------------------------------------------------------
+    const homeRes = await req('GET', '/');
+    const jsMatch = /<script[^>]*src="(\/static\/app\.js\?v=([^"]+))"/.exec(homeRes.text);
+    const cssMatch = /<link[^>]*href="(\/static\/app\.css\?v=([^"]+))"/.exec(homeRes.text);
+
+    ok('页面里的 app.js 带版本号', Boolean(jsMatch), '没找到带 ?v= 的 script 标签');
+    ok('页面里的 app.css 带版本号', Boolean(cssMatch), '没找到带 ?v= 的 link 标签');
+    ok('body 上标了资源版本号（方便排查缓存问题）',
+      /<body data-asset-version="[^"]+"/.test(homeRes.text));
+
+    if (jsMatch) {
+      // 版本号必须由静态文件本身推导（大小 + 修改时间），
+      // 这样文件一改 URL 就变，浏览器不可能一直用旧缓存。
+      const jsStat = fs.statSync(path.join(ROOT, 'src/web/public/app.js'));
+      const cssStat = fs.statSync(path.join(ROOT, 'src/web/public/app.css'));
+      const expected = `${jsStat.size.toString(36)}${Math.floor(jsStat.mtimeMs).toString(36)}`
+        + `-${cssStat.size.toString(36)}${Math.floor(cssStat.mtimeMs).toString(36)}`;
+
+      ok('★ 版本号确实由静态文件推导（文件一改就会变）',
+        jsMatch[2] === expected, `页面=${jsMatch[2]} 期望=${expected}`);
+
+      // --------------------------------------------------------
+      // 版本号必须在「服务器一直开着」的情况下也跟着变
+      //
+      // 这条是被真事坑出来的：版本号原本被缓存成模块级变量，
+      // 只在进程启动时算一次。于是服务器不重启时改了 app.css，
+      // 版本号纹丝不动，而 CSS 的响应头是 immutable（一年），
+      // 浏览器压根不会重新下载 —— 症状是「改了样式，刷新多少次都没变化」
+      // 而且不报任何错。
+      //
+      // 上面那条断言抓不到它：那条是在服务器刚启动、文件还没被改过的时候比的。
+      // --------------------------------------------------------
+      {
+        const cssFile = path.join(ROOT, 'src/web/public/app.css');
+        const before = fs.statSync(cssFile);
+
+        const page1 = await req('GET', '/');
+        const v1 = /app\.css\?v=([^"]+)/.exec(page1.text)?.[1];
+
+        // 只动修改时间、不动文件内容：万一中途抛错，样式表本身也是完好的
+        const bumped = new Date(before.mtimeMs + 60000);
+        fs.utimesSync(cssFile, bumped, bumped);
+        let v2;
+        try {
+          const page2 = await req('GET', '/');
+          v2 = /app\.css\?v=([^"]+)/.exec(page2.text)?.[1];
+        } finally {
+          fs.utimesSync(cssFile, before.atime, before.mtime);
+        }
+
+        ok('★ 服务器不重启时，静态文件一变版本号也要跟着变',
+          Boolean(v1) && Boolean(v2) && v1 !== v2, `${v1} → ${v2}`);
+
+        // 恢复之后必须回到原值，否则后面的用例会拿一个飘忽的版本号
+        const page3 = await req('GET', '/');
+        const v3 = /app\.css\?v=([^"]+)/.exec(page3.text)?.[1];
+        ok('★ 修改时间恢复后版本号也回到原值',
+          v3 === v1, `${v3} 应该等于 ${v1}`);
+      }
+
+      const versionedJs = await req('GET', jsMatch[1]);
+      ok('带版本号的 JS 能正常取到',
+        versionedJs.status === 200 && versionedJs.text.includes('openBatchCreditsForm'),
+        `状态码 ${versionedJs.status}`);
+      ok('带版本号的资源使用长期缓存（immutable）',
+        /immutable/.test(versionedJs.headers.get('cache-control') || ''),
+        versionedJs.headers.get('cache-control') || '(空)');
+      ok('带版本号时即便浏览器发了 If-None-Match 也能正确返回',
+        versionedJs.headers.get('etag') !== null);
+    }
+
+    const plainJs = await req('GET', '/static/app.js');
+    ok('不带版本号的资源仍然要求每次重新验证',
+      /no-cache/.test(plainJs.headers.get('cache-control') || ''),
+      plainJs.headers.get('cache-control') || '(空)');
+
+    // 带版本号的地址照样要防路径穿越
+    const traversalVersioned = await req('GET', '/static/../../../package.json?v=1');
+    ok('带版本号的路径穿越同样被阻止',
+      traversalVersioned.status === 404 || traversalVersioned.status === 403,
+      `状态码 ${traversalVersioned.status}`);
+
+    // --------------------------------------------------------
+    // 客户端 JS 静态自查
+    //
+    // 真实踩过的坑：app.js 的模板字符串里用了 ${icon(...)}，
+    // 但 icon() 只定义在服务端的 layout.js 里。
+    // 结果一点按钮就抛 ReferenceError，弹窗根本打不开——
+    // 现象是「点了完全没反应」。语法检查、接口测试、页面渲染测试
+    // 全都发现不了，因为只有真正点下去才会执行到那一行。
+    //
+    // 这里做一次静态扫描：模板里调用的每个函数，必须在 app.js 里有定义。
+    // --------------------------------------------------------
+    const appSrc = (await req('GET', '/static/app.js')).text;
+
+    const BUILTIN_GLOBALS = new Set([
+      'Number', 'String', 'Boolean', 'Array', 'Object', 'Math', 'JSON', 'Date',
+      'Map', 'Set', 'WeakMap', 'Promise', 'Error', 'RegExp', 'Symbol', 'BigInt',
+      'FormData', 'URL', 'URLSearchParams', 'Intl', 'fetch', 'parseInt', 'parseFloat',
+      'isNaN', 'encodeURIComponent', 'decodeURIComponent', 'setTimeout', 'setInterval',
+      'clearTimeout', 'clearInterval', 'requestAnimationFrame', 'structuredClone',
+    ]);
+
+    const calledInTemplates = new Set();
+    for (const m of appSrc.matchAll(/\$\{([A-Za-z_$][\w$]*)\s*\(/g)) {
+      calledInTemplates.add(m[1]);
+    }
+
+    const isDefinedInClient = (name) => [
+      new RegExp(`function\\s+${name}\\b`),
+      new RegExp(`(const|let|var)\\s+${name}\\s*=`),
+      new RegExp(`class\\s+${name}\\b`),
+    ].some((re) => re.test(appSrc));
+
+    const undefinedCalls = [...calledInTemplates]
+      .filter((n) => !BUILTIN_GLOBALS.has(n) && !isDefinedInClient(n));
+
+    ok(`★ 客户端模板里调用的函数都有定义（扫了 ${calledInTemplates.size} 个）`,
+      undefinedCalls.length === 0,
+      `未定义：${undefinedCalls.join('、')}——这会让按钮点了毫无反应`);
+
+    // ---- 图标数据注入 ----
+    const homeHtml = (await req('GET', '/')).text;
+    const iconJsonMatch = /<script[^>]*id="sg-icon-paths"[^>]*>([\s\S]*?)<\/script>/.exec(homeHtml);
+
+    ok('页面里注入了图标数据（客户端 icon() 依赖它）',
+      Boolean(iconJsonMatch), '没找到 #sg-icon-paths');
+
+    ok('客户端定义了 icon()',
+      /function\s+icon\s*\(/.test(appSrc), 'app.js 里没有 icon()');
+
+    let iconMap = {};
+    if (iconJsonMatch) {
+      try {
+        iconMap = JSON.parse(iconJsonMatch[1]);
+      } catch {
+        iconMap = null;
+      }
+    }
+    ok('图标数据是合法 JSON 且条目充足',
+      iconMap !== null && typeof iconMap === 'object' && Object.keys(iconMap).length > 15,
+      iconMap === null ? '解析失败' : `只有 ${Object.keys(iconMap || {}).length} 个图标`);
+
+    // 客户端用到的图标名必须都存在于注入的数据里，否则会渲染出空白图标
+    if (iconMap) {
+      const usedIcons = new Set();
+      for (const m of appSrc.matchAll(/\bicon\(\s*'([a-zA-Z]+)'/g)) usedIcons.add(m[1]);
+      const missingIcons = [...usedIcons].filter((n) => !iconMap[n]);
+      ok(`★ 客户端用到的图标名都存在（用了 ${usedIcons.size} 个）`,
+        missingIcons.length === 0,
+        `缺少：${missingIcons.join('、') || '（无）'}`);
+    }
+
+    // 服务端渲染的页面里也应该真的有图标（不是空白 svg）
+    ok('服务端渲染出的图标里有实际路径',
+      /<svg class="icon"[^>]*>\s*<path/.test(homeHtml), '页面里的 svg 图标是空的');
+
+    // --------------------------------------------------------
+    section('11. 作息时间表与上课时间编辑');
+
+    // 这一节覆盖两个曾经出问题的地方：
+    //   1. 课程详情页没有「编辑上课时间」的入口（按钮错绑到了课程信息表单）
+    //   2. 「第几节」对应几点是写死在代码里的，学校不一样就没法改
+
+    const defaultPeriods = await req('GET', '/api/periods');
+    ok('作息表接口可访问', defaultPeriods.status === 200, `状态码 ${defaultPeriods.status}`);
+    ok('默认返回 12 节（一节课一行）', (defaultPeriods.json?.periods || []).length === 12,
+      `实际 ${defaultPeriods.json?.periods?.length} 节`);
+    ok('未自定义时 isCustom 为 false', defaultPeriods.json?.isCustom === false);
+    ok('默认第 1 节是 08:00-08:45',
+      defaultPeriods.json?.periods?.[0]?.start === '08:00'
+      && defaultPeriods.json?.periods?.[0]?.end === '08:45'
+      && defaultPeriods.json?.periods?.[0]?.index === 1,
+      JSON.stringify(defaultPeriods.json?.periods?.[0]));
+    ok('每一节都有独立的节次编号',
+      (defaultPeriods.json?.periods || []).every((p, i) => p.index === i + 1),
+      JSON.stringify((defaultPeriods.json?.periods || []).map((p) => p.index)));
+
+    // ---- 课程详情页必须有编辑上课时间的入口 ----
+    const detailPage = await req('GET', `/courses/${courseId}`);
+    ok('课程详情页有「编辑上课时间」入口',
+      detailPage.text.includes(`data-edit-sessions="${courseId}"`),
+      '页面里找不到 data-edit-sessions 按钮');
+    ok('入口文案明确写的是上课时间', detailPage.text.includes('编辑上课时间'));
+    ok('前端 JS 里有该按钮的处理逻辑',
+      (await req('GET', '/static/app.js')).text.includes('data-edit-sessions'));
+
+    // ---- 服务端要拦住非法的上课时间 ----
+    const badTime = await req('PUT', `/api/courses/${courseId}/sessions`, {
+      json: { sessions: [{ weekday: 1, startTime: '10:00', endTime: '08:00', weeks: '1-16' }] },
+    });
+    ok('结束时间早于开始时间被拒绝',
+      badTime.status === 400 && /必须晚于/.test(badTime.json?.error || ''),
+      `状态码 ${badTime.status}：${badTime.json?.error}`);
+
+    const badWeeks = await req('PUT', `/api/courses/${courseId}/sessions`, {
+      json: { sessions: [{ weekday: 1, startTime: '08:00', endTime: '09:40', weeks: 'abc!!' }] },
+    });
+    ok('非法周次被拒绝', badWeeks.status === 400, `状态码 ${badWeeks.status}`);
+
+    // ---- 自定义作息表 ----
+    // 一节课一行，这样才能算对「第 5-7 节」这种任意跨度
+    const customSchedule = [
+      { index: 1, start: '08:30', end: '09:15' },
+      { index: 2, start: '09:20', end: '10:05' },
+      { index: 3, start: '10:25', end: '11:10' },
+      { index: 4, start: '11:15', end: '12:00' },
+    ];
+
+    const savePeriods = await req('POST', '/api/periods', { json: { periods: customSchedule } });
+    ok('保存自定义作息表成功', savePeriods.status === 200, `状态码 ${savePeriods.status}`);
+    ok('返回值标为已自定义', savePeriods.json?.isCustom === true);
+    ok('自定义的时间被正确保存',
+      savePeriods.json?.periods?.[0]?.start === '08:30',
+      JSON.stringify(savePeriods.json?.periods?.[0]));
+
+    const badPeriods = await req('POST', '/api/periods', {
+      json: { periods: [{ index: 1, start: '10:00', end: '09:00' }] },
+    });
+    ok('结束早于开始的节被拒绝并给出中文说明',
+      badPeriods.status === 400 && /格式不正确/.test(badPeriods.json?.error || ''),
+      `状态码 ${badPeriods.status}：${badPeriods.json?.error}`);
+
+    const badTimeFormat = await req('POST', '/api/periods', {
+      json: { periods: [{ index: 1, start: '25:99', end: '09:40' }] },
+    });
+    ok('非法时间格式被拒绝', badTimeFormat.status === 400, `状态码 ${badTimeFormat.status}`);
+
+    const badIndex = await req('POST', '/api/periods', {
+      json: { periods: [{ index: 0, start: '08:00', end: '08:45' }] },
+    });
+    ok('非法节次编号被拒绝', badIndex.status === 400, `状态码 ${badIndex.status}`);
+
+    // ---- 导入时必须用自定义作息表换算「第 3-4 节」 ----
+    const csvWithPeriods = [
+      '课程名称,教师,学分,星期,上课时间,周次,上课地点',
+      '财政学,孙七,3,星期一,第3-4节,1-16,之远楼502',
+    ].join('\n');
+
+    const periodImport = await req('POST', '/api/import/csv', { json: { text: csvWithPeriods } });
+    ok('含「第 3-4 节」的课表能解析', periodImport.status === 200, `状态码 ${periodImport.status}`);
+    const finance = (periodImport.json?.parsed?.courses || []).find((c) => c.name === '财政学');
+    ok('「第 3-4 节」按自定义作息换算成 10:25-12:00',
+      finance?.sessions?.[0]?.startTime === '10:25' && finance?.sessions?.[0]?.endTime === '12:00',
+      `实际 ${finance?.sessions?.[0]?.startTime}-${finance?.sessions?.[0]?.endTime}`);
+
+    // --------------------------------------------------------
+    // 核心场景：一节一行才能算对任意跨度
+    //
+    // 真实课表里既有「第 5-6 节」也有「第 5-7 节」。
+    // 如果作息表按「区段」存（第5-6节一行、第7-8节一行），
+    // 「第 5-7 节」的结束时间就会错误地取到第 7-8 节那一行的末尾。
+    // 下面这组断言就是钉死这个行为的。
+    // --------------------------------------------------------
+    // 注意：这份作息要把本周**所有**课程的时间都覆盖到，
+    // 只要有一门课对不上，整张课表就会退化成整点分行（这是设计上的保守选择）
+    const spanSchedule = [
+      { index: 1, start: '08:00', end: '08:45' },
+      { index: 2, start: '08:50', end: '09:35' },
+      { index: 3, start: '09:55', end: '10:40' },
+      { index: 4, start: '10:45', end: '11:30' },
+      { index: 5, start: '13:00', end: '13:45' },
+      { index: 6, start: '13:50', end: '14:35' },
+      { index: 7, start: '14:40', end: '15:25' },
+      { index: 8, start: '15:30', end: '16:15' },
+    ];
+    await req('POST', '/api/periods', { json: { periods: spanSchedule } });
+
+    const spanCsv = [
+      '课程名称,教师,星期,上课时间,周次,上课地点',
+      '金融市场与金融机构,王五,星期一,第5-7节,1-18,博学楼101',
+      '公司金融,赵六,星期二,第5-6节,1-18,博学楼102',
+    ].join('\n');
+
+    const spanImport = await req('POST', '/api/import/csv', { json: { text: spanCsv } });
+    const spanCourses = spanImport.json?.parsed?.courses || [];
+
+    const s57 = spanCourses.find((c) => c.name === '金融市场与金融机构');
+    ok('「第 5-7 节」→ 13:00-15:25（跨三节，取第5节开始到第7节结束）',
+      s57?.sessions?.[0]?.startTime === '13:00' && s57?.sessions?.[0]?.endTime === '15:25',
+      `实际 ${s57?.sessions?.[0]?.startTime}-${s57?.sessions?.[0]?.endTime}`);
+
+    const s56 = spanCourses.find((c) => c.name === '公司金融');
+    ok('「第 5-6 节」→ 13:00-14:35（跨两节）',
+      s56?.sessions?.[0]?.startTime === '13:00' && s56?.sessions?.[0]?.endTime === '14:35',
+      `实际 ${s56?.sessions?.[0]?.startTime}-${s56?.sessions?.[0]?.endTime}`);
+
+    // 把跨度种到已有课程上，然后看课程表的网格是不是真的跨行
+    await req('PUT', `/api/courses/${courseId}/sessions`, {
+      json: {
+        sessions: [
+          { weekday: 1, startTime: '13:00', endTime: '15:25', weeks: '1-18', location: '博学楼101' },
+          { weekday: 3, startTime: '13:00', endTime: '14:35', weeks: '1-18', location: '博学楼102' },
+        ],
+      },
+    });
+
+    const spanTimetable = await req('GET', '/timetable');
+    ok('课表按节次分行（第5节出现在时间列里）',
+      spanTimetable.text.includes('第5节'), '时间列里没找到「第5节」');
+    ok('跨三节的课在网格里占据 3 行',
+      /grid-row:\d+ \/ span 3/.test(spanTimetable.text),
+      '没找到 span 3 的课程块');
+    ok('跨两节的课在网格里占据 2 行',
+      /grid-row:\d+ \/ span 2/.test(spanTimetable.text),
+      '没找到 span 2 的课程块');
+    ok('课程块上标注了节次范围',
+      spanTimetable.text.includes('第5-7节') && spanTimetable.text.includes('第5-6节'),
+      '课程块上没有节次范围标签');
+
+    // 恢复一份完整作息，避免后面的断言受影响
+    await req('POST', '/api/periods', { json: { periods: null } });
+    await req('PUT', `/api/courses/${courseId}/sessions`, {
+      json: {
+        sessions: [
+          { weekday: 1, startTime: '08:00', endTime: '09:35', weeks: '1-16', location: '之远楼301' },
+          { weekday: 3, startTime: '09:55', endTime: '11:30', weeks: '1-16', location: '之远楼301' },
+        ],
+      },
+    });
+
+    // ---- 恢复默认 ----
+    const resetPeriods = await req('POST', '/api/periods', { json: { periods: null } });
+    ok('可以恢复成默认作息表', resetPeriods.status === 200 && resetPeriods.json?.isCustom === false);
+    ok('恢复后第一组变回 08:00',
+      resetPeriods.json?.periods?.[0]?.start === '08:00',
+      JSON.stringify(resetPeriods.json?.periods?.[0]));
+
+    // 恢复默认之后必须真的回到「未自定义」状态。
+    // 这里曾经有过一个 bug：把默认值当成自定义值写进了数据库，
+    // 于是界面上一直显示「已自定义」，明明已经恢复默认了。
+    const afterResetPeriods = await req('GET', '/api/periods');
+    ok('恢复默认后 isCustom 真的变回 false',
+      afterResetPeriods.json?.isCustom === false,
+      `实际 isCustom=${afterResetPeriods.json?.isCustom}`);
+
+    // 把默认值原样提交一遍，也应该被当成「没自定义」
+    const submitDefault = await req('POST', '/api/periods', {
+      json: { periods: afterResetPeriods.json?.defaults },
+    });
+    ok('提交与默认值相同的内容时 isCustom 仍为 false',
+      submitDefault.json?.isCustom === false,
+      `实际 isCustom=${submitDefault.json?.isCustom}`);
+
+    const afterReset = await req('POST', '/api/import/csv', { json: { text: csvWithPeriods } });
+    const finance2 = (afterReset.json?.parsed?.courses || []).find((c) => c.name === '财政学');
+    // 默认作息是 第3节 09:55-10:40、第4节 10:45-11:30，所以第3-4节 = 09:55-11:30
+    ok('恢复默认后「第 3-4 节」按默认作息换算成 09:55-11:30',
+      finance2?.sessions?.[0]?.startTime === '09:55' && finance2?.sessions?.[0]?.endTime === '11:30',
+      `实际 ${finance2?.sessions?.[0]?.startTime}-${finance2?.sessions?.[0]?.endTime}`);
+
+    // ---- 页面渲染 ----
+    const settingsWithPeriods = await req('GET', '/settings');
+    ok('设置页有作息时间表区块',
+      settingsWithPeriods.text.includes('id="periods"')
+      && settingsWithPeriods.text.includes('作息时间表'));
+    ok('设置页渲染出「一节一行」的编辑行',
+      settingsWithPeriods.text.includes('data-period-rows')
+      && settingsWithPeriods.text.includes('name="p_index"'));
+    ok('设置页每行只有节次 + 开始 + 结束（没有区段的起止两列）',
+      settingsWithPeriods.text.includes('name="p_index"')
+      && !settingsWithPeriods.text.includes('name="p_from"')
+      && !settingsWithPeriods.text.includes('name="p_to"'));
+    ok('设置页有恢复默认按钮', settingsWithPeriods.text.includes('data-reset-periods'));
+    ok('设置页有自动推算下一节的按钮',
+      settingsWithPeriods.text.includes('data-auto-fill-periods'));
+
+    const importPageWithPeriods = await req('GET', '/import');
+    ok('导入页展示当前作息表', importPageWithPeriods.text.includes('当前使用的作息时间表'));
+    ok('导入页提示用的是默认值',
+      importPageWithPeriods.text.includes('内置默认值'),
+      '未自定义时应该提示用的是默认值');
+
+    // 自定义之后，导入页不再说「用的是默认值」
+    await req('POST', '/api/periods', { json: { periods: customSchedule } });
+    const importPageCustom = await req('GET', '/import');
+    ok('自定义后导入页改口说「你自己设置的」',
+      importPageCustom.text.includes('这是<strong>你自己设置的</strong>作息表'));
+    await req('POST', '/api/periods', { json: { periods: null } });
+
+    // ---- 课程表的时间轴 ----
+    // 前面把高等数学设成了周一 08:00-09:35、周三 09:55-11:30，
+    // 正好落在默认作息表的 第1-2 节 和 第3-4 节 里，所以应该按节次分行。
+    const ttDefault = await req('GET', '/timetable');
+    ok('课表按节次分行', ttDefault.text.includes('第1节') && ttDefault.text.includes('第3节'),
+      '页面上没找到「第1节」「第3节」行标签');
+    ok('课表左上角标注为「节次」',
+      ttDefault.text.includes('week-grid__corner') && ttDefault.text.includes('>节次</div>'),
+      '左上角标签不对');
+    ok('节次行下面补了开始时间',
+      ttDefault.text.includes('week-grid__timerange'));
+    ok('时间对齐时，两节连上的课在网格里占 2 行',
+      /grid-row:\d+ \/ span 2/.test(ttDefault.text),
+      '没找到 span 2 的课程块');
+    ok('课程时间对得上时不显示退回提示',
+      !ttDefault.text.includes('时间轴用的是整点'));
+
+    // 把作息表改成对不上的时间，应该自动退回整点分行并给出提示
+    await req('POST', '/api/periods', {
+      json: { periods: [{ index: 1, start: '08:30', end: '09:15' }] },
+    });
+
+    const ttMismatch = await req('GET', '/timetable');
+    ok('作息表对不上时退回整点分行',
+      ttMismatch.text.includes('时间轴用的是整点'),
+      '应该给出退回提示');
+    ok('退回后左上角标注改成「时间」',
+      ttMismatch.text.includes('>时间</div>'),
+      '左上角标签没跟着变');
+    ok('退回后课程仍然显示出来（不能凭空消失）',
+      ttMismatch.text.includes('高等数学'),
+      '退回整点分行后课程不见了');
+
+    await req('POST', '/api/periods', { json: { periods: null } });
+
+    // --------------------------------------------------------
+    // 学期编辑
+    //
+    // 之前这里也有过一次和「上课时间」一模一样的疏漏：
+    // PATCH /api/terms/:id 接口和 updateTerm 都有，
+    // 但设置页的学期列表里只有「设为当前」和「删除」，没有「编辑」，
+    // 于是「第一周周一」填错了根本改不了。
+    // --------------------------------------------------------
+
+    const termsList = await req('GET', '/api/terms');
+    ok('学期列表接口可访问', termsList.status === 200, `状态码 ${termsList.status}`);
+    ok('至少有一个学期', (termsList.json?.terms || []).length >= 1);
+
+    const mainTerm = termsList.json.terms.find((t) => Number(t.is_active) === 1)
+      || termsList.json.terms[0];
+    const originalStart = mainTerm.start_date;
+
+    const settingsTerms = await req('GET', '/settings');
+    ok('设置页学期列表有「编辑」按钮',
+      settingsTerms.text.includes(`data-edit-term="${mainTerm.id}"`),
+      '找不到 data-edit-term 按钮');
+    ok('设置页显示「现在第几周」这一列',
+      settingsTerms.text.includes('<th>现在第几周</th>'));
+    ok('前端 JS 里有编辑学期的处理逻辑',
+      (await req('GET', '/static/app.js')).text.includes('data-edit-term'));
+
+    // 把起始日往前挪一周 → 当前周次应该 +1
+    const shifted = new Date(`${originalStart}T00:00:00`);
+    shifted.setDate(shifted.getDate() - 7);
+    const pad2 = (n) => String(n).padStart(2, '0');
+    const shiftedStr = `${shifted.getFullYear()}-${pad2(shifted.getMonth() + 1)}-${pad2(shifted.getDate())}`;
+
+    const moveTerm = await req('PATCH', `/api/terms/${mainTerm.id}`, {
+      json: { startDate: shiftedStr },
+    });
+    ok('修改学期起始日成功', moveTerm.status === 200, `状态码 ${moveTerm.status}`);
+    ok('返回更新后的周次用于提示',
+      Number.isFinite(moveTerm.json?.progress?.week),
+      JSON.stringify(moveTerm.json?.progress));
+
+    const movedWeek = moveTerm.json.progress.week;
+    const beforeWeek = Math.max(1, movedWeek - 1);
+    ok('起始日往前挪一周后，当前周次 +1',
+      movedWeek === beforeWeek + 1,
+      `挪之前应为 ${beforeWeek}，挪之后为 ${movedWeek}`);
+
+    // 起始日必须是周一，否则整张课表的周次都会偏
+    const notMonday = await req('PATCH', `/api/terms/${mainTerm.id}`, {
+      json: { startDate: '2026-09-09' },
+    });
+    ok('起始日不是周一时被拒绝',
+      notMonday.status === 400 && /星期一/.test(notMonday.json?.error || ''),
+      `状态码 ${notMonday.status}：${notMonday.json?.error}`);
+
+    const badDate = await req('PATCH', `/api/terms/${mainTerm.id}`, {
+      json: { startDate: '2026/09/07' },
+    });
+    ok('起始日格式不对时被拒绝', badDate.status === 400, `状态码 ${badDate.status}`);
+
+    const badWeekCount = await req('PATCH', `/api/terms/${mainTerm.id}`, {
+      json: { weekCount: 99 },
+    });
+    ok('总周数超出范围时被拒绝', badWeekCount.status === 400, `状态码 ${badWeekCount.status}`);
+
+    const emptyName = await req('PATCH', `/api/terms/${mainTerm.id}`, {
+      json: { name: '   ' },
+    });
+    ok('学期名称为空时被拒绝', emptyName.status === 400, `状态码 ${emptyName.status}`);
+
+    // 只改名字时不应该影响起始日
+    const rename = await req('PATCH', `/api/terms/${mainTerm.id}`, {
+      json: { name: '改名测试学期' },
+    });
+    ok('只改名称不影响起始日',
+      rename.status === 200
+      && rename.json?.terms?.find((t) => t.id === mainTerm.id)?.start_date === shiftedStr,
+      JSON.stringify(rename.json?.terms?.find((t) => t.id === mainTerm.id)));
+
+    // 恢复原状，避免影响后续断言
+    const restore = await req('PATCH', `/api/terms/${mainTerm.id}`, {
+      json: { name: mainTerm.name, startDate: originalStart, weekCount: mainTerm.week_count },
+    });
+    ok('可以改回原来的起始日',
+      restore.status === 200
+      && restore.json?.terms?.find((t) => t.id === mainTerm.id)?.start_date === originalStart,
+      `期望 ${originalStart}`);
+
+    // 课表页应该给出「周次不对？」的入口
+    const ttHint = await req('GET', '/timetable');
+    ok('课表页有「周次不对？」的入口',
+      ttHint.text.includes('周次不对？') && ttHint.text.includes('/settings#term'));
+
+    // --------------------------------------------------------
+    section('12. 数据落盘检查');
+
+    const dbFile = path.join(dataDir, 'app.db');
+    ok('数据库文件已创建', fs.existsSync(dbFile), dbFile);
+
+    // 开了 WAL 模式，数据可能还在 app.db-wal 里，所以要把两个文件加起来看
+    const dbSize = ['app.db', 'app.db-wal', 'app.db-shm']
+      .map((f) => {
+        try {
+          return fs.statSync(path.join(dataDir, f)).size;
+        } catch {
+          return 0;
+        }
+      })
+      .reduce((a, b) => a + b, 0);
+    ok('数据库已写入数据', dbSize > 20000, `app.db + wal = ${dbSize} 字节`);
+    ok('会话密钥已生成', fs.existsSync(path.join(dataDir, 'secret.key')));
+    ok('上传目录已创建', fs.existsSync(path.join(dataDir, 'uploads')));
+
+    const uploadFiles = [];
+    const walk = (dir) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const p = path.join(dir, entry.name);
+        if (entry.isDirectory()) walk(p);
+        else uploadFiles.push(p);
+      }
+    };
+    walk(path.join(dataDir, 'uploads'));
+    ok('上传的文件已落盘', uploadFiles.length === 2, `实际 ${uploadFiles.length} 个文件`);
+  } finally {
+    if (server?.child) {
+      killTree(server.child);
+      await new Promise((r) => setTimeout(r, 400));
+    }
+
+    if (KEEP) {
+      console.log(`\n临时数据目录已保留：${dataDir}`);
+    } else {
+      try {
+        fs.rmSync(dataDir, { recursive: true, force: true });
+      } catch {
+        /* Windows 上偶发文件占用，忽略 */
+      }
+    }
+  }
+
+  // 汇总
+  console.log(`\n${'─'.repeat(56)}`);
+  const total = passed + failed;
+  if (failed === 0) {
+    console.log(`\u001b[32m\u001b[1m全部通过：${passed} / ${total}\u001b[0m`);
+  } else {
+    console.log(`\u001b[31m\u001b[1m${failed} 项失败\u001b[0m，${passed} / ${total} 通过`);
+    console.log('\n失败明细：');
+    for (const f of failures) {
+      console.log(`  ✗ ${f.name}`);
+      if (f.detail) console.log(`      ${f.detail}`);
+    }
+  }
+  console.log('');
+
+  process.exit(failed === 0 ? 0 : 1);
+}
+
+run().catch((err) => {
+  console.error('\n\u001b[31m自测执行出错：\u001b[0m', err);
+  process.exit(1);
+});
