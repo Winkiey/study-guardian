@@ -12,7 +12,7 @@
 只要能跑 Node.js，三条命令就能用：
 
 ```bash
-git clone https://github.com/Winkeiy/study-guardian.git
+git clone https://github.com/Winkiey/study-guardian.git
 cd study-guardian
 node server.js
 ```
@@ -431,7 +431,7 @@ cloudflared tunnel --url http://127.0.0.1:3081
 镜像里已经装好 LibreOffice、中文字体和时区，PPT 预览开箱即用：
 
 ```bash
-git clone https://github.com/Winkeiy/study-guardian.git && cd study-guardian
+git clone https://github.com/Winkiey/study-guardian.git && cd study-guardian
 docker compose up -d
 ```
 
@@ -443,7 +443,7 @@ docker compose up -d
 # Ubuntu 为例
 curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
 sudo apt install -y nodejs
-git clone https://github.com/Winkeiy/study-guardian.git && cd study-guardian
+git clone https://github.com/Winkiey/study-guardian.git && cd study-guardian
 
 # 可选：装了 PPT 预览才和原件一致（不装则退化成网页版预览）
 sudo apt install -y libreoffice-impress fonts-noto-cjk
