@@ -1937,6 +1937,48 @@ async function run() {
         `状态码 ${res.status}${hasError ? '，页面渲染出错' : ''}`);
     }
 
+    // --------------------------------------------------------
+    // 手机上进得去的页面，不能比电脑上少
+    //
+    // 这条是被真事坑出来的：底部导航原本只渲染前 5 项
+    // （NAV_ITEMS.slice(0, 5)），而手机端侧边栏整个是 display:none 的。
+    // 于是「设置」在手机上没有任何入口 —— 而 Bark 推送配置、作息时间表、
+    // 学期设置全在里面。
+    //
+    // 特征很典型：电脑上一切正常，只有手机上才出问题，而且完全不报错。
+    // 所以这里查的不是「设置页能不能打开」，而是那个通用不变量：
+    // 侧边栏里每一个链接，底部导航都必须也有。
+    // --------------------------------------------------------
+    {
+      const homeNav = await req('GET', '/');
+      const linksIn = (html, cls) => {
+        const m = html.match(new RegExp(`<nav class="${cls}"[\\s\\S]*?</nav>`));
+        return m ? [...m[0].matchAll(/href="([^"]+)"/g)].map((x) => x[1]) : [];
+      };
+      const sidebarLinks = linksIn(homeNav.text, 'nav');
+      const tabbarLinks = linksIn(homeNav.text, 'tabbar');
+      const missingOnMobile = sidebarLinks.filter((h) => !tabbarLinks.includes(h));
+
+      ok('底部导航渲染出了导航项', tabbarLinks.length > 0, `找到 ${tabbarLinks.length} 项`);
+      ok('★ 底部导航覆盖侧边栏里的每一个入口（否则手机上那个页面进不去）',
+        sidebarLinks.length > 0 && missingOnMobile.length === 0,
+        `侧边栏 ${sidebarLinks.length} 项 / 底部导航 ${tabbarLinks.length} 项`
+        + (missingOnMobile.length ? `，手机上缺：${missingOnMobile.join(', ')}` : ''));
+
+      // 栏位数必须等于导航项数：对不上会让最后一项换行，
+      // 而 .tabbar 是固定高度，多出来的那一行会被裁掉、看不见也点不到。
+      const cssText = (await req('GET', '/static/app.css')).text;
+      const cols = /\.tabbar\s*\{[^}]*grid-template-columns:\s*repeat\((\d+)/.exec(cssText)?.[1];
+      ok('★ 底部导航的栏位数和导航项数一致',
+        cols === String(tabbarLinks.length),
+        `CSS ${cols} 列 vs 实际 ${tabbarLinks.length} 项`);
+
+      // 退出登录也只存在于侧边栏里，手机上得有别的入口
+      const settingsRes = await req('GET', '/settings');
+      ok('★ 设置页有退出登录（手机端侧边栏隐藏，这里是唯一入口）',
+        /action="\/logout"/.test(settingsRes.text));
+    }
+
     // 静态资源
     for (const asset of ['/static/app.css', '/static/app.js', '/static/manifest.webmanifest', '/static/favicon.svg', '/static/icon-192.png']) {
       const res = await req('GET', asset);

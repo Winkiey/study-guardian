@@ -409,7 +409,12 @@ ${card({
     <div class="form__actions">
       <button type="submit" class="btn btn--primary">修改密码</button>
     </div>
-  </form>`,
+  </form>
+  <div class="account-footer">
+    <form class="logout-form" method="post" action="/logout">
+      <button type="submit" class="btn btn--outline">${icon('logout', 16)} 退出登录</button>
+    </form>
+  </div>`,
   })}
 </section>
 

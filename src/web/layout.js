@@ -210,7 +210,13 @@ export function renderPage({ title, active, body, user, scripts = '', stats = {}
   </main>
 
   <nav class="tabbar" aria-label="底部导航">
-    ${NAV_ITEMS.slice(0, 5).map((item) => navLink(item, active, stats, true)).join('')}
+    ${/*
+      之前这里是 NAV_ITEMS.slice(0, 5)，只放前五项。
+      但手机端侧边栏是 display:none 的，而「设置」只存在于侧边栏里 ——
+      结果是手机上根本进不去设置页，而 Bark 推送、作息表、学期全在那里。
+      所以六项全放，栏位也同步改成 6 列（见 app.css 的 .tabbar）。
+    */ ''}
+    ${NAV_ITEMS.map((item) => navLink(item, active, stats, true)).join('')}
   </nav>
 </div>
 
