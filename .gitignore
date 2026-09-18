@@ -14,6 +14,17 @@ npm-debug.log*
 # 开发过程中随手写的临时脚本 / 检查文件，形如 tmp-check.mjs、tmp-health.mjs
 tmp-*
 
+# 随手丢在项目根目录的截图 / 图片（咨询问题时贴的那种）
+# 这些往往带着个人信息（订单、账号、聊天记录），很容易被 `git add -A` 顺手提交上去。
+# 只忽略根目录这一层：src/web/public/ 下的图标和 favicon 照常提交。
+# 如果确实需要往仓库里放配图，建议放在专门的目录里（比如 docs/）。
+/*.png
+/*.jpg
+/*.jpeg
+/*.webp
+/*.gif
+/*.bmp
+
 # 编辑器
 .vscode/
 .idea/

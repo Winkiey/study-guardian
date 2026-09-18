@@ -290,6 +290,9 @@ async function startServer(dataDir, port) {
       ENABLE_OFFICE_CONVERT: 'false',
       SCHEDULER_RUN_ON_START: 'false',
       SCHEDULER_INTERVAL_SEC: '3600',
+      // 自测会发上千个请求，普通限流要放开，否则测试自己会被 429 挡住。
+      // 但**登录限流保持默认**（1/分钟、突发 10）—— 最后一个章节要靠它验证 429。
+      RATE_LIMIT_PER_MIN: '1000000',
       NODE_ENV: 'test',
     },
   });
@@ -2012,6 +2015,60 @@ async function run() {
     }
 
     // --------------------------------------------------------
+    // gzip 压缩
+    //
+    // 为什么值得有断言：压缩最危险的失败方式不是「没压」，而是
+    // **「声明压了、其实没压」** —— 头里写着 Content-Encoding: gzip，
+    // 正文却是原文，浏览器会拿 gzip 解压器去解 HTML，用户看到一片乱码。
+    //
+    // 这里用 Content-Length 和正文长度的关系来判断「是不是真的压了」：
+    // 声明 gzip 却没压的话，Content-Length 会等于未压缩的长度，断言就会红。
+    // --------------------------------------------------------
+    {
+      for (const asset of ['/static/app.css', '/static/app.js']) {
+        const plain = await req('GET', asset, { headers: { 'Accept-Encoding': 'identity' } });
+        const zipped = await req('GET', asset, { headers: { 'Accept-Encoding': 'gzip' } });
+
+        const enc = zipped.headers.get('content-encoding') || '';
+        const declared = Number(zipped.headers.get('content-length') || 0);
+        const plainBytes = Buffer.byteLength(plain.text, 'utf8');
+
+        ok(`★ ${asset} 会返回 gzip`, enc === 'gzip', `Content-Encoding=${enc || '(无)'}`);
+        ok(`★ ${asset} 的 Content-Length 是压缩后的真实字节数`,
+          declared > 0 && declared < plainBytes * 0.6,
+          `声明 ${declared} 字节，未压缩是 ${plainBytes} 字节`);
+        ok(`★ ${asset} 带 Vary: Accept-Encoding（缓存才不会把 gzip 发给不支持的人）`,
+          /accept-encoding/i.test(zipped.headers.get('vary') || ''),
+          zipped.headers.get('vary') || '(无)');
+        // fetch 会自动解压；解压后内容还得是对的，说明压缩流本身没问题
+        ok(`★ ${asset} 解压后内容完好`, zipped.text === plain.text,
+          `${zipped.text.length} vs ${plain.text.length}`);
+      }
+
+      // 明确说不接受的客户端，不该收到 gzip
+      const noGzip = await req('GET', '/static/app.css', { headers: { 'Accept-Encoding': 'identity' } });
+      ok('★ 客户端不接受 gzip 时就不压',
+        !(noGzip.headers.get('content-encoding') || '').includes('gzip'));
+
+      // 图片本身就是压缩格式，再 gzip 一遍纯属浪费 CPU
+      const png = await req('GET', '/static/icon-512.png', { headers: { 'Accept-Encoding': 'gzip' } });
+      ok('★ 已经是压缩格式的图片不会被再压一遍',
+        !(png.headers.get('content-encoding') || '').includes('gzip'),
+        png.headers.get('content-encoding') || '(无)');
+
+      // 动态页面（没有缓存、每次都要传）才是流量的主要来源
+      const settingsPlain = await req('GET', '/settings', { headers: { 'Accept-Encoding': 'identity' } });
+      const settingsGz = await req('GET', '/settings', { headers: { 'Accept-Encoding': 'gzip' } });
+      const spBytes = Buffer.byteLength(settingsPlain.text, 'utf8');
+      const sgBytes = Number(settingsGz.headers.get('content-length') || 0);
+      ok('★ 动态页面（HTML）也会被压缩',
+        (settingsGz.headers.get('content-encoding') || '') === 'gzip' && sgBytes < spBytes * 0.5,
+        `${spBytes} → ${sgBytes} 字节`);
+      ok('★ 动态页面压缩解压后仍然完好',
+        settingsGz.text.includes('设置') && settingsPlain.text.length === settingsGz.text.length);
+    }
+
+    // --------------------------------------------------------
     // 静态资源版本号
     //
     // 加这个是因为反复踩过同一个坑：改了 app.js 之后，
@@ -2554,6 +2611,61 @@ async function run() {
     };
     walk(path.join(dataDir, 'uploads'));
     ok('上传的文件已落盘', uploadFiles.length === 2, `实际 ${uploadFiles.length} 个文件`);
+
+    // --------------------------------------------------------
+    // 登录限流
+    //
+    // 这是整个自测的最后一节，因为跑完它登录桶就被耗光了 ——
+    // 放中间会把后面所有需要登录的用例一起打挂。
+    //
+    // 为什么这里必须兜住：这个平台原本**没有任何登录失败限制**，
+    // 也就是说密码可以无限次尝试。而它常常跑在按流量计费的服务器上，
+    // 被脚本爆破既是安全问题，也是账单问题。
+    // --------------------------------------------------------
+    console.log('\n\u001b[1m13. 登录限流\u001b[0m');
+
+    {
+      let blockedAt = null;
+      let retryAfter = null;
+      let blockBody = '';
+
+      for (let i = 1; i <= 30; i += 1) {
+        const res = await req('POST', '/login', {
+          form: { username: '测试同学', password: `wrong-password-${i}` },
+        });
+        if (res.status === 429) {
+          blockedAt = i;
+          retryAfter = res.headers.get('retry-after');
+          blockBody = res.text;
+          break;
+        }
+      }
+
+      ok('★ 连续输错密码会被限流挡住（不能无限试）',
+        blockedAt !== null,
+        blockedAt ? `第 ${blockedAt} 次被拦` : '试了 30 次都没拦住');
+
+      ok('★ 429 带上了标准的 Retry-After 头',
+        Boolean(retryAfter) && Number(retryAfter) > 0,
+        `Retry-After=${retryAfter || '(无)'}`);
+
+      ok('★ 限流的提示是中文、说清了要等多久，而不是干巴巴一个 429',
+        /请求太频繁/.test(blockBody) && /等/.test(blockBody),
+        blockBody.slice(0, 80));
+
+      // 被限流之后，连正确密码也进不去 —— 这是有意的：
+      // 否则攻击者只要在每次猜错后夹一次正确密码就能绕过限流。
+      const correct = await req('POST', '/login', {
+        form: { username: '测试同学', password: 'test123456' },
+      });
+      ok('★ 限流生效期间，正确的密码同样被挡住（不然限流可以被绕过）',
+        correct.status === 429, `状态码 ${correct.status}`);
+
+      // 但读静态资源不该被牵连：登录接口的桶是独立的
+      const stillOk = await req('GET', '/static/app.css');
+      ok('★ 登录被限流不会连累静态资源（两个桶是分开的）',
+        stillOk.status === 200, `状态码 ${stillOk.status}`);
+    }
   } finally {
     if (server?.child) {
       killTree(server.child);

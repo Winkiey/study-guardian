@@ -15,6 +15,8 @@ import { fileURLToPath } from 'node:url';
 import config, { ensureRuntimeDirs } from './src/config.js';
 import { getDb, closeDb } from './src/db/index.js';
 import { HttpError, serveStatic, sendHtml, clientIp } from './src/lib/http.js';
+import { attachGzip } from './src/lib/compress.js';
+import { createRateLimiter, limiterKey, pickLimiter } from './src/lib/ratelimit.js';
 import { createRouter } from './src/routes/index.js';
 import { startScheduler, stopScheduler, tick } from './src/lib/scheduler.js';
 import { bootstrapState } from './src/lib/auth.js';
@@ -22,6 +24,44 @@ import { converterStatus } from './src/lib/convert.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STATIC_DIR = path.join(__dirname, 'src', 'web', 'public');
+
+// ============================================================
+// 限流器
+//
+// 两个桶，各管一摊：
+//   general —— 普通请求，宽松，别误伤自己（一个 71 页课件就是 70 多次请求）
+//   auth    —— 登录接口，严格，因为这里能「试密码」
+//
+// 为什么 auth 的突发是 10：人打字会错几次，给点余量；
+// 但错完这 10 次之后就只能一分钟试一次了，脚本爆破基本没戏。
+// ============================================================
+
+const generalLimiter = config.rateLimitPerMin > 0
+  ? createRateLimiter({
+    capacity: config.rateLimitPerMin,
+    perMinute: config.rateLimitPerMin,
+    name: 'general',
+  })
+  : null;
+
+const authLimiter = config.rateLimitAuthPerMin > 0
+  ? createRateLimiter({
+    capacity: Math.max(10, config.rateLimitAuthPerMin),
+    perMinute: config.rateLimitAuthPerMin,
+    name: 'auth',
+  })
+  : null;
+
+/** 定期清理长期不用的桶，避免被大量不同 IP 撑爆内存 */
+function startLimiterSweeper() {
+  if (!generalLimiter && !authLimiter) return null;
+  const timer = setInterval(() => {
+    generalLimiter?.sweep();
+    authLimiter?.sweep();
+  }, 10 * 60 * 1000);
+  timer.unref?.();
+  return timer;
+}
 
 // ============================================================
 // 启动前检查
@@ -101,7 +141,24 @@ async function handleRequest(req, res) {
   const startedAt = Date.now();
 
   try {
-    // 1. 静态资源
+    // 0. 装上自动 gzip。放在最前面，这样后面所有响应（HTML / JSON / 404 / 错误页）
+    //    都自动受益，不需要每个地方各写一遍。
+    attachGzip(req, res);
+
+    // 1. 限流。必须在做任何实际工作之前 ——
+    //    被挡住请求不该消耗数据库查询、文件读取、scrypt 计算。
+    const limiter = pickLimiter(url.pathname, method, {
+      general: generalLimiter,
+      auth: authLimiter,
+    });
+    if (limiter) {
+      const verdict = limiter.take(limiterKey(req, config.trustProxy));
+      if (!verdict.allowed) {
+        return tooManyRequests(req, res, url, verdict.retryAfterSec, limiter.name);
+      }
+    }
+
+    // 2. 静态资源
     if (url.pathname.startsWith('/static/')) {
       const relative = url.pathname.slice('/static/'.length);
       if (method === 'GET' || method === 'HEAD') {
@@ -113,7 +170,7 @@ async function handleRequest(req, res) {
       }
     }
 
-    // 2. 业务路由
+    // 3. 业务路由
     const matched = router.match(method, url.pathname);
     if (matched) {
       const ctx = {
@@ -127,13 +184,44 @@ async function handleRequest(req, res) {
       return await matched.handler(ctx);
     }
 
-    // 3. 404
+    // 4. 404
     return notFoundResponse(req, res, url);
   } catch (err) {
     return errorResponse(req, res, err);
   } finally {
     logAccess(req, res, url, Date.now() - startedAt);
   }
+}
+
+/**
+ * 429 响应。
+ *
+ * `Retry-After` 是标准头，浏览器和脚本都会认；
+ * 正文给中文说明，因为用浏览器撞到这个页面的人多半是自己误触或忘了密码。
+ */
+function tooManyRequests(req, res, url, retryAfterSec, limiterName) {
+  const minutes = Math.max(1, Math.ceil(retryAfterSec / 60));
+  const wait = retryAfterSec >= 60 ? `${minutes} 分钟` : `${retryAfterSec} 秒`;
+  const headers = { 'Content-Type': 'application/json; charset=utf-8', 'Retry-After': retryAfterSec };
+
+  console.warn(`[限流] ${clientIp(req)} 触发 ${limiterName} 限制，${url.pathname}，建议等待 ${wait}`);
+
+  if (url.pathname.startsWith('/api/')) {
+    headers['Content-Type'] = 'application/json; charset=utf-8';
+    res.writeHead(429, headers);
+    res.end(JSON.stringify({ error: `请求太频繁，请等 ${wait} 后再试` }));
+    return;
+  }
+
+  sendHtml(res, `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<title>请求太频繁</title><link rel="stylesheet" href="/static/app.css"></head>
+<body><div class="main" style="max-width:520px;margin:80px auto">
+<div class="card"><div class="card__body" style="text-align:center">
+<h1 class="page-title">请求太频繁</h1>
+<p class="muted mt-sm">请等 <strong>${escapeForHtml(wait)}</strong> 后再试。</p>
+<p class="muted small mt-sm">如果你是在登录时连续输错密码，稍等一会儿就好；
+这是为了防止有人用脚本暴力猜密码。</p>
+</div></div></div></body></html>`, 429, headers);
 }
 
 function notFoundResponse(req, res, url) {
@@ -312,6 +400,7 @@ async function main() {
   server.listen(config.port, config.host, () => {
     printBanner();
     startScheduler();
+    startLimiterSweeper();
   });
 }
 

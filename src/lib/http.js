@@ -11,6 +11,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import config from '../config.js';
+import { acceptsGzip, applyCompressionHeaders, gzipFile, isCompressibleType } from './compress.js';
 
 // ============================================================
 // 错误类型
@@ -348,23 +349,24 @@ export async function readBodyAuto(req) {
 // 响应工具
 // ============================================================
 
-export function sendJson(res, data, status = 200) {
+export function sendJson(res, data, status = 200, extraHeaders = {}) {
   const body = Buffer.from(JSON.stringify(data ?? null), 'utf8');
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Content-Length': body.length,
     'Cache-Control': 'no-store',
+    ...extraHeaders,
   });
   res.end(body);
 }
 
-export function sendText(res, text, status = 200, contentType = 'text/plain; charset=utf-8') {
+export function sendText(res, text, status = 200, contentType = 'text/plain; charset=utf-8', extraHeaders = {}) {
   const body = Buffer.from(text, 'utf8');
-  res.writeHead(status, { 'Content-Type': contentType, 'Content-Length': body.length });
+  res.writeHead(status, { 'Content-Type': contentType, 'Content-Length': body.length, ...extraHeaders });
   res.end(body);
 }
 
-export function sendHtml(res, html, status = 200) {
+export function sendHtml(res, html, status = 200, extraHeaders = {}) {
   const body = Buffer.from(html, 'utf8');
   res.writeHead(status, {
     'Content-Type': 'text/html; charset=utf-8',
@@ -373,6 +375,7 @@ export function sendHtml(res, html, status = 200) {
     // 页面本身要是被缓存了，就会一直指向旧版本的资源地址，
     // 于是又回到「按钮点了没反应」的老问题上。
     'Cache-Control': 'no-store',
+    ...extraHeaders,
   });
   res.end(body);
 }
@@ -555,8 +558,14 @@ export async function serveStatic(req, res, rootDir, relativePath, opts = {}) {
   if (stat.isDirectory()) throw notFound('静态资源不存在');
 
   const etag = etagFor(stat);
+  const contentType = mimeTypeFor(resolved);
+
+  // 这个文件值不值得压：客户端认 gzip + 类型是文本类 + 没被显式关掉。
+  // PNG / PDF / MP4 那些本身就是压缩格式，isCompressibleType 会返回 false。
+  const canGzip = opts.compress !== false && isCompressibleType(contentType) && acceptsGzip(req);
+
   const headers = {
-    'Content-Type': mimeTypeFor(resolved),
+    'Content-Type': contentType,
     'Content-Length': stat.size,
     ETag: etag,
     'Last-Modified': stat.mtime.toUTCString(),
@@ -564,11 +573,28 @@ export async function serveStatic(req, res, rootDir, relativePath, opts = {}) {
       ? 'public, max-age=31536000, immutable'
       : 'no-cache',
   };
+  // 同一个 URL 对不同客户端会返回不同字节，缓存必须按这个头分开存
+  if (canGzip) headers.Vary = 'Accept-Encoding';
 
   if (req.headers['if-none-match'] === etag) {
-    res.writeHead(304, { ETag: etag });
+    res.writeHead(304, { ETag: etag, ...(canGzip ? { Vary: 'Accept-Encoding' } : {}) });
     res.end();
     return;
+  }
+
+  if (canGzip) {
+    const gz = await gzipFile(resolved, stat);
+    // 压完反而变大就别压了（小文件偶尔会这样），照原样发更划算
+    if (gz.length < stat.size) {
+      applyCompressionHeaders(headers, gz.length);
+      res.writeHead(200, headers);
+      if (req.method === 'HEAD') {
+        res.end();
+        return;
+      }
+      res.end(gz);
+      return;
+    }
   }
 
   res.writeHead(200, headers);

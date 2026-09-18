@@ -167,6 +167,34 @@ export const config = {
   schedulerIntervalSec: Math.max(10, envInt('SCHEDULER_INTERVAL_SEC', 60)),
   schedulerRunOnStart: envBool('SCHEDULER_RUN_ON_START', true),
 
+  /**
+   * 限流。
+   *
+   * 跑在按流量计费的云服务器上时，没有限流就等于把账单交给别人：
+   * 端口扫描、暴力试密码、反复拉静态资源，都会直接产生费用。
+   * 实测：5Mbps 带宽被打满一整天 = ¥43，100Mbps = ¥864。
+   *
+   * 默认值怎么定的：
+   *   普通请求 300/分钟 —— 打开一个 71 页的课件就要 70 多次请求，
+   *     限太紧会误伤自己；300 够宽松，又能挡住扫描器。
+   *   登录接口 1/分钟（突发 10）—— 这是唯一能「试出密码」的入口，
+   *     而本项目没有登录失败锁定，所以必须在这里兜住。
+   *     1 分钟 1 次对人是够的，对脚本是致命的。
+   *
+   * 设成 0 = 关闭限流（跑压测时用）。
+   */
+  rateLimitPerMin: Math.max(0, envInt('RATE_LIMIT_PER_MIN', 300)),
+  rateLimitAuthPerMin: Math.max(0, envInt('RATE_LIMIT_AUTH_PER_MIN', 1)),
+
+  /**
+   * 是否信任反向代理传来的 X-Forwarded-For。
+   *
+   * 默认关闭，而且**别随便打开**：打开之后客户端靠伪造这个头就能绕过限流
+   * （每次换一个 IP 就换一个新桶）。只有确实在 Caddy / Nginx 后面才有意义，
+   * 那时候取的是 XFF 的最后一个值 —— 代理亲眼看到的那个 IP。
+   */
+  trustProxy: envBool('TRUST_PROXY', false),
+
   /** 生产模式标记，用于关闭调试信息 */
   isDev: env('NODE_ENV', 'development') !== 'production',
 };
