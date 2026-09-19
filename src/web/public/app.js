@@ -154,6 +154,67 @@ function icon(name, size = 18) {
 const modalRoot = () => document.getElementById('modal-root');
 
 let modalCloseHandler = null;
+/** 打开弹窗之前焦点在哪个元素上 —— 关掉之后要还回去 */
+let modalReturnFocus = null;
+
+/**
+ * 弹窗里「能按 Tab 走到」的元素，按 DOM 顺序。
+ *
+ * 过滤掉禁用的、以及被 display:none / hidden 藏起来的：
+ * 焦点陷阱如果算上这些，按 Tab 会「消失一下」再出现，很难受。
+ */
+function focusableIn(el) {
+  const sel = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]),'
+    + ' textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+  return Array.from(el.querySelectorAll(sel))
+    .filter((n) => !n.hasAttribute('hidden') && n.offsetParent !== null);
+}
+
+/**
+ * 焦点陷阱的核心逻辑。
+ *
+ * 单独抽成函数，是为了能被测试**直接调用**：
+ * 写在 openModal 的 keydown 回调里的话，测试只能去 grep 源码，
+ * 而 grep 测不出「按 Tab 到底会不会跑出去」—— 把 `if (true) return;`
+ * 插进去，所有字符串都还在，断言照样是绿的（A/B 校验时就是这么假通过的）。
+ *
+ * 规则：在最后一个元素上再按 Tab → 回到第一个；
+ * 在第一个元素上按 Shift+Tab → 跳到最后一个。
+ * 另外焦点要是已经跑到弹窗外面了（被脚本挪走之类），也拉回来。
+ */
+function trapTabKey(modal, e) {
+  const items = focusableIn(modal);
+  if (!items.length) return;
+
+  const first = items[0];
+  const last = items[items.length - 1];
+  const active = document.activeElement;
+  const inside = modal.contains(active);
+
+  if (e.shiftKey && (!inside || active === first)) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && (!inside || active === last)) {
+    e.preventDefault();
+    first.focus();
+  }
+}
+
+/**
+ * 把焦点还给「打开弹窗的那个元素」。
+ *
+ * 不还的话，键盘用户关掉弹窗后焦点掉回 <body>，得从头 Tab 一整遍
+ * 才能回到刚才那个按钮。也抽出来单独成函数，原因同上：能测。
+ */
+function restoreModalFocus() {
+  const target = modalReturnFocus;
+  modalReturnFocus = null;
+  // 目标可能已经被重新渲染掉了（列表刷新之类），所以先确认它还在文档里
+  if (!target || !document.contains(target)) return;
+  try {
+    target.focus({ preventScroll: true });
+  } catch { /* 元素可能已经不接受焦点了 */ }
+}
 
 /**
  * 打开弹窗。
@@ -168,6 +229,11 @@ function openModal({ title, content, wide = false }) {
 
   closeModal();
 
+  // 记住「是谁打开的」，关掉之后焦点要还回去。
+  // 不还的话，键盘用户关掉弹窗后焦点会掉回 <body>，
+  // 得从头 Tab 一遍才能回到刚才那个按钮。
+  modalReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+
   const backdrop = document.createElement('div');
   backdrop.className = 'modal-backdrop';
 
@@ -180,7 +246,11 @@ function openModal({ title, content, wide = false }) {
   head.className = 'modal__head';
   const h = document.createElement('h2');
   h.className = 'modal__title';
+  h.id = 'modal-title';
   h.textContent = title || '';
+  // 让读屏能念出「这是哪个弹窗」。role=dialog 不会自动去取里面的标题，
+  // 必须显式指过去，否则读屏只会念一个没有名字的「对话框」。
+  modal.setAttribute('aria-labelledby', h.id);
   const closeBtn = document.createElement('button');
   closeBtn.type = 'button';
   closeBtn.className = 'modal__close';
@@ -203,15 +273,27 @@ function openModal({ title, content, wide = false }) {
     if (e.target === backdrop) closeModal();
   });
 
-  // Esc 关闭
   modalCloseHandler = (e) => {
-    if (e.key === 'Escape') closeModal();
+    if (e.key === 'Escape') {
+      closeModal();
+      return;
+    }
+    if (e.key !== 'Tab') return;
+
+    // ---- 焦点陷阱 ----
+    // 不拦住的话，按 Tab 会走到**弹窗背后那些被遮住的元素**上：
+    // 侧边栏导航、页面上的按钮都还在 DOM 里、也还能拿到焦点。
+    // 用户接着按回车，触发的是他看不见的东西（比如某个「删除」），
+    // 这就是「我什么都没点，怎么删了」的来源。
+    trapTabKey(modal, e);
   };
   document.addEventListener('keydown', modalCloseHandler);
 
-  // 聚焦第一个输入框
+  // 聚焦第一个输入框；没有输入框就聚焦关闭按钮 ——
+  // 焦点必须落到弹窗**里面**，否则一开始就不在陷阱里
   const firstInput = modal.querySelector('input:not([type=hidden]), select, textarea');
-  if (firstInput) setTimeout(() => firstInput.focus(), 50);
+  const initial = firstInput || closeBtn;
+  setTimeout(() => initial.focus({ preventScroll: true }), 50);
 
   // 阻止背景滚动
   document.body.style.overflow = 'hidden';
@@ -227,6 +309,9 @@ function closeModal() {
     modalCloseHandler = null;
   }
   document.body.style.overflow = '';
+
+  // 焦点还给打开它的那个元素
+  restoreModalFocus();
 }
 
 /** 从 <template> 里取出内容并克隆 */
