@@ -285,6 +285,10 @@ export function registerPages(router) {
       stats: assignments.assignmentStats(userId),
       nextCourse,
       schedulerOk: notify.listChannels(userId).filter((c) => c.enabled).length > 0,
+      // 新同学进门时首页一片空白，得有人告诉他先做哪三件事。
+      // 判据用「有没有课程」：课表是其它一切的基础（没有课就没有课可上、
+      // 作业也没法归属），所以它是最合适的「入门了没有」的分界点。
+      courseCount: courses.listCourses(userId).length,
     }), { user: ctx.user, stats: navStats(userId) });
   }));
 

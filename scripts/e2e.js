@@ -429,8 +429,32 @@ async function run() {
     const home = await req('GET', '/');
     ok('首页渲染成功', home.status === 200, `状态码 ${home.status}`);
     ok('首页显示问候语', home.text.includes('小王'));
-    ok('首页提示配置手机提醒',
-      home.text.includes('还没设置提醒渠道'));
+
+    // ---- 新同学的第一屏 ----
+    // 这一刻这个账号一门课都还没有，也就是同学注册完第一次进来的样子。
+    // 以前他看到的是：四个 0 的统计块 + 两张「没有数据」的空卡片 ——
+    // 他知道这站是空的，但不知道下一步该干嘛。
+    ok('★ 新同学看到的是「先做这三步」的引导卡片',
+      home.text.includes('先做这三步') && home.text.includes('onboarding'));
+    ok('★ 新同学的首页不显示统计块（四个 0 没有信息量）',
+      !home.text.includes('stat-grid'));
+    ok('★ 新同学的首页不显示「今天没有课」这类空卡片（重复说「你啥都没有」）',
+      !home.text.includes('今天没有课'));
+    ok('★ 引导第一步是导入课表，而且按钮真的能点',
+      home.text.includes('把课表导进来') && home.text.includes('href="/import"'));
+    ok('★ 引导里也提醒了顺手核对学期（第一周周一决定「第几周」）',
+      home.text.includes('第一周周一'));
+    ok('★ 引导第二步是配提醒渠道',
+      home.text.includes('配一个提醒渠道') && home.text.includes('href="/settings#notify"'));
+    ok('★ 引导里说明了这张卡什么时候消失',
+      home.text.includes('这张卡片就会自己消失'));
+
+    // 新同学这里**不再**重复弹那条「还没设置提醒渠道」的横幅 ——
+    // 引导卡第 2 步讲的就是这件事，同一屏说两遍是噪音。
+    // 「配提醒」这件事有没有说到，由上面那条「引导第二步」的断言负责；
+    // 横幅本身在有了课程之后才出现，那一条在第 2 节里验。
+    ok('★ 新同学这一屏不重复弹「还没设置提醒渠道」的横幅',
+      !home.text.includes('还没设置提醒渠道'));
     ok('默认学期已自动创建', home.text.includes('第 ') && home.text.includes(' 周'));
 
     // --------------------------------------------------------
@@ -452,6 +476,18 @@ async function run() {
     ok('创建课程成功', createCourse.status === 201, `状态码 ${createCourse.status}：${createCourse.text.slice(0, 120)}`);
     const courseId = createCourse.json?.course?.id;
     ok('返回课程 ID', Number.isFinite(courseId));
+
+    // ---- 有了课程之后，首页该变回「正常样子」 ----
+    // 引导卡是靠「一门课都没有」这个条件判断的，所以这里正好验它的反方向：
+    // 建完课，卡片该消失、统计块该回来、提醒横幅该出现。
+    const homeAfterCourse = await req('GET', '/');
+    ok('★ 有了课程之后，引导卡自动消失',
+      !homeAfterCourse.text.includes('onboarding'), '卡片应该自己退场');
+    ok('★ 统计块回来了', homeAfterCourse.text.includes('stat-grid'));
+    ok('★ 「还没设置提醒渠道」的横幅这时候才出现（新同学那一屏不重复说）',
+      homeAfterCourse.text.includes('还没设置提醒渠道'));
+    ok('★ 首页也回到「今天没有课」这种正常空状态，而不是引导卡',
+      homeAfterCourse.text.includes('今天没有课'));
 
     const dup = await req('POST', '/api/courses', { json: { name: '高等数学(上)' } });
     ok('同名课程被拒绝', dup.status === 400 && dup.json?.error?.includes('已经有一门'),

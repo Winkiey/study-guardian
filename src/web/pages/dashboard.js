@@ -36,7 +36,9 @@ export function dashboardPage({
   stats,
   nextCourse,
   schedulerOk,
+  courseCount = 0,
 }) {
+  const isNewcomer = courseCount === 0;
   const body = `
 ${pageHeader({
     title: `${greeting()}，${escapeHtml(user.display_name || user.username)}`,
@@ -48,7 +50,55 @@ ${pageHeader({
       <a class="btn btn--outline" href="/materials?upload=1">${icon('upload', 17)}<span>上传资料</span></a>`,
   })}
 
-${!schedulerOk ? `
+${isNewcomer ? card({
+    // 名字刻意不叫 .guide —— 设置页那个「怎么配 Bark」的折叠块已经占了 .guide，
+    // 复用同名会互相盖样式（而且不会报错，只会长得不对）。
+    className: 'onboarding',
+    title: '先做这三步，这个站就有用了',
+    body: `
+    <p class="onboarding__lead">现在这里还是空的。按顺序做完，首页会自动变成「今天要上什么课、哪些作业快到了」。</p>
+    <ol class="onboarding__steps">
+      <li class="onboarding__step">
+        <span class="onboarding__num">1</span>
+        <div class="onboarding__body">
+          <strong>把课表导进来</strong>
+          <p>教务处能导出 <code>.ics</code> 的话最省事，也可以粘贴 CSV，或者手动加几门课。
+             课表是后面一切的基础 —— 作业要挂在课程下面，提醒也按上课时间算。</p>
+          <p class="muted small">导入之后顺手看一眼「设置 → 学期」里的<strong>第一周周一</strong>对不对，
+             它决定课表显示「第几周」。</p>
+          <div class="btn-row mt-sm">
+            <a class="btn btn--primary btn--sm" href="/import">${icon('upload', 15)}<span>导入课表</span></a>
+            <a class="btn btn--outline btn--sm" href="/courses?new=1">${icon('plus', 15)}<span>手动加一门课</span></a>
+          </div>
+        </div>
+      </li>
+      <li class="onboarding__step">
+        <span class="onboarding__num">2</span>
+        <div class="onboarding__body">
+          <strong>配一个提醒渠道</strong>
+          <p>不配的话，作业 DDL 提醒没有地方可发。iPhone 最省事的是 Bark，也可以直接发到邮箱，两分钟就能弄好。</p>
+          <div class="btn-row mt-sm">
+            <a class="btn btn--outline btn--sm" href="/settings#notify">${icon('bell', 15)}<span>去配提醒</span></a>
+          </div>
+        </div>
+      </li>
+      <li class="onboarding__step">
+        <span class="onboarding__num">3</span>
+        <div class="onboarding__body">
+          <strong>把作业和课件记进来</strong>
+          <p>作业填上截止时间，到点会自动推到你手机；课件传上来，
+             以后不管在哪台设备上都能直接打开看，不用再翻聊天记录。</p>
+          <div class="btn-row mt-sm">
+            <a class="btn btn--outline btn--sm" href="/assignments?new=1">${icon('plus', 15)}<span>新建作业</span></a>
+            <a class="btn btn--outline btn--sm" href="/materials?upload=1">${icon('upload', 15)}<span>上传资料</span></a>
+          </div>
+        </div>
+      </li>
+    </ol>
+    <p class="field__help">做完第 1 步，这张卡片就会自己消失。</p>`,
+  }) : ''}
+
+${!schedulerOk && !isNewcomer ? `
 <div class="notice notice--warn">
   <div class="notice__icon">${icon('alert', 18)}</div>
   <div class="notice__body">
@@ -57,6 +107,10 @@ ${!schedulerOk ? `
   </div>
 </div>` : ''}
 
+${/* 新同学现在什么都还没有。给他看四个 0 和两张「没有数据」的空卡片，
+     只会让人觉得「这站是空的」；所以这一段整体不渲染，位置让给上面那张引导卡。
+     一旦导入了课程（courseCount > 0），这里立刻恢复正常。 */ ''}
+${isNewcomer ? '' : `
 <section class="stat-grid">
   ${statTile({
     label: '今日课程',
@@ -140,7 +194,7 @@ ${termProgress ? card({
     <span class="progress__label">第 ${termProgress.week} / ${termProgress.total} 周 · 已过 ${Math.round((termProgress.week / termProgress.total) * 100)}%</span>
   </div>
   <p class="muted small">学期从 ${escapeHtml(termProgress.term.start_date)} 开始，预计 ${escapeHtml(termProgress.endDate)} 结束。</p>`,
-  }) : ''}
+  }) : ''}`}
 `;
 
   return { title: '总览', body, active: 'dashboard' };
