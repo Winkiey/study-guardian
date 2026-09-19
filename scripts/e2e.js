@@ -190,6 +190,37 @@ function makeTestPptx() {
   ]);
 }
 
+/**
+ * 造一个结构合法、只有一页的 PDF。
+ *
+ * 用它走「原生 PDF」那条预览路径：不需要转换，previewMode 直接就是 pdf。
+ * 服务器上的课件大多是这个模式，所以 iOS 提示也得在这个模式下验。
+ */
+function makeTestPdf() {
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>',
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    '<< /Length 44 >>\nstream\nBT /F1 14 Tf 20 100 Td (Study Guardian) Tj ET\nendstream',
+  ];
+
+  let body = '%PDF-1.4\n';
+  const offsets = [];
+  objects.forEach((obj, i) => {
+    offsets.push(body.length);
+    body += `${i + 1} 0 obj\n${obj}\nendobj\n`;
+  });
+
+  const xrefAt = body.length;
+  let xref = `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (const off of offsets) xref += `${String(off).padStart(10, '0')} 00000 n \n`;
+  body += xref;
+  body += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefAt}\n%%EOF\n`;
+
+  return Buffer.from(body, 'latin1');
+}
+
 /** 教务系统风格的课表 CSV */
 const TEST_CSV = [
   '课程名称,课程号,教师,学分,课程性质,考核方式,星期,上课时间,周次,上课地点',
@@ -937,6 +968,9 @@ async function run() {
     // 原来只有幻灯片图片那条路有个覆盖全屏的看图器，PDF（服务器上的主要模式）
     // 只是一个 iframe，没有任何全屏入口。
     ok('★ 预览页有「全屏」按钮', previewPage.text.includes('data-viewer-fullscreen'));
+    // 注意：这条只验了 hidden 属性在不在。属性本身并不隐藏任何东西 ——
+    // 真正让它藏起来的是样式表里那条 [hidden] { display: none !important }，
+    // 下面单独有一条断言盯着它。
     ok('★ 全屏按钮默认隐藏（没有 JS 时不该摆个按不动的按钮）',
       /<button[^>]*data-viewer-fullscreen[^>]*\bhidden\b/.test(previewPage.text),
       '按钮上缺 hidden');
@@ -969,6 +1003,66 @@ async function run() {
     ok('★ 客户端有全屏逻辑，而且在启动时被调用了',
       fsAppJs.includes('function initMaterialViewer()') && /\n\s+initMaterialViewer\(\);/.test(fsAppJs),
       '定义了却没调用的话，点全屏不会有任何反应');
+    ok('★ 客户端有 iOS 提示逻辑，而且在启动时被调用了',
+      fsAppJs.includes('function initIosPdfNotice()') && /\n\s+initIosPdfNotice\(\);/.test(fsAppJs),
+      '定义了却没调用的话，那块提示永远不会出现');
+
+    // ---- PDF 预览的 iPhone / iPad 提示 ----
+    // iOS Safari 在 <iframe> 里渲染 PDF 时只画第一页、而且不给滚动。
+    // 服务器上的课件现在大多是 LibreOffice 转出来的 PDF，
+    // 于是手机上打开资料页看到的是「一份只有一页的课件」，很容易以为文件传坏了。
+    // 修不了苹果的行为，但可以告诉用户换个打开方式 —— 新标签页会交给系统阅读器。
+    ok('★ 网页版 Office 预览不该有这块 iOS 提示（那种模式手机上本来就是好的）',
+      !previewPage.text.includes('data-ios-pdf-notice'),
+      '别的模式多一块提示纯属噪音');
+
+    const pdfUpload = multipart(
+      { courseId: String(courseId), category: 'handout' },
+      { field: 'file', filename: '手机上看这份.pdf', data: makeTestPdf(), mime: 'application/pdf' },
+    );
+    const iosPdfRes = await req('POST', '/api/materials', {
+      body: pdfUpload.body,
+      headers: { 'Content-Type': pdfUpload.contentType },
+    });
+    ok('上传一份原生 PDF（用来验 PDF 模式那条路径）', iosPdfRes.status === 201,
+      `状态码 ${iosPdfRes.status}：${iosPdfRes.text.slice(0, 200)}`);
+    const pdfMaterialId = iosPdfRes.json?.material?.id;
+
+    const iosPdfPage = await req('GET', `/materials/${pdfMaterialId}`);
+    ok('★ PDF 预览里有 iOS 提示', iosPdfPage.text.includes('data-ios-pdf-notice'));
+    ok('★ iOS 提示默认带 hidden（桌面浏览器点开 PDF 是好的，不该看到它）',
+      /<div[^>]*data-ios-pdf-notice[^>]*\bhidden\b/.test(iosPdfPage.text),
+      '缺 hidden 属性');
+    ok('★ iOS 提示排在 iframe 前面（要先看到提示，而不是先对着第一页纳闷）',
+      iosPdfPage.text.indexOf('data-ios-pdf-notice') > -1
+      && iosPdfPage.text.indexOf('data-ios-pdf-notice') < iosPdfPage.text.indexOf('<iframe'),
+      '两边都得能找到才比得了 —— 只写 < 的话，钩子改名后 -1 反而算通过');
+
+    // 把提示那一整段抠出来单独检查。用 iframe 当右边界最省事：
+    // 块里有嵌套 div 和 <a>，「数标签配对」的正则很容易对不上。
+    const noticeHtml = iosPdfPage.text.slice(
+      iosPdfPage.text.indexOf('data-ios-pdf-notice'),
+      iosPdfPage.text.indexOf('<iframe'),
+    );
+    ok('★ iOS 提示给了「新标签页打开」这条出路，而不是只说一句不支持',
+      new RegExp(`<a[^>]*href="/materials/${pdfMaterialId}/pdf"[^>]*target="_blank"`).test(noticeHtml),
+      noticeHtml.slice(0, 220));
+    ok('★ iOS 提示说清了是苹果的限制（否则用户会以为文件传坏了）',
+      /苹果|Safari/.test(noticeHtml) && noticeHtml.includes('第一页'));
+
+    // ★ 这一条是上面两个 hidden 的兜底。
+    //   hidden 属性本身并不隐藏任何东西：浏览器默认那条 [hidden]{display:none}
+    //   属于最低优先级，会被 .btn / .notice 自己的 display 盖掉。
+    //   少了下面这条 !important 规则，「全屏」按钮和这块 iOS 提示
+    //   会在**所有设备上**冒出来 —— 一个点了没反应，一个根本不该出现。
+    ok('★ 样式表里有 [hidden] 契约（否则上面两处 hidden 都是摆设）',
+      /\[hidden\]\s*\{[^}]*display:\s*none\s*!important/.test(fsCss.replace(/\/\*[\s\S]*?\*\//g, '')),
+      '基础层缺 [hidden] { display: none !important }');
+    ok('★ iOS 提示块的样式在（.viewer__notice）', fsCss.includes('.viewer__notice'));
+
+    const delPdf = await req('DELETE', `/api/materials/${pdfMaterialId}`);
+    ok('清理掉这份临时 PDF（别影响后面的统计）', delPdf.status === 200,
+      `状态码 ${delPdf.status}`);
 
     // 标题不应重复显示
     const titleOccurrences = (previewPage.text.match(/第一章 导论/g) || []).length;
@@ -999,6 +1093,11 @@ async function run() {
     }
     const txtPage = await req('GET', `/materials/${txtRes.json.material.id}`);
     ok('文本预览页显示正文', txtPage.text.includes('第一章重点'));
+    // 文字版也走的是「服务端排版 + 一段正文」这条路，同样不该出现 iOS 提示。
+    // 在这里也验一次，而不是只在 Office 页上看 —— A/B 注入时发现：
+    // 只验一个模式的话，把提示误加进另一个模式是抓不住的。
+    ok('★ 文字预览模式不该有 iOS 提示（那种模式手机上本来就是好的）',
+      !txtPage.text.includes('data-ios-pdf-notice'));
 
     // 全文检索
     const search = await req('GET', '/materials?q=' + encodeURIComponent('微观经济学'));
@@ -1167,6 +1266,8 @@ async function run() {
       !slideDeckPage.text.includes('这个文件还是文字版预览'));
     ok('★ 图片用懒加载，长课件不会一次性拉几百张',
       slideDeckPage.text.includes('loading="lazy"'));
+    ok('★ 幻灯片图片模式不该有 iOS 提示（每页都是图，手机上本来就是好的）',
+      !slideDeckPage.text.includes('data-ios-pdf-notice'));
 
     // ---- 页面内看图器 ----
     // 用户反馈：「点进 ppt 单页图片有 bug，退不出来，然后也不能翻页」。

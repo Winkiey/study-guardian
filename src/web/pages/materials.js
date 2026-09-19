@@ -242,8 +242,25 @@ function renderPreview(material, textContent, officeData) {
 
   if (mode === 'pdf') {
     // 用 <iframe> 交给浏览器内置的 PDF 阅读器：
-    // 支持缩放、翻页、全文检索、打印，而且零 JavaScript 依赖
+    // 支持缩放、翻页、全文检索、打印，而且零 JavaScript 依赖。
+    //
+    // 但 iPhone / iPad 上的 Safari 是例外：内嵌 PDF 它只渲染第一页，
+    // 而且**不给滚动**（不是「没加载完」，就是苹果的限制）。
+    // 用户看到的是一份「只有一页的课件」，很容易以为是文件坏了。
+    //
+    // 所以这里额外准备一块提示，由 app.js 认出 iOS 之后再显示。
+    // 默认带 hidden 属性：桌面浏览器不需要这条提示，
+    // 而「隐藏」这件事靠的是 app.css 基础层那条 [hidden] { display: none !important } ——
+    // 单靠 hidden 属性是不够的，作者样式里任何 display 都会盖掉浏览器默认的 display: none。
     return `<div class="viewer viewer--pdf">
+  <div class="viewer__notice" data-ios-pdf-notice hidden>
+    <div class="viewer__notice-icon">${icon('alert', 16)}</div>
+    <div class="viewer__notice-body">
+      <strong>在 iPhone / iPad 上，这里只会显示第一页</strong>
+      <p>这是苹果 Safari 对网页内嵌 PDF 的限制，跟文件本身没关系。想看完整内容和翻页，请用下面的按钮打开 —— 会交给系统自带的 PDF 阅读器，缩放、翻页、搜索都正常。</p>
+      <a class="btn btn--primary btn--sm" href="/materials/${material.id}/pdf" target="_blank" rel="noopener">${icon('external', 14)}<span>在新标签页打开</span></a>
+    </div>
+  </div>
   <iframe class="viewer__frame" src="/materials/${material.id}/pdf#view=FitH" title="${escapeHtml(material.title)}"></iframe>
   <div class="viewer__fallback">
     如果你的浏览器没有显示上面的内容，<a href="/materials/${material.id}/pdf" target="_blank" rel="noopener">点此在新标签页打开</a>

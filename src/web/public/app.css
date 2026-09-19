@@ -195,6 +195,15 @@
    ========================================================================== */
 *, *::before, *::after { box-sizing: border-box; }
 
+/* [hidden] 必须真的隐藏起来 —— 这一条是修 bug 的，不是洁癖。
+   浏览器默认样式里确实有 [hidden] { display: none }，但它的优先级是
+   「浏览器默认」这一档，**任何**作者写的 display 都能盖掉它。
+   本文件里 .btn 就是 display: inline-flex，于是带 hidden 的按钮照常显示：
+   没有 JavaScript 时「全屏」按钮会摆在那里、点了没反应；
+   .viewer__notice 更糟 —— 它会在所有设备上冒出来，而不只是手机上。
+   与其给每个组件补一条 .xxx[hidden]，不如在基础层用 !important 一刀切掉。 */
+[hidden] { display: none !important; }
+
 html {
   -webkit-text-size-adjust: 100%;
   scroll-behavior: smooth;
@@ -1683,6 +1692,28 @@ select.input { cursor: pointer; }
   box-shadow: var(--shadow-sm);
 }
 .viewer--pdf { display: flex; flex-direction: column; }
+
+/* PDF 内嵌模式的 iPhone / iPad 提示。
+   默认是 hidden 的，app.js 认出 iOS 之后才显示（见 pages/materials.js 里的说明）。
+   放在 iframe **上面**而不是下面：放在下面的话，
+   用户会先盯着一份「只有一页」的 PDF 纳闷半天才滚到提示。
+   底色用 warn 档而不是 danger：这不是出错，只是这台设备上换个打开方式。 */
+.viewer__notice {
+  display: flex;
+  gap: 11px;
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--c-border);
+  background: var(--c-warn-soft);
+}
+.viewer__notice-icon { flex: 0 0 auto; color: var(--c-warn); padding-top: 1px; }
+.viewer__notice-body { min-width: 0; }
+.viewer__notice-body strong { display: block; margin-bottom: 4px; letter-spacing: -0.006em; }
+.viewer__notice-body p {
+  margin-bottom: 10px;
+  font-size: 13px;
+  color: var(--c-text-2);
+  line-height: 1.6;
+}
 .viewer__frame {
   width: 100%;
   height: calc(100vh - 240px);

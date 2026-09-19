@@ -1929,6 +1929,41 @@ function initMaterialViewer() {
   });
 }
 
+/**
+ * 这是不是一台 iOS 设备（iPhone / iPad）。
+ *
+ * 单独抽出来是为了能被测试直接调用，也为了把「为什么这么判断」写在一处。
+ */
+function isIosDevice() {
+  const ua = navigator.userAgent || '';
+  // iPhone / iPad / iPod 会老老实实报自己，直接认出来
+  if (/iPad|iPhone|iPod/.test(ua)) return true;
+  // iPadOS 13 起 Safari 的 UA 直接写成「Macintosh」，跟真 Mac 一模一样，
+  // 光看 UA 认不出来。差别在于真 Mac 没有触摸屏：多点触控数 > 1 就是 iPad。
+  return /Macintosh/.test(ua) && navigator.maxTouchPoints > 1;
+}
+
+/**
+ * PDF 预览在 iPhone / iPad 上只显示第一页 —— 显示一条「换个方式打开」的提示。
+ *
+ * iOS Safari 在 <iframe> 里渲染 PDF 时只画第一页，而且不给滚动。
+ * 用户看到的是一份「只有一页的课件」，很容易以为文件传坏了或者上传没成功。
+ * 这条提示告诉他改用新标签页打开（交给系统自带的阅读器），那才是能翻页的。
+ *
+ * 判断为什么放在前端而不是服务端：
+ * 服务端只能看 User-Agent，而 iPadOS 13 起的 UA 和 Mac 完全一样，认不出来。
+ * 前端能再多问一句 navigator.maxTouchPoints，才分得清 iPad 和 Mac。
+ *
+ * 提示块默认带 hidden 属性躺在 HTML 里，这里只负责在认出来之后把 hidden 去掉。
+ * 认不出来就什么都不做 —— 桌面浏览器不该看到这条。
+ */
+function initIosPdfNotice() {
+  const notice = document.querySelector('[data-ios-pdf-notice]');
+  if (!notice) return;
+  if (!isIosDevice()) return;
+  notice.hidden = false;
+}
+
 function initMaterials() {
   /** 上传弹窗要页面上的模板才能弹，所以等到真要弹的时候再检查 */
   function openUploadModal() {
@@ -3062,6 +3097,7 @@ function boot() {
   initMisc();
   initSlideViewer();
   initMaterialViewer();
+  initIosPdfNotice();
   initAssignmentChecks();
   initAssignments();
   initCourses();
