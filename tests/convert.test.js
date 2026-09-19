@@ -284,3 +284,71 @@ describe('convertToPdf 的前置检查', () => {
     assert.match(r.error, /课件/, '要安抚一下：文件没丢');
   });
 });
+
+// ============================================================
+// LibreOffice 的 PDF 导出过滤器
+//
+// 这一段来自真事：用户在云服务器上装好 LibreOffice 之后，PPT 能转 PDF 了，
+// 但 Word / Excel 一直只能看文字版。原因是三者的导出过滤器**不是同一个**，
+// 而代码里把演示文稿专用的 impress_pdf_Export 写死了。
+//
+// 这个坑在 Windows 上开发时完全看不出来 —— Windows 走 COM，不看这个参数。
+// ============================================================
+
+describe('★ LibreOffice 的 PDF 导出过滤器要按文档类型选', () => {
+  test('★ 演示文稿用 Impress 的过滤器', () => {
+    for (const ext of ['.ppt', '.pptx', '.pps', '.ppsx']) {
+      assert.equal(convert.libreOfficePdfFilter(ext), 'impress_pdf_Export', `${ext} 的过滤器不对`);
+    }
+  });
+
+  test('★ 文字文档用 Writer 的过滤器（写死 Impress 会让它永远转不出来）', () => {
+    for (const ext of ['.doc', '.docx', '.rtf']) {
+      assert.equal(convert.libreOfficePdfFilter(ext), 'writer_pdf_Export', `${ext} 的过滤器不对`);
+    }
+  });
+
+  test('★ 表格用 Calc 的过滤器', () => {
+    for (const ext of ['.xls', '.xlsx']) {
+      assert.equal(convert.libreOfficePdfFilter(ext), 'calc_pdf_Export', `${ext} 的过滤器不对`);
+    }
+  });
+
+  test('大小写都认；不认识的类型交给 LibreOffice 自己挑', () => {
+    assert.equal(convert.libreOfficePdfFilter('.PPTX'), 'impress_pdf_Export');
+    assert.equal(convert.libreOfficePdfFilter('.DocX'), 'writer_pdf_Export');
+    assert.equal(convert.libreOfficePdfFilter('.odp'), 'pdf');
+    assert.equal(convert.libreOfficePdfFilter(''), 'pdf');
+    assert.equal(convert.libreOfficePdfFilter(null), 'pdf');
+    assert.equal(convert.libreOfficePdfFilter(undefined), 'pdf');
+  });
+
+  test('★ 每一种「可转换」的类型都要有对应的过滤器，不能漏', async () => {
+    // 这两个清单分在两个文件里，很容易加了一个忘了另一个。
+    // 漏掉的后果是那种文件**永远**只能看文字版，而且不报错。
+    const src = fs.readFileSync(
+      path.resolve(import.meta.dirname, '../src/lib/files.js'),
+      'utf8',
+    );
+    const m = /const CONVERTIBLE = new Set\(\[([^\]]+)\]\)/.exec(src);
+    assert.ok(m, '应该能从 files.js 里读出 CONVERTIBLE 清单');
+
+    const exts = [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]);
+    assert.ok(exts.length >= 8, `应该读到足够多的类型，实际 ${exts.length}`);
+
+    const missing = exts.filter((e) => convert.libreOfficePdfFilter(e) === 'pdf');
+    assert.deepEqual(missing, [],
+      `这些类型可转换，但没指定导出过滤器，会走到兜底值：${missing.join(', ')}`);
+  });
+
+  test('★ 静态守卫：过滤器不能再被写死成某一个', () => {
+    const src = fs.readFileSync(
+      path.resolve(import.meta.dirname, '../src/lib/convert.js'),
+      'utf8',
+    ).replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+
+    assert.ok(!/['"`]pdf:impress_pdf_Export['"`]/.test(src),
+      '不要把过滤器写死成 impress_pdf_Export —— Word / Excel 用它会被 LibreOffice 拒绝');
+    assert.match(src, /libreOfficePdfFilter\(ext\)/, '应该按扩展名取过滤器');
+  });
+});

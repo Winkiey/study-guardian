@@ -347,7 +347,7 @@ export async function convertToPdf(inputPath, ext) {
 
   try {
     if (converter.type === 'libreoffice') {
-      await convertWithLibreOffice(converter.path, inputPath, outDir);
+      await convertWithLibreOffice(converter.path, inputPath, outDir, ext);
       // LibreOffice 会把输出命名为「源文件主名.pdf」，但源文件名带随机 ID，
       // 所以需要重命名成我们期望的输出路径
       const produced = path.join(outDir, `${baseName}.pdf`);
@@ -568,7 +568,37 @@ export function sweepOfficeTemp(dir, cutoffMs = 10 * 60 * 1000) {
 // LibreOffice
 // ============================================================
 
-function convertWithLibreOffice(soffice, inputPath, outDir) {
+/**
+ * 按文档类型选 PDF 导出过滤器。
+ *
+ * 为什么必须分开写：`impress_pdf_Export` 是**演示文稿专用**的过滤器。
+ * 拿它去导 Word / Excel，LibreOffice 找不到适配当前文档的导出过滤器，
+ * 会直接放弃、连文件都不产出 —— 于是 Word / Excel 课件永远只能看文字版，
+ * 而 PPT 一切正常，根本联想不到是这一个参数的问题。
+ *
+ * 只影响 Linux / macOS 这条 LibreOffice 路线；Windows 走的是 COM 自动化，
+ * 压根不看这个参数，所以在 Windows 上开发时完全看不出来。
+ *
+ * 认不出的类型给个 `pdf`，让 LibreOffice 自己按文档类型挑。
+ */
+const PDF_EXPORT_FILTERS = {
+  '.ppt': 'impress_pdf_Export',
+  '.pptx': 'impress_pdf_Export',
+  '.pps': 'impress_pdf_Export',
+  '.ppsx': 'impress_pdf_Export',
+  '.doc': 'writer_pdf_Export',
+  '.docx': 'writer_pdf_Export',
+  '.rtf': 'writer_pdf_Export',
+  '.xls': 'calc_pdf_Export',
+  '.xlsx': 'calc_pdf_Export',
+};
+
+/** 某个扩展名该用哪个 PDF 导出过滤器 */
+export function libreOfficePdfFilter(ext) {
+  return PDF_EXPORT_FILTERS[String(ext || '').toLowerCase()] || 'pdf';
+}
+
+function convertWithLibreOffice(soffice, inputPath, outDir, ext) {
   // -env:UserInstallation 指定独立的用户配置目录。
   // 不指定的话，当 LibreOffice 已经开着时 headless 转换会静默失败。
   // 放在 cache 目录而不是系统临时目录，避免临时目录权限受限导致启动失败。
@@ -579,7 +609,7 @@ function convertWithLibreOffice(soffice, inputPath, outDir) {
     '--norestore',
     '--invisible',
     '--convert-to',
-    'pdf:impress_pdf_Export',
+    `pdf:${libreOfficePdfFilter(ext)}`,
     '--outdir',
     outDir,
     inputPath,
