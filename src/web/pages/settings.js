@@ -632,6 +632,9 @@ export function loginPage({
   return {
     title: mode === 'register' ? '注册' : '登录',
     active: '',
+    // 还没进站，不该套站内导航：未登录时侧边栏那 6 个入口和手机底部导航
+    // 点了只会被弹回这一页，底栏还会挡住表单。理由写在 layout.js 的 bare 说明里。
+    bare: true,
     body: `
 <div class="auth-shell">
   <div class="auth-card">

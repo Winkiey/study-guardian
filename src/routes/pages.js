@@ -71,6 +71,7 @@ function output(res, page, extras = {}) {
     active: page.active,
     body: page.body,
     wide: page.wide,
+    bare: page.bare,
     ...extras,
   }));
 }

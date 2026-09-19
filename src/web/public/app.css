@@ -56,7 +56,15 @@
   --c-border-strong: #d2d6df;
   --c-text: #0f1116;
   --c-text-2: #565d68;
-  --c-text-3: #868d99;
+  /* 三级文字（日期、占位符、教室、底部导航标签……）。
+     原来是 #868d99，对白底只有 3.34:1 —— 低于普通文字要求的 4.5:1。
+     它偏偏又全用在**最小**的字上：手机底部导航 10.5px、课表里的教室 11px，
+     那几个位置在手机上本来就最难认。
+     现在这个值对白底 5.38:1、对最浅的那层灰底(--c-surface-3) 4.81:1，
+     两种情况都过线，而观感上仍然明显比正文浅（正文 ≈18:1、二级 ≈6.6:1）。
+     ⚠️ 改这个值之前请重新算一遍：**要按它能落到的「最深」的那层底色算**，
+        因为底色越深、差距越小、对比度越低。浅色模式下最深的是 --c-surface-3。 */
+  --c-text-3: #636b78;
 
   /* 叠加层（弹窗遮罩、图片角标） */
   --c-overlay: rgba(14, 17, 23, 0.48);
@@ -140,7 +148,12 @@
     --c-border-strong: #3a3f49;
     --c-text: #f0f2f6;
     --c-text-2: #a2a9b5;
-    --c-text-3: #767d8a;
+    /* 深色模式下同样是「越小越难认」的那些字在用三级色。
+       原来的 #767d8a 在浅色面板(--c-surface)上 4.37:1，已经不够；
+       在更亮一点的 --c-surface-3 上只有 3.66:1。
+       现在这个值最差的一种组合（落在最亮的 surface-3 上）是 4.84:1。
+       ⚠️ 深色模式要按**最亮**的那层底色算，因为底色越亮、差距越小。 */
+    --c-text-3: #8b92a0;
 
     --c-overlay: rgba(0, 0, 0, 0.66);
 
@@ -179,7 +192,7 @@
   --c-border-strong: #3a3f49;
   --c-text: #f0f2f6;
   --c-text-2: #a2a9b5;
-  --c-text-3: #767d8a;
+  --c-text-3: #8b92a0;
 
   --c-overlay: rgba(0, 0, 0, 0.66);
 
@@ -359,6 +372,53 @@ hr { border: 0; border-top: 1px solid var(--c-border); margin: 18px 0; }
   grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
   min-height: 100vh;
 }
+
+/* ---- bare：登录 / 注册这类「还没进站」的页面 ----
+   不渲染侧边栏和底部导航（它们点了只会弹回登录页，底栏还会挡住表单），
+   所以这里把骨架收回成单列，并**去掉 .main 的内边距**。
+
+   去掉内边距是修一个具体毛病：`.main` 上下各有 40 / 96px，
+   而里面的 `.auth-shell` 自己又写 `min-height:100vh` —— 两个一叠，
+   **内容明明很短，页面也必然多出一条 136px 的滚动条**（手机上更明显，
+   还会连带影响地址栏的收起行为）。高度整个交给 .auth-shell 之后就没有了。 */
+.app-shell--bare {
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+.app-shell--bare .main {
+  padding: 0;
+  max-width: none;
+}
+.app-shell--bare .auth-shell {
+  min-height: 100vh;
+  /* dvh：手机上地址栏收起/展开时 vh 不变，用 vh 会多留或少留一条 */
+  min-height: 100dvh;
+  /* 原来靠 .main 的下内边距躲开底部导航；bare 页面没有底部导航了，
+     改由自己躲开**刘海和 home 指示条**（不加的话卡片会贴着屏幕边缘）。 */
+  padding-top: calc(24px + env(safe-area-inset-top));
+  padding-bottom: calc(24px + env(safe-area-inset-bottom));
+  padding-left: calc(24px + env(safe-area-inset-left));
+  padding-right: calc(24px + env(safe-area-inset-right));
+}
+
+/* bare 页面没有侧边栏，深色模式开关单独浮在右上角。
+   44×44 是手指能稳稳点到的尺寸（这个站其它小控件 32–36px 偏小了）。 */
+.theme-toggle--float {
+  position: fixed;
+  top: calc(12px + env(safe-area-inset-top));
+  right: 12px;
+  z-index: 20;
+  width: 44px;
+  height: 44px;
+  justify-content: center;
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-pill);
+  background: var(--c-surface);
+  color: var(--c-text-2);
+  box-shadow: var(--shadow-sm);
+}
+.theme-toggle--float:hover { color: var(--c-text); background: var(--c-surface); }
 
 .sidebar {
   position: sticky;

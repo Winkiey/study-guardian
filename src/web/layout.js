@@ -142,9 +142,27 @@ export const NAV_ITEMS = [
  * @param {object} [opts.user] 当前用户
  * @param {string} [opts.scripts] 页面级脚本
  * @param {object} [opts.stats] 导航栏上的角标数据
+ * @param {boolean} [opts.wide] 放宽主体最大宽度
+ * @param {boolean} [opts.bare] 不套侧边栏和底部导航（登录/注册这类「还没进站」的页面用）
  */
-export function renderPage({ title, active, body, user, scripts = '', stats = {}, wide = false }) {
+export function renderPage({ title, active, body, user, scripts = '', stats = {}, wide = false, bare = false }) {
   const fullTitle = title ? `${title} · ${config.appName}` : config.appName;
+  /**
+   * 为什么登录页要 bare：
+   * 未登录时侧边栏那 6 个入口和手机底部导航照常渲染，**点哪一个都会被弹回登录页** ——
+   * 看起来像坏了，实际是自己跟自己绕圈。而且底部导航固定在屏幕底部，
+   * 会挡住登录表单那一块。登录页本来也不需要站内导航。
+   *
+   * 另外它还顺手解决了另一个问题：`.main` 有 40/96px 的上下内边距，
+   * 而 `.auth-shell` 自己又写 `min-height:100vh`，两个叠起来
+   * **内容很短也必然多出一条 136px 的滚动条**。bare 模式下把 .main 的内边距去掉，
+   * 高度整个交给 .auth-shell（见 app.css 的 .app-shell--bare 那一条）。
+   */
+  const shellClass = [
+    'app-shell',
+    wide ? 'app-shell--wide' : '',
+    bare ? 'app-shell--bare' : '',
+  ].filter(Boolean).join(' ');
 
   return `<!doctype html>
 <html lang="zh-CN">
@@ -184,8 +202,8 @@ export function renderPage({ title, active, body, user, scripts = '', stats = {}
 <body data-asset-version="${escapeHtml(assetVersion())}">
 <a class="skip-link" href="#main">跳到主要内容</a>
 
-<div class="app-shell${wide ? ' app-shell--wide' : ''}">
-  <aside class="sidebar">
+<div class="${shellClass}">
+  ${bare ? '' : `<aside class="sidebar">
     <div class="brand">
       <span class="brand__mark">${icon('book', 20)}</span>
       <span class="brand__text">${escapeHtml(config.appName)}</span>
@@ -206,13 +224,19 @@ export function renderPage({ title, active, body, user, scripts = '', stats = {}
         ${icon('sun', 16)}<span class="theme-toggle__label">深色模式</span>
       </button>
     </div>
-  </aside>
+  </aside>`}
 
   <main class="main" id="main">
     ${body}
   </main>
 
-  <nav class="tabbar" aria-label="底部导航">
+  ${bare ? `
+  ${/* bare 页面没有侧边栏，深色模式开关得单独给一个。
+       用图标 + 静态 aria-label：initTheme 找的是「第一个 [data-theme-toggle]」，
+       而这个按钮的标签是**动作**（切换深浅色）而不是状态，所以不需要跟着变。 */ ''}
+  <button type="button" class="theme-toggle theme-toggle--float" data-theme-toggle
+          title="切换深色模式" aria-label="切换深浅色模式">${icon('moon', 18)}</button>`
+    : `<nav class="tabbar" aria-label="底部导航">
     ${/*
       之前这里是 NAV_ITEMS.slice(0, 5)，只放前五项。
       但手机端侧边栏是 display:none 的，而「设置」只存在于侧边栏里 ——
@@ -220,7 +244,7 @@ export function renderPage({ title, active, body, user, scripts = '', stats = {}
       所以六项全放，栏位也同步改成 6 列（见 app.css 的 .tabbar）。
     */ ''}
     ${NAV_ITEMS.map((item) => navLink(item, active, stats, true)).join('')}
-  </nav>
+  </nav>`}
 </div>
 
 <div class="toast-stack" id="toast-stack" aria-live="polite"></div>

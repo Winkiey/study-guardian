@@ -391,6 +391,24 @@ async function run() {
 
     const loginPage = await req('GET', '/login');
     ok('登录页可访问', loginPage.status === 200, `状态码 ${loginPage.status}`);
+
+    // ---- 登录页不该套着站内导航 ----
+    // 未登录时侧边栏那 6 个入口和手机底部导航照常渲染的话，
+    // 点哪一个都会被弹回登录页 —— 看起来像坏了，实际是自己跟自己绕圈；
+    // 而底部导航固定在屏幕底部，还会挡住登录表单。
+    ok('★ 登录页没有侧边栏（那 6 个入口点了只会弹回本页）',
+      !loginPage.text.includes('class="sidebar"'));
+    ok('★ 登录页没有手机底部导航（它会挡住表单）',
+      !loginPage.text.includes('class="tabbar"'));
+    ok('★ 登录页也没有那些点了会被弹回来的站内链接',
+      !loginPage.text.includes('href="/timetable"') && !loginPage.text.includes('href="/materials"'));
+    ok('★ 登录页用的是 bare 骨架',
+      loginPage.text.includes('app-shell--bare'));
+    ok('★ 登录页仍然有深色模式开关（换成浮动的，方便还没登录的人先调好）',
+      loginPage.text.includes('theme-toggle--float') && loginPage.text.includes('data-theme-toggle'));
+    ok('登录页仍然有「跳到主要内容」', loginPage.text.includes('跳到主要内容'));
+    ok('★ 登录和注册两个 Tab 都还在（去掉导航不能把功能也去掉）',
+      loginPage.text.includes('id="tab-login"') && loginPage.text.includes('id="tab-register"'));
     ok('首次访问引导创建账号', loginPage.text.includes('创建账号'));
 
     const rootRedirect = await req('GET', '/');
