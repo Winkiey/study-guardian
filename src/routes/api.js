@@ -20,7 +20,7 @@ import {
 } from '../lib/http.js';
 import config from '../config.js';
 import { all, get, run } from '../db/index.js';
-import { changePassword, clearSessionCookie, requireUser, verifyPassword } from '../lib/auth.js';
+import { changePassword, clearSessionCookie, passwordProblem, requireUser, verifyPassword } from '../lib/auth.js';
 import { deleteAccount } from '../lib/account.js';
 import * as courses from '../lib/courses.js';
 import * as assignments from '../lib/assignments.js';
@@ -679,9 +679,11 @@ export function registerApi(router) {
     if (!verifyPassword(body.currentPassword || '', user.password_hash)) {
       throw badRequest('当前密码不正确');
     }
-    if (String(body.newPassword || '').length < 6) {
-      throw badRequest('新密码至少 6 位');
-    }
+    // 走 auth.js 里那一条规则，不在这里重写一遍长度判断：
+    // 两处各写一份迟早会不一致，而「页面说要 8 位、服务端只查 6 位」
+    // 这种错位不会报任何错，只会让规则形同虚设。
+    const badPassword = passwordProblem(body.newPassword);
+    if (badPassword) throw badRequest(badPassword.replace('密码', '新密码'));
     changePassword(ctx.user.id, body.newPassword);
     sendJson(ctx.res, { ok: true });
   }));

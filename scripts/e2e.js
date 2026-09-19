@@ -2034,6 +2034,17 @@ async function run() {
     });
     ok('过短的新密码被拒绝', shortPassword.status === 400, `状态码 ${shortPassword.status}`);
 
+    // 7 位这个边界是特意试的：下限从 6 提到 8 之后，「7 位」正是
+    // 以前能过、现在必须被挡住的那一档。只试「3 位」的话，
+    // 就算改密码这条路悄悄退回 6 位下限，测试也照样是绿的。
+    const sevenCharPassword = await req('POST', '/api/password', {
+      json: { currentPassword: 'test123456', newPassword: '1234567' },
+    });
+    ok('★ 改密码时 7 位也被拒绝（改密码这条路同样受 8 位下限约束）',
+      sevenCharPassword.status === 400, `状态码 ${sevenCharPassword.status}`);
+    ok('★ 改密码被拒后原密码仍然可用（没被改坏）',
+      (await req('POST', '/login', { form: { username: '测试同学', password: 'test123456' } })).status === 302);
+
     const traversal = await req('GET', '/static/../../../package.json');
     ok('静态资源路径穿越被阻止', traversal.status === 404 || traversal.status === 403,
       `状态码 ${traversal.status}`);
@@ -2927,7 +2938,33 @@ async function run() {
     const shortPw = await newBrowser()('POST', '/register', {
       form: { ...OTHER, password: '123', password2: '123', inviteCode: E2E_INVITE_CODE },
     });
-    ok('★ 密码太短会被拒绝', /至少 6 位/.test(shortPw.text));
+    ok('★ 密码太短会被拒绝', /至少 8 位/.test(shortPw.text));
+
+    // 7 位这个边界是特意试的：下限从 6 提到 8 之后，
+    // 「7 位」正是以前能过、现在必须被挡住的那一档。
+    const sevenPw = await newBrowser()('POST', '/register', {
+      form: { ...OTHER, password: '1234567', password2: '1234567', inviteCode: E2E_INVITE_CODE },
+    });
+    ok('★ 7 位也会被拒绝（这正是下限从 6 提到 8 的意义）',
+      /至少 8 位/.test(sevenPw.text), sevenPw.text.slice(0, 200));
+
+    // 而且要在**页面上**说清楚要求，不能只藏在 placeholder 里 ——
+    // placeholder 在敲下第一个字符时就消失了，新用户根本没机会看到。
+    //
+    // ⚠️ 必须用**未登录**的客户端取这一页：这段测试跑的时候当前会话是登录状态，
+    //    而 /register 对已登录用户会直接 302 回首页 —— 拿到的是空响应体，
+    //    三条断言会全红（第一版就是这么写错的，而且红得像功能坏了）。
+    const registerPageHtml = (await newBrowser()('GET', '/register')).text;
+    ok('注册页确实渲染了注册表单（前提：下面三条才有意义）',
+      registerPageHtml.includes('id="rg_pass"'), `长度 ${registerPageHtml.length}`);
+    ok('★ 注册页把密码要求写成了常驻帮助文字（不是 placeholder）',
+      /id="rg_pass_help"[\s\S]{0,120}至少 8 位/.test(registerPageHtml)
+      && !/placeholder="至少 \d 位"/.test(registerPageHtml),
+      '要求只写在 placeholder 里的话，一输入就看不见了');
+    ok('★ 注册页的密码框带 minlength（浏览器先拦一道，不用等提交）',
+      /id="rg_pass"[\s\S]{0,240}minlength="8"/.test(registerPageHtml));
+    ok('★ 帮助文字和输入框用 aria-describedby 关联（读屏能念出来）',
+      /id="rg_pass"[\s\S]{0,240}aria-describedby="rg_pass_help"/.test(registerPageHtml));
 
     const dupSame = await newBrowser()('POST', '/register', {
       form: {

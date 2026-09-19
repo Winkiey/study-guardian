@@ -19,7 +19,7 @@
  *     会改错人 —— 而且对方会以为自己被盗号了。
  */
 
-import { hashPassword, verifyPassword } from '../src/lib/auth.js';
+import { hashPassword, passwordProblem, verifyPassword } from '../src/lib/auth.js';
 import { getDb } from '../src/db/index.js';
 import config from '../src/config.js';
 
@@ -41,12 +41,12 @@ if (!password) {
   process.exit(1);
 }
 
-if (password.length < 6) {
-  console.error('\n✗ 密码至少 6 位（和注册时的规则一致）。\n');
-  process.exit(1);
-}
-if (password.length > 200) {
-  console.error('\n✗ 密码太长了（最多 200 位）。\n');
+// 规则从 auth.js 取，不在这里再写一个数字：
+// 脚本被人用来救急（进不去账号时），它要是比服务端宽松，
+// 就会「重置成功但登不上」，那是最难排查的一种。
+const pwProblem = passwordProblem(password);
+if (pwProblem) {
+  console.error(`\n✗ ${pwProblem}（和注册时的规则一致）。\n`);
   process.exit(1);
 }
 

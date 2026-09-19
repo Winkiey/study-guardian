@@ -2976,8 +2976,14 @@ function initPasswordForm() {
       toast('两次输入的新密码不一致', 'error');
       return;
     }
-    if (String(raw.newPassword).length < 6) {
-      toast('新密码至少 6 位', 'error');
+    // 长度下限**从输入框自己身上读**（服务端渲染的 minlength），不要在客户端再写一个数字：
+    // 写死的话，服务端把规则改成 8 位之后这里还是 6，用户会在前端被放过去、
+    // 然后吃一个服务端的报错 —— 或者反过来，前端拦下服务端允许的密码。
+    // input.minLength 在没写这个属性时是 0，所以退回到服务端同款 8。
+    const pwInput = form.querySelector('[name=newPassword]');
+    const minLen = Number(pwInput?.minLength) || 8;
+    if (String(raw.newPassword).length < minLen) {
+      toast(`新密码至少 ${minLen} 位`, 'error');
       return;
     }
 

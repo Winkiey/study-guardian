@@ -100,9 +100,18 @@ describe('用户名校验', () => {
 });
 
 describe('密码校验', () => {
-  test('少于 6 位不行', () => {
-    assert.match(auth.passwordProblem('12345'), /至少 6 位/);
-    assert.equal(auth.passwordProblem('123456'), '');
+  test('少于 8 位不行', () => {
+    assert.match(auth.passwordProblem('1234567'), /至少 8 位/);
+    assert.equal(auth.passwordProblem('12345678'), '');
+  });
+
+  test('★ 下限是从 auth.js 导出的常量，页面和脚本都取它', () => {
+    // 这个数字以前散在五六个地方（auth.js、api.js、页面 minlength、
+    // 前端校验、reset-password 脚本）。改了下限却漏掉一处，
+    // 会出现「页面说要 8 位、服务端只查 6 位」这种不报错的错位。
+    assert.equal(auth.PASSWORD_MIN_LENGTH, 8);
+    assert.match(auth.passwordProblem('a'.repeat(auth.PASSWORD_MIN_LENGTH - 1)), /至少 8 位/);
+    assert.equal(auth.passwordProblem('a'.repeat(auth.PASSWORD_MIN_LENGTH)), '');
   });
 
   test('超长密码被拒（scrypt 对超长输入很慢，是个廉价的拒绝服务面）', () => {

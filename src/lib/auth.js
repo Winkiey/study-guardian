@@ -198,10 +198,28 @@ export function usernameProblem(raw) {
   return '';
 }
 
+/**
+ * 密码最短长度。
+ *
+ * 从 6 位提到 8 位，是因为这个站开始给同学用了：以前只有自己一个账号，
+ * 密码弱不弱是自己的事；现在**别人注册的密码是别人的风险**，
+ * 而 6 位纯数字几秒钟就能枚举完。
+ *
+ * 导出成常量，是为了让「规则只写一处」：
+ * 页面上的 `minlength`、提示文案、命令行脚本都从这里取，
+ * 不然改了这里忘了那里，就会出现「页面说要 8 位、服务端只查 6 位」这种
+ * 谁都发现不了的错位。
+ *
+ * 注意：**加长下限不影响已有账号**。登录只校验哈希，不看长度 ——
+ * 老密码（哪怕是 6 位）照样能登进来，只是下次改密码时才受新规则约束。
+ */
+export const PASSWORD_MIN_LENGTH = 8;
+
 /** 密码校验，同样返回错误说明 */
 export function passwordProblem(password) {
-  if (String(password ?? '').length < 6) return '密码至少 6 位';
-  if (String(password ?? '').length > 200) return '密码太长了（最多 200 位）';
+  const raw = String(password ?? '');
+  if (raw.length < PASSWORD_MIN_LENGTH) return `密码至少 ${PASSWORD_MIN_LENGTH} 位`;
+  if (raw.length > 200) return '密码太长了（最多 200 位）';
   return '';
 }
 

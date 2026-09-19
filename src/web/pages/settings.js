@@ -10,6 +10,7 @@
  */
 
 import { escapeHtml } from '../../lib/http.js';
+import { PASSWORD_MIN_LENGTH } from '../../lib/auth.js';
 import { icon, pageHeader, card, emptyState, badge, field } from '../layout.js';
 import { SETTING_DEFS } from '../../lib/settings.js';
 import { humanSize } from '../../lib/files.js';
@@ -415,8 +416,9 @@ ${card({
       </div>
       <div class="field field--grow">
         <label class="field__label" for="pw_new">新密码</label>
-        <input id="pw_new" class="input" type="password" name="newPassword" autocomplete="new-password" minlength="6" required>
-        <p class="field__help">至少 6 位。</p>
+        <input id="pw_new" class="input" type="password" name="newPassword" autocomplete="new-password"
+               minlength="${PASSWORD_MIN_LENGTH}" required aria-describedby="pw_new_help">
+        <p class="field__help" id="pw_new_help">至少 ${PASSWORD_MIN_LENGTH} 位。改成更长的句子更好记也更难猜。</p>
       </div>
       <div class="field field--grow">
         <label class="field__label" for="pw_new2">确认新密码</label>
@@ -695,7 +697,12 @@ export function loginPage({
           <div class="field">
             <label class="field__label" for="rg_pass">密码</label>
             <input id="rg_pass" class="input" type="password" name="password" required
-                   autocomplete="new-password" placeholder="至少 6 位">
+                   minlength="${PASSWORD_MIN_LENGTH}" autocomplete="new-password"
+                   aria-describedby="rg_pass_help">
+            <p class="field__help" id="rg_pass_help">
+              至少 ${PASSWORD_MIN_LENGTH} 位，长一点更好。
+              这台服务器只有密码这一道防线，<strong>别用生日、学号或纯数字</strong>。
+            </p>
           </div>
           <div class="field">
             <label class="field__label" for="rg_pass2">确认密码</label>
