@@ -207,3 +207,69 @@ describe('静态守卫', () => {
     assert.match(src, /schedulePreview\(/, '扫到之后要重新排队');
   });
 });
+
+// ============================================================
+// 「重新转换」必须真的重转
+//
+// 这一段来自真事：用户装完中文字体后点「重新转换」，看到的还是那份乱码 PDF，
+// 于是以为「装字体没用」。真实原因是 convertToPdf 有一条复用逻辑 ——
+// 同名 PDF 已存在就直接返回它 —— 而 rebuildPreview 只删了幻灯片图片，
+// **没删 PDF**，所以「重新转换」原样返回了上一次的文件。
+// ============================================================
+
+describe('★ 「重新转换」必须真的重转，而不是复用旧产物', () => {
+  test('★ pdfOutputPathFor 指向缓存目录，由原件主名派生', async () => {
+    const convert = await import('../src/lib/convert.js');
+    const p = convert.pdfOutputPathFor(path.join(config.uploadDir, '2026/09/abc123.pptx'));
+    assert.ok(p.startsWith(path.join(config.cacheDir, 'pdf')), `应该落在 cache/pdf 下：${p}`);
+    assert.ok(p.endsWith('abc123.pdf'), `应该用原件主名：${p}`);
+  });
+
+  test('★ discardConvertedPdf 能删掉旧 PDF，文件本来不在也不报错', async () => {
+    const convert = await import('../src/lib/convert.js');
+    const input = path.join(config.uploadDir, '2026/09/discard-me-1.pptx');
+    const target = convert.pdfOutputPathFor(input);
+
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, 'old pdf');
+
+    assert.equal(await convert.discardConvertedPdf(input), true, '应该报告删掉了');
+    assert.equal(fs.existsSync(target), false, '文件应该真的没了');
+    assert.equal(await convert.discardConvertedPdf(input), false, '再删一次返回 false，但不抛错');
+  });
+
+  test('★ 重新转换之前，上一次的 PDF 必须被清掉（否则会原样复用）', async () => {
+    const convert = await import('../src/lib/convert.js');
+    const u = makeUser('rebuild');
+
+    // 造一份 Office 课件（用 docx：进度不会走到「导出幻灯片图片」那条 Windows 专用路径）
+    const m = await materials.createMaterialFromUpload(
+      u.id,
+      { filename: `重转测试${seq += 1}.docx`, mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', data: Buffer.from('dummy') },
+      { title: '重转测试' },
+    );
+
+    // 假装上一次已经转好了一份 PDF
+    const storedAbs = path.join(config.uploadDir, m.stored_name);
+    const oldPdf = convert.pdfOutputPathFor(storedAbs);
+    fs.mkdirSync(path.dirname(oldPdf), { recursive: true });
+    fs.writeFileSync(oldPdf, 'OLD-PDF-CONTENT');
+    db.run("UPDATE materials SET pdf_name = '../cache/pdf/x.pdf', preview_status = 'ready' WHERE id = ?", m.id);
+
+    // 关掉转换：这样「重转」一定失败，正好用来观察旧产物有没有被清
+    const saved = config.enableOfficeConvert;
+    config.enableOfficeConvert = false;
+    try {
+      await materials.rebuildPreview(u.id, m.id);
+    } finally {
+      config.enableOfficeConvert = saved;
+    }
+
+    assert.equal(fs.existsSync(oldPdf), false,
+      '★ 旧的 PDF 必须被删掉。留着它的话 convertToPdf 会直接复用，'
+      + '「重新转换」就成了摆设：界面报成功、内容一个字没变');
+
+    const row = db.get('SELECT pdf_name FROM materials WHERE id = ?', m.id);
+    assert.equal(row.pdf_name, '', '数据库里的 pdf_name 也要清掉');
+  });
+});

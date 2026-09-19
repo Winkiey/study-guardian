@@ -18,6 +18,7 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import config, { ensureRuntimeDirs } from '../config.js';
+import { CJK_FONT_INSTALL_HINT, cjkFontStatus } from './fonts.js';
 
 /** 缓存探测结果，避免每次转换都扫一遍磁盘 */
 let cachedConverter = undefined;
@@ -337,8 +338,7 @@ export async function convertToPdf(inputPath, ext) {
 
   ensureRuntimeDirs();
   const outDir = path.join(config.cacheDir, 'pdf');
-  const baseName = path.basename(inputPath, path.extname(inputPath));
-  const outputPath = path.join(outDir, `${baseName}.pdf`);
+  const outputPath = pdfOutputPathFor(inputPath);
 
   // 已转换过就直接复用（同一份文件内容不变，文件名是随机 ID，不会撞车）
   if (fileExistsNonEmpty(outputPath)) {
@@ -393,6 +393,42 @@ function fileExistsNonEmpty(p) {
     return fs.statSync(p).size > 0;
   } catch {
     return false;
+  }
+}
+
+/**
+ * 某份原件转出来的 PDF 应该放在哪儿。
+ *
+ * 抽出来是因为这个路径有**两个地方**要用：转换时写它、重新转换时删它。
+ * 两处各算一遍的话，迟早会有一边改了一边没改 —— 而这类不一致的表现
+ * 恰好是「重新转换」点了没反应（见 discardConvertedPdf 的说明）。
+ */
+export function pdfOutputPathFor(inputPath) {
+  const baseName = path.basename(inputPath, path.extname(inputPath));
+  return path.join(config.cacheDir, 'pdf', `${baseName}.pdf`);
+}
+
+/**
+ * 丢掉已经转好的 PDF（重新转换之前必须调用）。
+ *
+ * 为什么必须：convertToPdf 开头有一条复用逻辑 —— 同名 PDF 已存在就直接返回它
+ * （那是给「同一份原件被反复访问」用的优化，本身是对的）。
+ * 所以「重新转换」如果不先把旧产物删掉，就会**原样返回上一次的 PDF**：
+ * 界面上显示转换成功，内容一个字都没变。
+ *
+ * 真实后果：用户为了修「中文字体缺失」去装了字体，然后点「重新转换」，
+ * 看到的还是那份乱码 PDF，于是得出「装字体没用」的结论 —— 而实际上
+ * 只是根本没有重转。
+ *
+ * @returns {Promise<boolean>} 是否真的删掉了一个文件
+ */
+export async function discardConvertedPdf(inputPath) {
+  const target = pdfOutputPathFor(inputPath);
+  try {
+    await fsp.unlink(target);
+    return true;
+  } catch {
+    return false; // 本来就不存在，也算正常
   }
 }
 
@@ -1030,31 +1066,43 @@ async function runSlideChunk(converterType, inputPath, outDir, from, to) {
  */
 export function converterStatus() {
   const ready = converterReadiness();
+  const label = ready.converter ? ready.converter.label : '';
+
+  // 转换器能用，但系统里没有中文字体 —— 这是 Linux 服务器上最常见的坑，
+  // 而且它**不报任何错**：转换「成功」、PDF 也生成了，只是中文全是方框。
+  // 所以只要查得出来，就直接写在状态里，别让用户自己去猜。
+  const fonts = ready.available ? cjkFontStatus() : null;
+  const fontWarning = fonts && !fonts.ok
+    ? ` ⚠️ 但系统里没有任何中文字体，转出来的 PDF 里中文会显示成方框或乱码。`
+      + `装一下中文字体就好了：${CJK_FONT_INSTALL_HINT}`
+    : '';
 
   if (ready.available) {
     if (ready.converter.type === 'libreoffice') {
       return {
         available: true,
-        label: ready.converter.label,
-        message: `${ready.converter.label} 可用，PPT / Word / Excel 会自动转换成 PDF，预览效果与原件一致。`,
+        label: ready.converter.label + (fontWarning ? '（缺中文字体）' : ''),
+        missingCjkFonts: Boolean(fontWarning),
+        message: `${ready.converter.label} 可用，PPT / Word / Excel 会自动转换成 PDF，预览效果与原件一致。${fontWarning}`,
       };
     }
     return {
       available: true,
-      label: ready.converter.label,
+      label: ready.converter.label + (fontWarning ? '（缺中文字体）' : ''),
+      missingCjkFonts: Boolean(fontWarning),
       message:
         `${ready.converter.label} 可用（PowerShell 正常），`
-        + 'PPT / Word / Excel 会自动转换成 PDF，预览效果与原件一致。',
+        + `PPT / Word / Excel 会自动转换成 PDF，预览效果与原件一致。${fontWarning}`,
     };
   }
 
   if (ready.reason === 'powershell-unavailable') {
     return {
       available: false,
-      label: `${ready.converter.label}（调不动）`,
+      label: `${label}（调不动）`,
       powershellUnavailable: true,
       message:
-        `检测到 ${ready.converter.label}，但它需要靠 PowerShell 调用 COM 组件，`
+        `检测到 ${label}，但它需要靠 PowerShell 调用 COM 组件，`
         + `而${ready.powershell.message}`
         + ' 课件内容不会丢，目前用内置解析器渲染成网页版（只保留文字和结构，没有排版）。'
         + '装个免费的 LibreOffice 可以绕开 PowerShell，它也走不通时请把这条信息反馈给开发者。',

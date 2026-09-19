@@ -10,10 +10,15 @@
  *   cd /opt/study-guardian
  *   node scripts/diagnose-preview.mjs
  *
- * 想顺便重试一遍（比如上次是内存不够、超时这类临时原因）：
+ * 想让它顺手重试（比如上次是内存不够、超时这类临时原因）：
  *   node scripts/diagnose-preview.mjs --retry
  *
- * 它只读数据，不删任何东西；--retry 会重跑转换，不改你的其它数据。
+ * 装完中文字体等环境变化之后，「重试」不够用 —— 因为已经转成 PDF、
+ * 只是内容是方框的课件在它眼里是「正常的」。这种要强制重转：
+ *   node scripts/diagnose-preview.mjs --reconvert 8       # 指定的那一份
+ *   node scripts/diagnose-preview.mjs --reconvert-all     # 所有 Office 课件
+ *
+ * 它只读数据，不删任何东西；--retry / --reconvert 会重跑转换，不动其它数据。
  */
 
 import fs from 'node:fs';
@@ -23,10 +28,9 @@ import { execSync } from 'node:child_process';
 import config from '../src/config.js';
 import { all, get, getDb } from '../src/db/index.js';
 import { converterStatus, converterReadiness } from '../src/lib/convert.js';
+import { CJK_FONT_INSTALL_HINT, cjkFontStatus } from '../src/lib/fonts.js';
 import { isConvertible } from '../src/lib/files.js';
 import { listSlideImages, previewMode } from '../src/lib/materials.js';
-
-const RETRY = process.argv.includes('--retry');
 
 const line = (s = '') => console.log(s);
 const rule = (title) => { line(); line(`── ${title} ${'─'.repeat(Math.max(0, 56 - title.length))}`); };
@@ -214,6 +218,39 @@ if (!status.available) {
 }
 
 // ============================================================
+// 4.5 中文字体
+//
+// 转换器能用 ≠ 转出来能看。PDF 是用**服务器上装了的字体**画字的，
+// 而云服务器的精简镜像里几乎不带中文字体 —— 于是转出来的 PDF
+// 里中文全是方框/乱码，但转换本身「成功」、不报任何错。
+//
+// 这个必须在转换器之后单独看：它是「能转」和「转得能看」的分界线。
+// ============================================================
+rule('中文字体');
+
+const fonts = cjkFontStatus();
+
+if (fonts.skipped) {
+  line(`不用查（${process.platform} 自带中文字体）✓`);
+} else if (fonts.ok) {
+  line(`已装 ${fonts.families.length} 种中文字体 ✓`);
+  for (const f of fonts.families.slice(0, 6)) line(`  ${f}`);
+  if (fonts.families.length > 6) line(`  …还有 ${fonts.families.length - 6} 种`);
+} else {
+  line('状态      缺失 ⚠️');
+  line('影响      转出来的 PDF 里中文会显示成方框或乱码');
+  if (fonts.reason === 'fc-list-unavailable') {
+    line('说明      连 fontconfig 都没有，多半是最小化安装的系统');
+  }
+  line();
+  line('修法（服务器上执行）：');
+  line(`  ${CJK_FONT_INSTALL_HINT}`);
+  line();
+  line('装完**不用重启服务**（字体是转换时现读的），但要把课件重新转一遍：');
+  line('  node scripts/diagnose-preview.mjs --retry');
+}
+
+// ============================================================
 // 5. 最近上传的课件各自是什么状态
 // ============================================================
 rule('最近的课件');
@@ -267,39 +304,118 @@ for (const m of rows) {
 }
 
 // ============================================================
-// 6. 可选：重试
+// 6. 可选：重试 / 强制重转
 // ============================================================
 rule('小结');
 
+// --reconvert <id>  强制重转指定的一份（不管它现在是什么状态）
+// --reconvert-all   强制重转所有 Office 课件
+//
+// 为什么需要「强制」这一档：脚本没法判断一份 PDF 里的中文是不是乱码。
+// 装完中文字体之后，那些**已经转成 PDF、但内容是方框**的课件看起来完全正常
+// （状态 ready、模式 pdf），--retry 只会说「都渲染正常，没有需要重试的」。
+const forceIds = [];
+
+if (process.argv.includes('--reconvert-all')) {
+  const office = all(
+    `SELECT id, title FROM materials
+      WHERE ext IN ('.ppt','.pptx','.pps','.ppsx','.doc','.docx','.rtf','.xls','.xlsx')
+      ORDER BY id`,
+  );
+  forceIds.push(...office.map((m) => m.id));
+  line(`强制重转全部 ${office.length} 份 Office 课件`);
+} else {
+  const i = process.argv.indexOf('--reconvert');
+  if (i !== -1) {
+    const raw = process.argv[i + 1];
+    const id = Number.parseInt(raw, 10);
+    if (!Number.isFinite(id) || id <= 0) {
+      line(`✗ --reconvert 后面要跟课件编号，例如：--reconvert 8`);
+      line();
+      process.exit(1);
+    }
+    if (!get('SELECT id FROM materials WHERE id = ?', id)) {
+      line(`✗ 没有编号为 ${id} 的课件`);
+      line();
+      process.exit(1);
+    }
+    forceIds.push(id);
+    line(`强制重转 #${id}`);
+  }
+}
+
+if (forceIds.length) {
+  const { rebuildPreview } = await import('../src/lib/materials.js');
+  line('开始重转（大文件可能要一两分钟，请耐心等）…');
+
+  for (const id of forceIds) {
+    const before = get('SELECT title FROM materials WHERE id = ?', id);
+    process.stdout.write(`  #${id} ${before?.title || ''} … `);
+    try {
+      const r = await rebuildPreview(get('SELECT user_id FROM materials WHERE id = ?', id).user_id, id);
+      const after = get('SELECT * FROM materials WHERE id = ?', id);
+      const afterMode = previewMode(after);
+      if (after.preview_status === 'ready' && afterMode !== 'office') {
+        line(`好了 ✓（渲染方式：${afterMode}）`);
+      } else {
+        line(`还是不行：${String(after.preview_error || r?.error || '').slice(0, 200)}`);
+      }
+    } catch (err) {
+      line(`出错：${err.message}`);
+    }
+  }
+
+  line();
+  line('重转完打开课件看一眼中文还乱不乱 —— 脚本看不出这个。');
+  line();
+  process.exit(0);
+}
+
 if (degraded.length === 0) {
   line('最近的课件都渲染正常，没有需要重试的。');
+
+  // 缺中文字体时，那些「已经转成 PDF」的课件其实也需要重转，
+  // 但脚本无从判断内容对不对，所以只能明说，让用户自己决定。
+  if (!fonts.skipped && !fonts.ok) {
+    line();
+    line('⚠️ 不过上面显示系统缺中文字体：以前转出来的那些 PDF 里中文很可能也是方框。');
+    line('装完字体之后，把 Office 课件整体重转一遍：');
+    line('  node scripts/diagnose-preview.mjs --reconvert-all');
+  }
 } else {
   line(`有 ${degraded.length} 份课件没有渲染成 PDF/图片：${degraded.map((m) => `#${m.id}`).join(' ')}`);
+  line();
+  line('重试它们：');
+  line('  node scripts/diagnose-preview.mjs --retry');
+}
 
-  if (!RETRY) {
-    line();
-    line('如果上面「转换器状态」显示可用，而且没有残留进程，可以直接重试：');
-    line('  node scripts/diagnose-preview.mjs --retry');
-  } else {
-    const { rebuildPreview } = await import('../src/lib/materials.js');
-    line();
-    line('开始重试（大文件可能要一两分钟，请耐心等）…');
+// --retry：只重试上面 N 份「明显没渲染好」的。
+// 判断标准是「渲染方式还是 office（纯文字版）」或者状态为 failed ——
+// 之前这里把「状态 ready 且 r.ok」也算成功，可是文字版降级的 status 也是 ready，
+// 于是它会把仍然只有文字的课件报成「好了 ✓」，纯属骗人。
+if (process.argv.includes('--retry') && degraded.length) {
+  const { rebuildPreview } = await import('../src/lib/materials.js');
+  line();
+  line('开始重试（大文件可能要一两分钟，请耐心等）…');
 
-    for (const m of degraded) {
-      process.stdout.write(`  #${m.id} ${m.title} … `);
-      try {
-        const r = await rebuildPreview(m.user_id, m.id);
-        const after = get('SELECT preview_status, preview_error, pdf_name FROM materials WHERE id = ?', m.id);
-        const ok = Boolean(after?.pdf_name) || Boolean(r?.ok && after?.preview_status === 'ready');
-        line(ok ? '好了 ✓' : `还是不行：${String(after?.preview_error || r?.error || '').slice(0, 160)}`);
-      } catch (err) {
-        line(`出错：${err.message}`);
+  for (const m of degraded) {
+    process.stdout.write(`  #${m.id} ${m.title} … `);
+    try {
+      const r = await rebuildPreview(m.user_id, m.id);
+      const after = get('SELECT * FROM materials WHERE id = ?', m.id);
+      const afterMode = previewMode(after);
+      if (after.preview_status === 'ready' && afterMode !== 'office') {
+        line(`好了 ✓（渲染方式：${afterMode}）`);
+      } else {
+        line(`还是不行：${String(after.preview_error || r?.error || '').slice(0, 200)}`);
       }
+    } catch (err) {
+      line(`出错：${err.message}`);
     }
-
-    line();
-    line('再跑一次不带参数的诊断，看结果：node scripts/diagnose-preview.mjs');
   }
+
+  line();
+  line('再跑一次不带参数的诊断，看结果：node scripts/diagnose-preview.mjs');
 }
 
 line();

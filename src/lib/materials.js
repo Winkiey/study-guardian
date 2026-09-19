@@ -38,7 +38,7 @@ import {
   saveUpload,
   uploadPath,
 } from './files.js';
-import { convertToPdf, exportSlidesToImages } from './convert.js';
+import { convertToPdf, discardConvertedPdf, exportSlidesToImages } from './convert.js';
 
 // ============================================================
 // 查询
@@ -497,10 +497,18 @@ export async function rebuildPreview(userId, materialId) {
   const row = get('SELECT * FROM materials WHERE id = ? AND user_id = ?', materialId, userId);
   if (!row) throw new Error('资料不存在');
 
-  // 把上一次的产物一并清掉，否则旧的幻灯片图片会和新生成的混在一起
+  // 把上一次的产物一并清掉。
+  //
+  // 两样都要删，缺一不可：
+  //   幻灯片目录 —— 否则旧的图片会和新生成的混在一起；
+  //   **PDF** —— convertToPdf 看到同名 PDF 存在就直接复用，不删的话
+  //   「重新转换」会原样返回上一次的文件：界面报成功、内容一个字没变。
+  //   用户为修「中文字体缺失」装了字体再点这个按钮，看到的还是乱码，
+  //   只会得出「装字体没用」的结论，根本想不到是没重转。
   if (row.slides_dir) {
     await fsp.rm(slidesDirFor(row.stored_name), { recursive: true, force: true }).catch(() => {});
   }
+  await discardConvertedPdf(uploadPath(row.stored_name));
 
   run(
     `UPDATE materials SET pdf_name = '', slides_dir = '', preview_status = 'pending', preview_error = ''

@@ -765,10 +765,24 @@ node scripts/reset-password.mjs 新密码 用户名      # 有多个账号时必
 node scripts/diagnose-preview.mjs
 ```
 
-常见原因它都能认出来：转换器没装/调不动、磁盘满了、内存不够、
-上一次转换超时后留下的僵尸进程把内存占满了。
+常见原因它都能认出来：转换器没装/调不动、**系统缺中文字体**、磁盘满了、
+内存不够、上一次转换超时后留下的僵尸进程把内存占满了。
 
-诊断说转换器可用时，可以直接重试（比如上次只是临时超时）：
+**如果课件里的中文变成了方框或乱码**（这个问题脚本也会报出来，但你要知道怎么修）：
+PDF 是用**服务器上装了的字体**画字的，而云服务器的精简镜像里几乎不带中文字体。
+装一下就行，**不用重启服务**：
+
+```bash
+sudo apt install -y fonts-noto-cjk fonts-wqy-microhei fonts-wqy-zenhei
+```
+
+装完要把已经转好的课件**重转一遍**（旧的 PDF 里画的就是方框，不会自己变好）：
+
+```bash
+node scripts/diagnose-preview.mjs --reconvert-all
+```
+
+诊断说转换器可用时，也可以直接重试那些没渲染好的：
 
 ```bash
 node scripts/diagnose-preview.mjs --retry

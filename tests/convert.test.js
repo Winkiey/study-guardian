@@ -352,3 +352,79 @@ describe('★ LibreOffice 的 PDF 导出过滤器要按文档类型选', () => {
     assert.match(src, /libreOfficePdfFilter\(ext\)/, '应该按扩展名取过滤器');
   });
 });
+
+// ============================================================
+// 中文字体
+//
+// 这一段来自真事：用户在云服务器上装好 LibreOffice 之后，PPT 能转 PDF 了，
+// 但**中文全是方框/乱码** —— 因为 PDF 是用服务器上装了的字体画字的，
+// 而云服务器的精简镜像里一个中文字体都没有。
+//
+// 转换「成功」、不报任何错，只有人眼能看出来。所以必须主动查、主动报。
+// ============================================================
+
+describe('★ 中文字体的检测', () => {
+  test('★ 解析 fc-list 的输出：一行一个字体，同族多语言名用逗号分隔', async () => {
+    const { parseCjkFontFamilies } = await import('../src/lib/fonts.js');
+
+    const got = parseCjkFontFamilies([
+      'Noto Sans CJK SC',
+      'WenQuanYi Micro Hei,WenQuanYi Micro Hei Mono,文泉驿微米黑',
+      'AR PL UMing CN',
+    ].join('\n'));
+
+    assert.deepEqual(got, [
+      'Noto Sans CJK SC',
+      'WenQuanYi Micro Hei',
+      'WenQuanYi Micro Hei Mono',
+      '文泉驿微米黑',
+      'AR PL UMing CN',
+    ]);
+  });
+
+  test('重复的字体只留一份；空行、多余空格都清掉', async () => {
+    const { parseCjkFontFamilies } = await import('../src/lib/fonts.js');
+    assert.deepEqual(
+      parseCjkFontFamilies('Noto Sans CJK SC\n\n  Noto Sans CJK SC  \n\t\n'),
+      ['Noto Sans CJK SC'],
+    );
+  });
+
+  test('没有输出就是没有（绝不能凭空说「有字体」）', async () => {
+    const { parseCjkFontFamilies } = await import('../src/lib/fonts.js');
+    for (const empty of ['', '\n', '\n\n', '   \n  ', null, undefined]) {
+      assert.deepEqual(parseCjkFontFamilies(empty), [], `输入 ${JSON.stringify(empty)} 应该得到空数组`);
+    }
+  });
+
+  test('★ 非 Linux 平台不去启动 fc-list（自带中文字体，也不该报警）', async () => {
+    if (process.platform === 'linux') return; // 这条只在非 Linux 上验证
+    const { cjkFontStatus, resetFontCache } = await import('../src/lib/fonts.js');
+    resetFontCache();
+    const s = cjkFontStatus();
+    assert.equal(s.ok, true);
+    assert.equal(s.skipped, true);
+    assert.equal(s.reason, 'not-linux');
+  });
+
+  test('★ 结果会缓存（设置页每次渲染都调它，不能每次都起进程）', async () => {
+    const { cjkFontStatus, resetFontCache } = await import('../src/lib/fonts.js');
+    resetFontCache();
+    const a = cjkFontStatus();
+    const b = cjkFontStatus();
+    assert.equal(a, b, '两次调用应该返回同一个对象');
+  });
+
+  test('★ 状态里带上了「缺中文字体」这个信息，页面才能提醒用户', () => {
+    const s = convert.converterStatus();
+    if (!s.available) return; // 没转换器时这一项无从谈起
+
+    // 缺字体时要能查出来（字段存在且是布尔）
+    assert.equal(typeof s.missingCjkFonts, 'boolean',
+      'converterStatus() 应该给出 missingCjkFonts，供设置页显示警告');
+    if (s.missingCjkFonts) {
+      assert.match(s.message, /中文字体/, '缺字体时要在说明里讲清楚');
+      assert.match(s.message, /apt install/, '并给出装字体的命令');
+    }
+  });
+});

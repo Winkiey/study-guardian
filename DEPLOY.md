@@ -117,11 +117,41 @@ curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
 sudo apt install -y nodejs
 
 # 让 PPT 预览和原件一致（不装也能用，只是预览会退化成网页版）
-sudo apt install -y libreoffice-impress fonts-noto-cjk
+# ⚠️ 中文字体必须一起装，否则转出来的 PPT 里中文全是方框 —— 见下面的说明
+sudo apt install -y libreoffice-impress libreoffice-writer libreoffice-calc
+sudo apt install -y fonts-noto-cjk fonts-wqy-microhei fonts-wqy-zenhei
 
 # 让服务常驻后台、开机自动启动
 sudo npm install -g pm2
 ```
+
+> ### ⚠️ 中文字体那一步别省（这是一路踩过来的）
+>
+> PPT 转 PDF 是**用服务器上装了的字体来画字的**。云服务器的精简镜像里几乎
+> 不带任何中文字体，于是转出来的 PDF 里中文会变成**方框或乱码** ——
+> 而转换本身「成功」、不报任何错，**只有你打开课件用眼睛看才能发现**。
+>
+> 这个坑在 Windows / macOS 上永远遇不到（系统自带中文字体），所以本地
+> 测得好好的，一到服务器就出问题。
+>
+> **怎么确认装没装**：跑一次自检，它会直接告诉你：
+>
+> ```bash
+> node scripts/diagnose-preview.mjs
+> ```
+>
+> 「中文字体」那一节会给出结论，缺了还会把命令打出来。
+> 设置页的「文件预览能力」那一栏也会在缺字体时提醒（标签上写「缺中文字体」）。
+>
+> 想要宋体更像原件，可以再补一个（可选）：
+> `sudo apt install -y fonts-noto-cjk-extra`
+>
+> **装完不用重启服务** —— 字体是转换时现读的。
+> 但**已经转好的那些 PDF 要重转一遍**，因为里面画的是方框，不会自己变好：
+>
+> ```bash
+> node scripts/diagnose-preview.mjs --reconvert-all
+> ```
 
 ---
 
