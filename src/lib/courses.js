@@ -108,7 +108,7 @@ export function guessTermName(startDate) {
 // 课程
 // ============================================================
 
-/** 课程列表（含上课时间与成绩构成统计） */
+/** 课程列表（含上课时间、成绩构成统计、资料与待办数量） */
 export function listCourses(userId, { includeArchived = false } = {}) {
   const rows = all(
     `SELECT * FROM courses
@@ -130,6 +130,32 @@ export function listCourses(userId, { includeArchived = false } = {}) {
     ...ids,
   );
 
+  // 每门课有多少资料、多少项待办。
+  //
+  // 必须在这里算：课程列表页每张卡片下面都要显示这两个数，而列表页拿的是
+  // 这个函数的结果。以前这两个字段只在 getCourseDetail 里算，列表页的模板
+  // 写着 `c.materialCount ?? 0` —— 字段根本不存在，于是**每门课都显示 0**，
+  // 和实际数量完全不符，而且不报任何错。
+  //
+  // 用两条 GROUP BY 一次算完所有课程，不是每门课查一次（那是 N+1）。
+  // 按 user_id 一起过滤：这两张表都有 user_id，带上它比只靠 course_id 更稳。
+  const materialCounts = new Map(
+    all(
+      `SELECT course_id, COUNT(*) AS c FROM materials
+        WHERE user_id = ? AND course_id IN (${placeholders})
+        GROUP BY course_id`,
+      userId, ...ids,
+    ).map((r) => [r.course_id, Number(r.c) || 0]),
+  );
+  const assignmentCounts = new Map(
+    all(
+      `SELECT course_id, COUNT(*) AS c FROM assignments
+        WHERE user_id = ? AND status != 'done' AND course_id IN (${placeholders})
+        GROUP BY course_id`,
+      userId, ...ids,
+    ).map((r) => [r.course_id, Number(r.c) || 0]),
+  );
+
   const sessionsByCourse = groupBy(sessions, 'course_id');
   const gradesByCourse = groupBy(grades, 'course_id');
 
@@ -138,6 +164,8 @@ export function listCourses(userId, { includeArchived = false } = {}) {
     sessions: sessionsByCourse.get(course.id) || [],
     gradeItems: gradesByCourse.get(course.id) || [],
     gradeSummary: summarizeGrade(gradesByCourse.get(course.id) || []),
+    materialCount: materialCounts.get(course.id) || 0,
+    assignmentCount: assignmentCounts.get(course.id) || 0,
   }));
 }
 
@@ -171,12 +199,18 @@ export function getCourseDetail(userId, id) {
   course.gradeSummary = summarizeGrade(course.gradeItems);
   course.term = course.term_id ? get('SELECT * FROM terms WHERE id = ?', course.term_id) : null;
 
-  // 课程下的资料与作业数量，详情页要显示
+  // 课程下的资料与作业数量，详情页要显示。
+  // 也带上 user_id：只按 course_id 过滤其实已经够（上面刚验过这门课属于他），
+  // 但两张表都有 user_id，多带一个条件是白拿的保险，也免得以后有人把
+  // 这段代码搬到别处时漏掉归属校验。
   course.materialCount = Number(
-    get('SELECT COUNT(*) AS c FROM materials WHERE course_id = ?', id)?.c || 0,
+    get('SELECT COUNT(*) AS c FROM materials WHERE course_id = ? AND user_id = ?', id, userId)?.c || 0,
   );
   course.assignmentCount = Number(
-    get('SELECT COUNT(*) AS c FROM assignments WHERE course_id = ? AND status != ?', id, 'done')?.c || 0,
+    get(
+      'SELECT COUNT(*) AS c FROM assignments WHERE course_id = ? AND user_id = ? AND status != ?',
+      id, userId, 'done',
+    )?.c || 0,
   );
 
   return course;

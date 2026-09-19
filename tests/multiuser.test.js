@@ -88,7 +88,9 @@ describe('用户名校验', () => {
   test('中文、英文、带空格的名字都能用', () => {
     assert.equal(auth.usernameProblem('小王'), '');
     assert.equal(auth.usernameProblem('Zhang San'), '');
-    assert.equal(auth.usernameProblem('王智睿-2025'), '');
+    // 用化名：这个仓库是公开的，别把真实姓名写进测试数据里
+    // （这一行以前就是真实姓名 —— 等于自己给自己泄露身份）
+    assert.equal(auth.usernameProblem('小明-2025'), '');
   });
 
   test('★ 首尾空格会被去掉（否则「 小王 」和「小王」会是两个账号）', () => {

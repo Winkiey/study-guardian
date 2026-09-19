@@ -13,20 +13,32 @@
 
 import { escapeHtml } from '../../lib/http.js';
 import { icon, pageHeader, card, emptyState, badge, nl2br } from '../layout.js';
-import { CATEGORY_LABELS } from '../../lib/materials.js';
+import {
+  DEFAULT_MATERIAL_CATEGORY,
+  MATERIAL_CATEGORIES,
+  categoryLabel,
+} from '../../lib/materials.js';
 
 // ============================================================
 // 资料库列表
 // ============================================================
 
+// 分类的筛选标签「全部 + 各分类」。
+//
+// 从 MATERIAL_CATEGORIES 生成，**不要在这里另抄一份**：以前这里手写了一份，
+// 结果它和上传/编辑表单的下拉框都漏了「教材」，而 lib 里那份有 ——
+// 于是出现「老数据里显示成教材，但选不了也筛不出来」的半截状态。
 const CATEGORY_TABS = [
   { value: '', label: '全部' },
-  { value: 'courseware', label: '课件' },
-  { value: 'assignment', label: '作业要求' },
-  { value: 'reference', label: '参考资料' },
-  { value: 'exam', label: '试卷复习' },
-  { value: 'other', label: '其它' },
+  ...MATERIAL_CATEGORIES.map((c) => ({ value: c.key, label: c.label })),
 ];
+
+/** 分类下拉框的选项（上传表单和编辑表单共用） */
+function categoryOptions(selected) {
+  return MATERIAL_CATEGORIES.map(
+    (c) => `<option value="${escapeHtml(c.key)}"${c.key === selected ? ' selected' : ''}>${escapeHtml(c.label)}</option>`,
+  ).join('');
+}
 
 export function materialsPage({ user, materials, courses, stats, filters, storage, uploadFormTemplate = '', editFormTemplate = '' }) {
   const body = `
@@ -59,7 +71,12 @@ ${pageHeader({
     if (filters.courseId) params.set('courseId', filters.courseId);
     if (filters.keyword) params.set('q', filters.keyword);
     const qs = params.toString();
-    const count = tab.value === '' ? stats.total : (stats.byKind.find((k) => k.kind === tab.value)?.count || 0);
+    // 数字要按**分类**统计。以前这里查的是 stats.byKind（按文件类型统计的
+    // ppt/pdf/…），拿它去比对分类键 courseware/assignment/… 永远匹配不上，
+    // 于是标签上的数字一个都没显示出来，而且不报任何错。
+    const count = tab.value === ''
+      ? stats.total
+      : (stats.byCategory?.find((k) => k.category === tab.value)?.count || 0);
     return `<a class="filter-tab${filters.category === tab.value ? ' is-active' : ''}" href="/materials${qs ? `?${qs}` : ''}">${escapeHtml(tab.label)}${count ? ` <span class="tab-count">${count}</span>` : ''}</a>`;
   }).join('')}
 </div>
@@ -175,7 +192,7 @@ ${pageHeader({
     title: '资料信息',
     body: `<dl class="kv">
       <dt>所属课程</dt><dd>${material.course_name ? `<a href="/courses/${material.course_id}">${escapeHtml(material.course_name)}</a>` : '<span class="muted">未归类</span>'}</dd>
-      <dt>分类</dt><dd>${escapeHtml(CATEGORY_LABELS[material.category] || material.category)}</dd>
+      <dt>分类</dt><dd>${escapeHtml(categoryLabel(material.category))}</dd>
       ${material.week ? `<dt>周次</dt><dd>第 ${material.week} 周</dd>` : ''}
       ${material.slide_count ? `<dt>页数</dt><dd>${material.slide_count} 页</dd>` : ''}
       ${material.source ? `<dt>来源</dt><dd>${escapeHtml(material.source)}</dd>` : ''}
@@ -407,11 +424,7 @@ export function renderUploadForm({ courses, maxUploadMB, currentCourseId }) {
       <div class="field">
         <label class="field__label" for="uf_category">分类</label>
         <select id="uf_category" class="input" name="category">
-          <option value="courseware">课件</option>
-          <option value="assignment">作业要求</option>
-          <option value="reference">参考资料</option>
-          <option value="exam">试卷 / 复习</option>
-          <option value="other">其它</option>
+          ${categoryOptions(DEFAULT_MATERIAL_CATEGORY)}
         </select>
       </div>
       <div class="field field--narrow">
@@ -464,11 +477,7 @@ export function renderMaterialEditForm({ courses }) {
       <div class="field">
         <label class="field__label" for="me_category">分类</label>
         <select id="me_category" class="input" name="category">
-          <option value="courseware">课件</option>
-          <option value="assignment">作业要求</option>
-          <option value="reference">参考资料</option>
-          <option value="exam">试卷 / 复习</option>
-          <option value="other">其它</option>
+          ${categoryOptions(DEFAULT_MATERIAL_CATEGORY)}
         </select>
       </div>
       <div class="field field--narrow">

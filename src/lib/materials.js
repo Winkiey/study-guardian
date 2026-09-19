@@ -44,16 +44,52 @@ import { convertToPdf, discardConvertedPdf, exportSlidesToImages } from './conve
 // 查询
 // ============================================================
 
-const CATEGORY_LABELS = {
-  courseware: '课件',
-  assignment: '作业要求',
-  reference: '参考资料',
-  exam: '试卷 / 复习',
-  book: '教材',
-  other: '其它',
-};
+/**
+ * 资料分类。**这是全项目唯一的一份清单** —— 标签页、上传表单的下拉框、
+ * 编辑表单的下拉框、统计、显示时的中文名，全部从这里生成。
+ *
+ * 为什么要强调「唯一」：这份清单以前在三个地方各写了一遍
+ * （这里、资料库页顶部的筛选标签、两个表单的下拉框），然后慢慢走散了 ——
+ * 「教材」这一项在标签页和下拉框里都没有，于是就出现
+ * 「能显示成教材（老数据里有），但选不了也筛不出来」这种半截状态。
+ * 而且谁也不会发现，因为不报任何错。
+ *
+ * 顺序就是界面上显示的顺序，别随手排序。
+ */
+export const MATERIAL_CATEGORIES = [
+  { key: 'courseware', label: '课件' },
+  { key: 'handout', label: '讲义' },
+  { key: 'assignment', label: '作业' },
+  { key: 'exam', label: '试卷' },
+  { key: 'reference', label: '资料' },
+  { key: 'book', label: '教材' },
+  { key: 'other', label: '其他' },
+];
+
+/** 表单里默认选中的分类 */
+export const DEFAULT_MATERIAL_CATEGORY = 'courseware';
+
+const CATEGORY_LABELS = Object.fromEntries(MATERIAL_CATEGORIES.map((c) => [c.key, c.label]));
 
 export { CATEGORY_LABELS };
+
+/**
+ * 分类的中文名。
+ *
+ * 空值单独说成「未分类」，而不是混进「其他」—— 「其他」是用户主动选的，
+ * 「未分类」是没选，两者混在一起会让用户以为是自己选错了。
+ * 认不出的值原样显示：宁可露出一个奇怪的名字，也不要谎称它属于某一类。
+ */
+export function categoryLabel(value) {
+  const key = String(value ?? '').trim();
+  if (!key) return '未分类';
+  return CATEGORY_LABELS[key] || key;
+}
+
+/** 这个分类是不是我们认识的（写入前校验用，避免库里混进乱七八糟的值） */
+export function isKnownCategory(value) {
+  return Object.prototype.hasOwnProperty.call(CATEGORY_LABELS, String(value ?? '').trim());
+}
 
 /**
  * 资料列表。
@@ -111,7 +147,9 @@ export function decorateMaterial(row) {
     ...row,
     kindLabel: KIND_LABELS[row.kind] || '文件',
     kindIcon: KIND_ICONS[row.kind] || '📎',
-    categoryLabel: CATEGORY_LABELS[row.category] || '其它',
+    // 用 categoryLabel() 而不是直接查表：空值要说「未分类」，
+    // 而不是被兜底成「其他」—— 那是用户主动选的另一个意思
+    categoryLabel: categoryLabel(row.category),
     sizeLabel: humanSize(row.size),
     hasPdf: Boolean(row.pdf_name),
     // 能否在站内直接看
@@ -555,7 +593,7 @@ export async function deleteMaterial(userId, id) {
 // 统计
 // ============================================================
 
-/** 按类型统计，资料页顶部的筛选标签用 */
+/** 按类型、按分类统计，资料页顶部的筛选标签用 */
 export function materialStats(userId, courseId) {
   const params = [userId];
   let extra = '';
@@ -570,6 +608,17 @@ export function materialStats(userId, courseId) {
       GROUP BY kind ORDER BY count DESC`,
     ...params,
   );
+
+  // 顶部那排筛选标签按**分类**筛选，所以数字也必须按分类统计。
+  // 以前这里只有 byKind，标签却拿它去比对分类键 —— 两边根本不是一个东西，
+  // 永远匹配不上，于是标签上的数字一次都没显示出来（而且是静默的）。
+  const byCategory = all(
+    `SELECT category, COUNT(*) AS count
+       FROM materials WHERE user_id = ?${extra}
+      GROUP BY category`,
+    ...params,
+  );
+
   const total = get(
     `SELECT COUNT(*) AS count, SUM(size) AS bytes FROM materials WHERE user_id = ?${extra}`,
     ...params,
@@ -585,6 +634,10 @@ export function materialStats(userId, courseId) {
       bytes: Number(r.bytes || 0),
       label: KIND_LABELS[r.kind] || r.kind,
       icon: KIND_ICONS[r.kind] || '📎',
+    })),
+    byCategory: byCategory.map((r) => ({
+      category: r.category || '',
+      count: Number(r.count),
     })),
   };
 }

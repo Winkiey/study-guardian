@@ -25,6 +25,11 @@ import { deleteAccount } from '../lib/account.js';
 import * as courses from '../lib/courses.js';
 import * as assignments from '../lib/assignments.js';
 import * as materials from '../lib/materials.js';
+import {
+  DEFAULT_MATERIAL_CATEGORY,
+  MATERIAL_CATEGORIES,
+  isKnownCategory,
+} from '../lib/materials.js';
 import * as notify from '../lib/notify/index.js';
 import {
   getSettings,
@@ -121,6 +126,26 @@ function withAmountFields(body) {
     credits: parseAmountField(body.credits, '学分', 30),
     hours: parseAmountField(body.hours, '学时', 2000),
   };
+}
+
+/** 资料分类的参数名，报错时说清楚 */
+const CATEGORY_LABEL_TEXT = '分类';
+
+/**
+ * 校验资料分类。
+ *
+ * 空值当成「没填」，用默认分类；填了但不认识就**报错**，不要静默改成默认值 ——
+ * 那会让用户以为自己选的生效了（和学分那个坑同一类）。
+ */
+function normalizeCategory(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return undefined;
+  if (!isKnownCategory(raw)) {
+    throw badRequest(
+      `${CATEGORY_LABEL_TEXT}「${raw}」不存在。可选：${MATERIAL_CATEGORIES.map((c) => c.key).join(' / ')}`,
+    );
+  }
+  return raw;
 }
 
 export function registerApi(router) {
@@ -338,7 +363,7 @@ export function registerApi(router) {
     const material = await materials.createMaterialFromUpload(ctx.user.id, file, {
       title: meta.title,
       courseId: meta.courseId,
-      category: meta.category,
+      category: normalizeCategory(meta.category),
       description: meta.description,
       week: meta.week,
       tags: meta.tags,
@@ -377,6 +402,15 @@ export function registerApi(router) {
   router.patch('/api/materials/:id', guard(async (ctx) => {
     const body = await readJson(ctx.req);
     const id = intParam(ctx, 'id');
+
+    // 分类要校验：改资料时下拉框里只可能给出合法值，但直接调接口什么都能传。
+    // 放进去一个不认识的分类，那份资料就会从所有筛选标签里消失（只在「全部」里出现），
+    // 而且不报错。
+    if (body && body.category !== undefined) {
+      const category = normalizeCategory(body.category);
+      body.category = category === undefined ? DEFAULT_MATERIAL_CATEGORY : category;
+    }
+
     materials.updateMaterial(ctx.user.id, id, body);
     sendJson(ctx.res, { ok: true, material: materials.getMaterial(ctx.user.id, id) });
   }));
