@@ -932,6 +932,44 @@ async function run() {
     ok('预览页给出降级说明', previewPage.text.includes('这是网页版预览'));
     ok('预览页显示所属课程', previewPage.text.includes('高等数学'));
 
+    // ---- 全屏观看 ----
+    // 用户提的需求：「资料界面可以全屏观看吗，如果不能，想新加入」。
+    // 原来只有幻灯片图片那条路有个覆盖全屏的看图器，PDF（服务器上的主要模式）
+    // 只是一个 iframe，没有任何全屏入口。
+    ok('★ 预览页有「全屏」按钮', previewPage.text.includes('data-viewer-fullscreen'));
+    ok('★ 全屏按钮默认隐藏（没有 JS 时不该摆个按不动的按钮）',
+      /<button[^>]*data-viewer-fullscreen[^>]*\bhidden\b/.test(previewPage.text),
+      '按钮上缺 hidden');
+    ok('★ 预览页有「退出全屏」按钮，而且它在预览区里面',
+      previewPage.text.includes('data-viewer-exit')
+      && previewPage.text.indexOf('data-viewer-exit') > previewPage.text.indexOf('data-preview-main')
+      && previewPage.text.indexOf('data-viewer-exit') < previewPage.text.indexOf('preview-side'),
+      '放在 .preview-main 外面的话它永远不显示（或永远显示）');
+    // 「带文字」要把图标剥掉再看：SVG 有一两百个字符，
+    // 用固定长度的窗口去找文字会被图标撑爆（这条一开始就是这么写错的）
+    const fsBtnHtml = /<button[^>]*data-viewer-fullscreen[\s\S]*?<\/button>/.exec(previewPage.text)?.[0] || '';
+    ok('★ 全屏按钮有文字标签，不是只有图标（图标看不懂是什么意思）',
+      fsBtnHtml.replace(/<svg[\s\S]*?<\/svg>/g, '').includes('全屏'),
+      fsBtnHtml.slice(0, 160));
+
+    const fsCss = (await req('GET', '/static/app.css')).text;
+    ok('★ 样式里有全屏态（铺满视口）',
+      fsCss.includes('.preview-main.is-immersive')
+      && /\.preview-main\.is-immersive \{[^}]*position:\s*fixed/.test(fsCss));
+    ok('★ 退出按钮平时不显示',
+      /\.viewer-exit \{[^}]*display:\s*none/.test(fsCss));
+    ok('★ 全屏态的层级盖过手机底部导航、但没盖过弹窗',
+      (() => {
+        const z = Number(/\.preview-main\.is-immersive \{[^}]*z-index:\s*(\d+)/.exec(fsCss)?.[1]);
+        const modal = Number(/\.modal-backdrop \{[^}]*z-index:\s*(\d+)/.exec(fsCss)?.[1]);
+        return z > 50 && modal > z;
+      })(), '全屏盖住底部导航才不留一条，但必须低于弹窗(100)，否则全屏时弹窗点不到');
+
+    const fsAppJs = (await req('GET', '/static/app.js')).text;
+    ok('★ 客户端有全屏逻辑，而且在启动时被调用了',
+      fsAppJs.includes('function initMaterialViewer()') && /\n\s+initMaterialViewer\(\);/.test(fsAppJs),
+      '定义了却没调用的话，点全屏不会有任何反应');
+
     // 标题不应重复显示
     const titleOccurrences = (previewPage.text.match(/第一章 导论/g) || []).length;
     ok('PPT 标题没有重复渲染', titleOccurrences === 1, `出现 ${titleOccurrences} 次`);

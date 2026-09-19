@@ -179,12 +179,20 @@ ${pageHeader({
     actions: `
       <a class="btn btn--outline btn--sm" href="/materials/${material.id}/raw?download=1">${icon('download', 16)}<span>下载原件</span></a>
       ${material.pdf_name ? `<a class="btn btn--outline btn--sm" href="/materials/${material.id}/pdf?download=1">${icon('download', 16)}<span>下载 PDF</span></a>` : ''}
-      <button type="button" class="btn btn--outline btn--sm" data-edit-material="${material.id}">${icon('edit', 16)}<span>编辑</span></button>`,
+      <button type="button" class="btn btn--outline btn--sm" data-edit-material="${material.id}">${icon('edit', 16)}<span>编辑</span></button>
+      ${material.canPreview
+        // 默认 hidden：这个按钮要 JavaScript 才管用，没有 JS 时不该摆一个按不动的按钮。
+        // app.js 的 initMaterialViewer() 会把它显示出来。
+        ? `<button type="button" class="btn btn--outline btn--sm" data-viewer-fullscreen hidden>${icon('expand', 16)}<span>全屏</span></button>`
+        : ''}`,
   })}
 
 <div class="preview-layout">
-  <div class="preview-main">
+  <div class="preview-main" data-preview-main>
     ${renderPreview(material, textContent, officeData)}
+    <button type="button" class="viewer-exit" data-viewer-exit>
+      ${icon('compress', 15)}<span>退出全屏</span>
+    </button>
   </div>
 
   <aside class="preview-side">

@@ -1856,6 +1856,79 @@ function escapeAttr(value) {
  * 所以：能无条件绑的就无条件绑；确实依赖模板的（上传弹窗），
  * 把判断推迟到**点击那一刻**再做。
  */
+/**
+ * 课件的「全屏观看」。
+ *
+ * 做的其实只有一件事：给 .preview-main 加一个 is-immersive 类，让它铺满整个视口。
+ * 铺满的样式全在 app.css 里，这里只管状态切换。
+ *
+ * 为什么主力是 CSS 而不是浏览器的 Fullscreen API：
+ * **iPhone 上的 Safari 不允许对普通元素调用 requestFullscreen**（只有 <video> 行），
+ * 只靠它的话手机上点了完全没反应 —— 而手机恰恰是最需要全屏的地方。
+ * 所以能用原生全屏的地方（桌面浏览器、安卓 Chrome）再叠加一层原生全屏，
+ * 那样连浏览器地址栏也一起收掉；用不了的地方光靠 CSS 也已经铺满了。
+ */
+function initMaterialViewer() {
+  const main = document.querySelector('[data-preview-main]');
+  if (!main) return;
+
+  const enterBtn = document.querySelector('[data-viewer-fullscreen]');
+  const exitBtn = main.querySelector('[data-viewer-exit]');
+  if (!enterBtn || !exitBtn) return;
+
+  // 按钮默认是 hidden 的：没有 JavaScript 时它按不动，
+  // 那就不该摆一个按了没反应的按钮出来
+  enterBtn.hidden = false;
+
+  const isImmersive = () => main.classList.contains('is-immersive');
+  const fullscreenEl = () => document.fullscreenElement || document.webkitFullscreenElement || null;
+
+  /** 调用可能不存在的 API，并且不管它抛什么 —— 失败不该影响 CSS 那一层 */
+  const tryCall = (fn, thisArg) => {
+    if (typeof fn !== 'function') return;
+    try {
+      const r = fn.call(thisArg);
+      if (r && typeof r.catch === 'function') r.catch(() => {});
+    } catch {
+      /* 忽略 */
+    }
+  };
+
+  function enter() {
+    main.classList.add('is-immersive');
+    tryCall(main.requestFullscreen || main.webkitRequestFullscreen, main);
+    // 焦点跟过去：键盘用户要能直接按 Esc 或 Tab 到退出按钮
+    exitBtn.focus({ preventScroll: true });
+  }
+
+  function exit() {
+    main.classList.remove('is-immersive');
+    // 原生全屏是自己退出的（也可能压根没进），两种情况都调一次 exitFullscreen，
+    // 不在全屏时它什么也不做
+    if (fullscreenEl()) tryCall(document.exitFullscreen || document.webkitExitFullscreen, document);
+    enterBtn.focus({ preventScroll: true });
+  }
+
+  enterBtn.addEventListener('click', () => (isImmersive() ? exit() : enter()));
+  exitBtn.addEventListener('click', exit);
+
+  // 用户按 Esc / F11 自己退出原生全屏时，把 CSS 那一层一起收掉 ——
+  // 否则会留下一个「铺满整屏、但已经不是全屏」的怪状态，按钮也对不上
+  const onFullscreenChange = () => {
+    if (!fullscreenEl() && isImmersive()) main.classList.remove('is-immersive');
+  };
+  document.addEventListener('fullscreenchange', onFullscreenChange);
+  document.addEventListener('webkitfullscreenchange', onFullscreenChange);
+
+  // 没有原生全屏时（iPhone），Esc 得自己处理
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || !isImmersive() || fullscreenEl()) return;
+    // 幻灯片看图器开着的时候，Esc 应该先关它 —— 那是更靠前的一层
+    if (document.querySelector('.slide-viewer')) return;
+    exit();
+  });
+}
+
 function initMaterials() {
   /** 上传弹窗要页面上的模板才能弹，所以等到真要弹的时候再检查 */
   function openUploadModal() {
@@ -2988,6 +3061,7 @@ function boot() {
   initTheme();
   initMisc();
   initSlideViewer();
+  initMaterialViewer();
   initAssignmentChecks();
   initAssignments();
   initCourses();

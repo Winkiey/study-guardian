@@ -1901,6 +1901,87 @@ select.input { cursor: pointer; }
   word-break: break-word;
 }
 
+/* ---------- 全屏（沉浸）观看 ----------
+   目标元素是 .preview-main，也就是预览内容所在的那一栏。
+   这样做的好处是 PDF / 幻灯片图片 / 网页版 Office / 文字版**所有模式一起生效**，
+   不用给每种渲染方式各写一套铺满逻辑。
+
+   为什么不全靠浏览器的 Fullscreen API：
+   iPhone 上的 Safari 不允许对普通元素调用 requestFullscreen（只有 <video> 行），
+   只用它的话手机上点了没反应。所以这里以「CSS 铺满整个视口」为主，
+   能用原生全屏的地方再叠加一层 —— 那样连浏览器地址栏一起收掉，可视面积最大。
+   （叠加的逻辑在 app.js 的 initMaterialViewer 里。） */
+.preview-main.is-immersive {
+  position: fixed;
+  inset: 0;
+  /* 盖住顶栏和手机底部导航(z-index: 50)，但低于弹窗(100)——
+     否则全屏时弹窗会被压在下面点不到 */
+  z-index: 80;
+  overflow: auto;
+  /* 滚到底不要把后面整页带着一起弹（手机上尤其明显） */
+  overscroll-behavior: contain;
+  padding: 10px;
+  background: var(--c-bg);
+}
+/* 铺满时不再需要「卡片感」：去掉边框、圆角、投影，空间全给内容 */
+.preview-main.is-immersive .viewer {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
+/* PDF：让 iframe 正好填满视口（减掉 10px 内边距）。
+   用 dvh 而不是 vh —— 手机上地址栏收起/展开时 vh 不变，
+   结果要么底部空一条、要么底部内容被顶出屏幕。 */
+.preview-main.is-immersive .viewer__frame {
+  height: calc(100vh - 20px);
+  height: calc(100dvh - 20px);
+  min-height: 0;
+}
+.preview-main.is-immersive .viewer--image img {
+  max-height: calc(100vh - 44px);
+  max-height: calc(100dvh - 44px);
+}
+.preview-main.is-immersive .viewer--media video {
+  max-height: calc(100vh - 44px);
+  max-height: calc(100dvh - 44px);
+}
+/* 文字版本来有 70vh 的高度上限（免得占满整页），全屏时这个上限就该拿掉 */
+.preview-main.is-immersive .text-view { max-height: none; }
+/* 幻灯片列表在全屏态自己滚，滚完不会带动外层 */
+.preview-main.is-immersive .slide-deck { overscroll-behavior: contain; }
+
+/* 退出按钮：平时不显示，只有全屏态才出现。
+   放在**右下角**而不是右上角 —— 浏览器内置 PDF 阅读器的工具栏就在右上，
+   放右上会正好压住它那几个按钮，点都点不到。 */
+.viewer-exit { display: none; }
+.preview-main.is-immersive .viewer-exit {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 2;
+  padding: 9px 15px;
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--c-surface);
+  color: var(--c-text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 550;
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  transition: background var(--transition), transform var(--transition);
+}
+.preview-main.is-immersive .viewer-exit:hover { background: var(--c-surface-3); }
+.preview-main.is-immersive .viewer-exit:active { transform: scale(0.97); }
+.preview-main.is-immersive .viewer-exit:focus-visible {
+  outline: 2px solid var(--c-primary);
+  outline-offset: 2px;
+}
+
 /* PPT 网页版预览 */
 .slides { display: flex; flex-direction: column; gap: 14px; }
 .slide {
