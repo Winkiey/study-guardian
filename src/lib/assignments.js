@@ -6,6 +6,7 @@
  */
 
 import { all, get, run } from '../db/index.js';
+import { notFound } from './http.js';
 import { humanizeDistance, nowStr, todayStr, urgencyOf } from './datetime.js';
 import { syncAssignmentReminders } from './scheduler.js';
 
@@ -140,7 +141,8 @@ export function createAssignment(userId, data) {
 
 export function updateAssignment(userId, id, data) {
   const row = get('SELECT * FROM assignments WHERE id = ? AND user_id = ?', id, userId);
-  if (!row) throw new Error('作业不存在');
+  // 别人家的作业、或者根本不存在的 id，都该回 404，而不是让接口报 500
+  if (!row) throw notFound('作业不存在');
 
   const nextStatus = data.status ?? row.status;
   // 状态变成 done 时记录完成时间，改回 todo 时清掉

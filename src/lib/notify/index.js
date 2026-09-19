@@ -6,6 +6,7 @@
  */
 
 import { all, get, run } from '../../db/index.js';
+import { notFound } from '../http.js';
 import { CHANNEL_MAP, getChannelDef, channelCatalog } from './channels.js';
 
 export { channelCatalog, getChannelDef };
@@ -102,7 +103,8 @@ export function createChannel(userId, { type, name, config, enabled = true, isDe
 /** 更新渠道 */
 export function updateChannel(userId, id, patch) {
   const row = get('SELECT * FROM notify_channels WHERE id = ? AND user_id = ?', id, userId);
-  if (!row) throw new Error('渠道不存在');
+  // 404 而不是 500：渠道不是你的 / 不存在，都该如实回「找不到」
+  if (!row) throw notFound('渠道不存在');
 
   const existing = safeParseJson(row.config);
   // 前端回显的是打码值，如果用户没改就原样提交，这里要还原成真实值

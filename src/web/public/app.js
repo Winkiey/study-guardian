@@ -2390,6 +2390,32 @@ function initPeriodsForm() {
       : (minutes % 60 ? `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分` : `${Math.floor(minutes / 60)} 小时`);
   };
 
+  /**
+   * 给一行里的输入框补上「第几节」的读屏标签。
+   *
+   * 不加的话，页面上十几行的 aria-label 全是「开始时间」「结束时间」——
+   * 读屏用户在表单元素列表里听到一串一模一样的名字，根本分不清在改哪一节。
+   * 行首那个「第 X 节」是**文本节点**，读屏不会把它算进输入框的名字里。
+   *
+   * 定义在 addRow **前面**：两者都是 const，而 const 不会提升，
+   * 定义在后面的话，只要哪天有人在初始化阶段就调 addRow，就会撞上暂时性死区报错。
+   */
+  const labelPeriodRow = (row) => {
+    const indexInput = row.querySelector('[name=p_index]');
+    const typed = String(indexInput?.value || '').trim();
+    // 用户还没填节次时，用它在列表里的位置当兜底（至少不是全部一样）
+    const n = typed || String([...rows.children].indexOf(row) + 1);
+    const label = (name) => `第 ${n} 节${name}`;
+    indexInput?.setAttribute('aria-label', label('的节次'));
+    row.querySelector('[name=p_start]')?.setAttribute('aria-label', label('开始时间'));
+    row.querySelector('[name=p_end]')?.setAttribute('aria-label', label('结束时间'));
+    const removeBtn = row.querySelector('[data-remove-period]');
+    if (removeBtn) {
+      removeBtn.setAttribute('aria-label', `删除第 ${n} 节`);
+      removeBtn.title = `删除第 ${n} 节`;
+    }
+  };
+
   const addRow = (prefill = {}) => {
     const row = document.createElement('div');
     row.className = 'period-row';
@@ -2397,15 +2423,14 @@ function initPeriodsForm() {
     row.innerHTML = `
       <div class="period-row__index">
         第 <input class="input input--period-index" type="number" min="1" max="30" name="p_index"
-                  aria-label="节次" value="${escapeAttr(prefill.index ?? '')}"> 节
+                  value="${escapeAttr(prefill.index ?? '')}"> 节
       </div>
-      <input class="input" type="time" name="p_start" aria-label="开始时间"
+      <input class="input" type="time" name="p_start"
              value="${escapeAttr(prefill.start || '08:00')}">
-      <input class="input" type="time" name="p_end" aria-label="结束时间"
+      <input class="input" type="time" name="p_end"
              value="${escapeAttr(prefill.end || '08:45')}">
       <span class="period-row__len" data-period-len></span>
-      <button type="button" class="btn btn--ghost btn--icon" data-remove-period
-              title="删除这一节" aria-label="删除这一节">${'\u00d7'}</button>`;
+      <button type="button" class="btn btn--ghost btn--icon" data-remove-period>${'\u00d7'}</button>`;
 
     row.querySelector('[data-remove-period]').addEventListener('click', () => {
       row.remove();
@@ -2417,11 +2442,15 @@ function initPeriodsForm() {
     for (const input of row.querySelectorAll('input')) {
       input.addEventListener('input', () => {
         refreshLength(row);
+        // 节次改了，读屏标签也要跟着改 —— 否则念出来的还是「第 3 节」
+        if (input.name === 'p_index') labelPeriodRow(row);
         hideError();
       });
     }
 
     rows.appendChild(row);
+    // 放在插进 DOM 之后：这时才知道它是第几行，标签能拿到一个合理的兜底值
+    labelPeriodRow(row);
     refreshLength(row);
     return row;
   };

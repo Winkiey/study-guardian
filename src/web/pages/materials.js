@@ -85,6 +85,8 @@ ${pageHeader({
 
 ${materials.length === 0
       ? emptyState({
+        // 这一处直接挂在页面 h1 下面，标题层级要接 h2（默认的 h3 会跳级）
+        level: 2,
         icon: 'folder',
         title: filters.keyword ? '没有找到匹配的资料' : '资料库还是空的',
         description: filters.keyword

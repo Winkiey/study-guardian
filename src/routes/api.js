@@ -597,7 +597,12 @@ export function registerApi(router) {
   }));
 
   router.delete('/api/terms/:id', guard(async (ctx) => {
-    courses.deleteTerm(ctx.user.id, intParam(ctx, 'id'));
+    // 删别人的 / 删不存在的学期时，SQL 一行都影响不到（WHERE 里带了 user_id）。
+    // 以前这里无论如何都回 200，客户端会以为「删成功了」，刷新才发现还在；
+    // 现在如实回 404。
+    if (!courses.deleteTerm(ctx.user.id, intParam(ctx, 'id'))) {
+      throw notFound('学期不存在');
+    }
     sendJson(ctx.res, { ok: true });
   }));
 

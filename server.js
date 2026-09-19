@@ -229,7 +229,12 @@ async function handleRequest(req, res) {
     }
 
     // 3. 业务路由
-    const matched = router.match(method, url.pathname);
+    //    HEAD 按 GET 来匹配：路由是按方法注册的，HEAD 谁也不匹配，
+    //    于是 `HEAD /` 会落到 405「请求方法不被支持」——
+    //    而按 HTTP 规范，凡是有 GET 的地方都该支持 HEAD（正文由 Node 自动省掉，
+    //    这里不用特殊处理）。探活脚本和链接检查器常用 HEAD，
+    //    回 405 会让它们把「站点正常」误报成故障。
+    const matched = router.match(method === 'HEAD' ? 'GET' : method, url.pathname);
     if (matched) {
       const ctx = {
         req,

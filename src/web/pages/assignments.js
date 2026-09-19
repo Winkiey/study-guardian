@@ -88,6 +88,8 @@ ${pageHeader({
 
 ${activeCount === 0 && filters.status !== 'done' && filters.status !== 'all'
       ? emptyState({
+        // 这一处直接挂在页面 h1 下面，标题层级要接 h2（默认的 h3 会跳级）
+        level: 2,
         icon: 'check',
         title: '当前没有待办作业',
         description: '新建作业时填上截止时间，并选好提前多久提醒，到点会自动推送到你手机。',

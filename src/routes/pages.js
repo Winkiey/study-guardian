@@ -31,6 +31,7 @@ import {
   createUser,
   currentUser,
   findUserByUsername,
+  hashPassword,
   isUsernameTaken,
   passwordProblem,
   setSessionCookie,
@@ -65,6 +66,16 @@ import { addDays, nowStr, startOfWeek, todayStr } from '../lib/datetime.js';
 import { weekOfDate } from '../lib/weeks.js';
 
 /** 统一的页面输出 */
+/**
+ * 用户名不存在时拿来「陪跑」的假哈希。
+ *
+ * 目的是让「用户名不存在」和「密码错误」两条路的耗时接近 ——
+ * 不然光靠响应时间就能把用户名试出来（见 POST /login 里的说明）。
+ * 这个哈希对应的是一个**谁都猜不到、也永远不会被设置**的密码，
+ * 所以就算有人拿它登录也过不了。内容只是一串固定值，不含任何真实账号信息。
+ */
+const DUMMY_PASSWORD_HASH = hashPassword(`not-a-real-password-${'x'.repeat(32)}`);
+
 function output(res, page, extras = {}) {
   sendHtml(res, renderPage({
     title: page.title,
@@ -228,7 +239,21 @@ export function registerPages(router) {
     const user = findUserByUsername(username);
     // 用户名不存在和密码错误给**同一句**提示：
     // 分开说等于免费提供一个「这个用户存在吗」的探测接口。
-    if (!user || !verifyPassword(password, user.password_hash)) {
+    //
+    // 但光统一文案还不够：用户不存在时直接短路、根本不跑 scrypt，
+    // 而 scrypt 是**故意很慢**的（N=16384，几十毫秒）。
+    // 于是「用户名存在」比「不存在」明显慢一截，看响应时间就能把用户名试出来 ——
+    // 同一件事换了个侧信道而已。所以不存在时也拿一个假的哈希跑一遍，
+    // 让两条路耗时接近。用同一个常量哈希，不依赖任何真实账号。
+    if (!user) {
+      verifyPassword(password, DUMMY_PASSWORD_HASH);
+      return renderAuth(ctx.res, {
+        mode: 'login',
+        error: '用户名或密码不正确',
+        username,
+      });
+    }
+    if (!verifyPassword(password, user.password_hash)) {
       return renderAuth(ctx.res, {
         mode: 'login',
         error: '用户名或密码不正确',

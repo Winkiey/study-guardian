@@ -165,12 +165,23 @@ function trimSlash(url) {
 export function explainBarkError(raw, status, server, key) {
   const text = String(raw || '').trim();
   const lower = text.toLowerCase();
-  const keyHint = String(key || '').slice(0, 6);
+  /**
+   * 只露前 3 位、后 2 位。
+   *
+   * ⚠️ 这里以前是 `key.slice(0, 6)` —— 前 6 位。问题在于这句话会被写进
+   * `notify_log.detail`，然后在设置页的「发送记录」里原样显示出来：
+   * 一条推送失败，就等于把 Key 的前 6 位长期挂在页面上（截图、共享屏幕就漏了）。
+   * 前 3 + 后 2 足够用户对照「填的是不是这一个」，和渠道表单打码的口径也一致。
+   */
+  const rawKey = String(key || '');
+  const keyHint = rawKey.length > 8
+    ? `${rawKey.slice(0, 3)}•••${rawKey.slice(-2)}`
+    : '（看不出来，太短了）';
 
   if (/device token is not exists|failed to get device token|invalid device token/.test(lower)) {
     return '推送 Key 不对。'
       + '请打开 Bark App，在首页长按那串 Key 复制，重新粘贴到「推送 Key」里'
-      + `（你现在填的是「${keyHint}…」开头的）。`
+      + `（你现在填的是「${keyHint}」）。`
       + `服务器原话：${text}`;
   }
   if (/no such device|device not found/.test(lower)) {

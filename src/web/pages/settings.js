@@ -155,16 +155,21 @@ ${card({
         <span>节次</span><span>开始</span><span>结束</span><span>时长</span><span></span>
       </div>
       <div class="period-rows" data-period-rows>
+        ${/* ⚠️ 每一行的读屏标签必须带上节次。
+             原来 12 行的 aria-label 全是「开始时间」「结束时间」，
+             读屏用户在表单元素列表里听到的是 12 个一模一样的「开始时间」，
+             根本分不清在改第几节 —— 「第 X 节」那几个字是**文本节点**，
+             读屏不会把它算进输入框的名字里。 */ ''}
         ${periodSchedule.map((p) => `
           <div class="period-row" data-period-row>
             <div class="period-row__index">
               第 <input class="input input--period-index" type="number" min="1" max="30" name="p_index"
-                        value="${escapeHtml(String(p.index))}" aria-label="节次"> 节
+                        value="${escapeHtml(String(p.index))}" aria-label="第 ${escapeHtml(String(p.index))} 节的节次"> 节
             </div>
-            <input class="input" type="time" name="p_start" value="${escapeHtml(p.start)}" aria-label="开始时间">
-            <input class="input" type="time" name="p_end" value="${escapeHtml(p.end)}" aria-label="结束时间">
+            <input class="input" type="time" name="p_start" value="${escapeHtml(p.start)}" aria-label="第 ${escapeHtml(String(p.index))} 节开始时间">
+            <input class="input" type="time" name="p_end" value="${escapeHtml(p.end)}" aria-label="第 ${escapeHtml(String(p.index))} 节结束时间">
             <span class="period-row__len" data-period-len>${periodLengthLabel(p.start, p.end)}</span>
-            <button type="button" class="btn btn--ghost btn--icon" data-remove-period title="删除这一节" aria-label="删除这一节">${icon('trash', 15)}</button>
+            <button type="button" class="btn btn--ghost btn--icon" data-remove-period title="删除第 ${escapeHtml(String(p.index))} 节" aria-label="删除第 ${escapeHtml(String(p.index))} 节">${icon('trash', 15)}</button>
           </div>`).join('')}
       </div>
     </div>

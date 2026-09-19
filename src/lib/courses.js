@@ -6,6 +6,7 @@
  */
 
 import { all, get, getDb, run, tx } from '../db/index.js';
+import { notFound } from './http.js';
 import { DEFAULT_COURSE_COLOR } from '../db/schema.js';
 import { expandCourseSessions, termProgress, weekOfDate } from './weeks.js';
 import { addDays, startOfWeek, todayStr } from './datetime.js';
@@ -62,7 +63,12 @@ export function createTerm(userId, { name, startDate, weekCount = 18, isActive =
 
 export function updateTerm(userId, id, patch) {
   const term = get('SELECT * FROM terms WHERE id = ? AND user_id = ?', id, userId);
-  if (!term) throw new Error('学期不存在');
+  // 用 notFound 而不是 new Error：抛普通 Error 的话，接口层会当成
+  // 「服务器内部错误」返回 500，而这个情况明明是「这条数据不是你的 / 不存在」。
+  // 500 和 404 还有一个不明显的区别：**它是个探测口子** ——
+  // 500 表示「这一行存在但不属于你」，404 表示「没有这一行」，
+  // 攻击者据此就能一个个试出哪些 id 是真实存在的。统一成 404 更干净。
+  if (!term) throw notFound('学期不存在');
 
   if (patch.isActive) run('UPDATE terms SET is_active = 0 WHERE user_id = ?', userId);
 
@@ -78,8 +84,15 @@ export function updateTerm(userId, id, patch) {
   );
 }
 
+/**
+ * 删除学期。返回是否真的删掉了一行。
+ *
+ * 返回值必须往上传：删别人的 / 删不存在的学期时 SQL 一行都影响不到
+ * （WHERE 里带了 user_id），但接口以前无论如何都回 200 —— 客户端会以为
+ * 「删成功了」，刷新一下才发现还在。返回 false 让接口层如实回 404。
+ */
 export function deleteTerm(userId, id) {
-  run('DELETE FROM terms WHERE id = ? AND user_id = ?', id, userId);
+  return run('DELETE FROM terms WHERE id = ? AND user_id = ?', id, userId).changes > 0;
 }
 
 /** 学期进度信息（第几周 / 共几周） */
@@ -250,7 +263,7 @@ export function createCourse(userId, data) {
 
 export function updateCourse(userId, id, data) {
   const course = get('SELECT * FROM courses WHERE id = ? AND user_id = ?', id, userId);
-  if (!course) throw new Error('课程不存在');
+  if (!course) throw notFound('课程不存在');
 
   run(
     `UPDATE courses SET

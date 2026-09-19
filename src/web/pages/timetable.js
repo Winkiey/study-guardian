@@ -59,6 +59,8 @@ export function timetablePage({
       active: 'timetable',
       body: `${pageHeader({ title: '课程表', subtitle: '还没有任何课程' })}
 ${emptyState({
+  // 这一处直接挂在页面 h1 下面，标题层级要接 h2（默认的 h3 会跳级）
+  level: 2,
         icon: 'calendar',
         title: '课程表还是空的',
         description: importHint

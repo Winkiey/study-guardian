@@ -293,11 +293,20 @@ export function pageHeader({ title, subtitle = '', actions = '', breadcrumb = nu
 // 通用组件
 // ============================================================
 
-/** 空状态 */
-export function emptyState({ icon: iconName = 'folder', title, description = '', action = '' }) {
+/**
+ * 空状态。
+ *
+ * `level` 是标题的层级，默认 3（大多数时候它出现在卡片里，而卡片标题是 h2）。
+ * ⚠️ 直接挂在页面 h1 下面的那几处要传 2：
+ *    模板里写死 h3 的话，标题层级会从 h1 直接跳到 h3，
+ *    读屏用户按标题跳转时会缺一级 —— 和「字号看起来对不对」无关，
+ *    是给导航结构用的。
+ */
+export function emptyState({ icon: iconName = 'folder', title, description = '', action = '', level = 3 }) {
+  const tag = `h${[2, 3, 4].includes(Number(level)) ? Number(level) : 3}`;
   return `<div class="empty">
   <div class="empty__icon">${icon(iconName, 32)}</div>
-  <h3 class="empty__title">${escapeHtml(title)}</h3>
+  <${tag} class="empty__title">${escapeHtml(title)}</${tag}>
   ${description ? `<p class="empty__desc">${description}</p>` : ''}
   ${action ? `<div class="empty__action">${action}</div>` : ''}
 </div>`;

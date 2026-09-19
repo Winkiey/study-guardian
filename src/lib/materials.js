@@ -19,6 +19,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { all, get, run } from '../db/index.js';
+import { notFound } from './http.js';
 import config from '../config.js';
 import {
   KIND,
@@ -533,7 +534,7 @@ async function buildOfficeTextPreview(materialId, absPath, ext, convertError) {
 /** 重新生成预览（课件页的「重新转换」按钮） */
 export async function rebuildPreview(userId, materialId) {
   const row = get('SELECT * FROM materials WHERE id = ? AND user_id = ?', materialId, userId);
-  if (!row) throw new Error('资料不存在');
+  if (!row) throw notFound('资料不存在');
 
   // 把上一次的产物一并清掉。
   //
@@ -559,7 +560,9 @@ export async function rebuildPreview(userId, materialId) {
 /** 更新资料元信息（不改文件） */
 export function updateMaterial(userId, id, patch) {
   const row = get('SELECT * FROM materials WHERE id = ? AND user_id = ?', id, userId);
-  if (!row) throw new Error('资料不存在');
+  // 404 而不是 500：这一行不是你的 / 不存在，都该如实回「找不到」。
+  // 抛普通 Error 会被接口层当成服务器故障，日志里还会留一堆假错误。
+  if (!row) throw notFound('资料不存在');
 
   run(
     `UPDATE materials SET

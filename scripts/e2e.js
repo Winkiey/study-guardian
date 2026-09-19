@@ -1652,10 +1652,19 @@ async function run() {
       `${badKeyTest.json?.error}`);
     ok('★ 中文解释里告诉用户去哪儿复制 Key',
       /Bark App/.test(badKeyTest.json?.error || ''));
-    ok('★ 中文解释里带上用户填的前几位，方便对照',
-      /WrongK/.test(badKeyTest.json?.error || ''));
+    const barkErrText = badKeyTest.json?.error || '';
+    ok('★ 中文解释里带上你填的那几位，方便对照',
+      /Wro/.test(barkErrText), '至少要看得出「填的是不是这一个」');
+    // 但只能露前 3 位。
+    // 这句话会被写进 notify_log.detail，然后在设置页的「发送记录」里长期显示 ——
+    // 以前露的是前 6 位，等于每次推送失败都往页面上挂一段密钥前缀
+    // （截图、共享屏幕就漏了）。前 3 + 后 2 够对照，和渠道表单打码的口径也一致。
+    ok('★ 但不许把完整的 Key 写进这条消息（它会长期显示在发送记录里）',
+      !barkErrText.includes('WrongKey123'), barkErrText);
+    ok('★ 露出的前缀不超过 3 位',
+      !/WrongK/.test(barkErrText), '又露回到前 6 位了');
     ok('★ 解释里保留了服务器原话，方便搜索',
-      /device token is not exists/.test(badKeyTest.json?.error || ''));
+      /device token is not exists/.test(barkErrText));
 
     await new Promise((r) => fakeBark.close(r));
 
@@ -2138,8 +2147,54 @@ async function run() {
     const noSuchPage = await req('GET', '/no-such-page');
     ok('不存在的页面返回 404 页面', noSuchPage.status === 404, `状态码 ${noSuchPage.status}`);
 
+    // 空状态的标题层级：直接挂在页面 h1 下面的那几处必须是 h2。
+    // 模板里写死 h3 的话，标题层级从 h1 跳到 h3，读屏按标题导航时会缺一级。
+    //
+    // ⚠️ 这里以前只查了主账号的 /timetable —— 而主账号有课，
+    // 页面根本不是空状态，一条 empty__title 都没有，断言在**空转**：
+    // 反向验证时把空状态强行写成 h3，它照样绿。
+    // 现在专门注册一个**一条数据都没有**的新账号来看，并且先要求
+    // 「确实渲染出了空状态」，否则这条断言自己判失败。
+    const emptyBrowser = createClient(baseUrl);
+    const emptyReg = await emptyBrowser('POST', '/register', {
+      form: {
+        username: `E2EEmpty${Math.floor(Math.random() * 100000)}`,
+        password: 'empty123456',
+        password2: 'empty123456',
+        inviteCode: E2E_INVITE_CODE,
+      },
+    });
+    ok('为了验空状态层级，专门注册了一个没有任何数据的新账号',
+      emptyReg.status === 302, `状态码 ${emptyReg.status}`);
+
+    for (const [name, url] of [
+      ['课程表', '/timetable'],
+      ['课程', '/courses'],
+      ['资料库', '/materials'],
+      ['作业', '/assignments'],
+    ]) {
+      const page = await emptyBrowser('GET', url);
+      const titleLevels = [...page.text.matchAll(/<h([1-6]) class="empty__title">/g)]
+        .map((m) => Number(m[1]));
+      ok(`★ ${name}页真的渲染出了空状态（否则下面那条是空转的）`,
+        titleLevels.length > 0, `${name} 里一条 empty__title 都没有`);
+      ok(`★ ${name}空状态的标题是 h2，不从 h1 跳到 h3`,
+        titleLevels.length > 0 && titleLevels.every((h) => h === 2),
+        `${name} 里出现了 h${titleLevels.join(' / h')}`);
+    }
+
     const wrongMethod = await req('PUT', '/api/password');
     ok('错误的方法返回 405', wrongMethod.status === 405, `状态码 ${wrongMethod.status}`);
+
+    // HEAD 要按 GET 处理。
+    // 路由是按方法注册的，以前 HEAD 谁也不匹配 → 405「请求方法不被支持」，
+    // 而规范围凡有 GET 的地方都该支持 HEAD（正文由 Node 自动省掉）。
+    // 探活脚本和链接检查器常用 HEAD，回 405 会把「站点正常」误报成故障。
+    const headRoot = await req('HEAD', '/');
+    ok('★ HEAD 请求不再被当成「方法不支持」（按 GET 处理）',
+      headRoot.status !== 405, `状态码 ${headRoot.status}`);
+    ok('★ HEAD 也应该拿到和 GET 一样的成败（登录态下 200）',
+      headRoot.status === 200, `状态码 ${headRoot.status}`);
 
     // 这个接口已经删掉了（设置页上那个「打开数据目录」按钮也一起去掉了）。
     // 为什么删：它只对「服务跑在自己电脑上」有意义，部署到云服务器之后点了什么都不会发生；
@@ -2831,6 +2886,18 @@ async function run() {
     ok('设置页渲染出「一节一行」的编辑行',
       settingsWithPeriods.text.includes('data-period-rows')
       && settingsWithPeriods.text.includes('name="p_index"'));
+
+    // 读屏要能分清是第几节。以前 12 行的 aria-label 全是「开始时间」，
+    // 而「第 X 节」是文本节点、不算进输入框的名字里 —— 读屏听到 12 个同名控件。
+    const periodLabels = [...settingsWithPeriods.text.matchAll(/aria-label="第 (\d+) 节[^"]*"/g)]
+      .map((m) => m[1]);
+    ok('★ 作息表的读屏标签带上了节次（不是一个劲重复「开始时间」）',
+      periodLabels.length >= 12, `只找到 ${periodLabels.length} 个带节次的标签`);
+    ok('★ 每一节的标签都不一样（读屏才分得清在改哪一节）',
+      new Set(periodLabels).size >= 12,
+      `只有 ${new Set(periodLabels).size} 种不同的节次`);
+    ok('★ 没有剩下裸的 aria-label="开始时间"',
+      !/aria-label="开始时间"/.test(settingsWithPeriods.text));
     ok('设置页每行只有节次 + 开始 + 结束（没有区段的起止两列）',
       settingsWithPeriods.text.includes('name="p_index"')
       && !settingsWithPeriods.text.includes('name="p_from"')
@@ -3242,6 +3309,137 @@ async function run() {
     const otherSettings = await other('GET', '/settings');
     ok('★ 设置页显示的是自己的账号名',
       otherSettings.text.includes(OTHER.username) && !otherSettings.text.includes('测试同学'));
+
+    // ---- 隔离：把每一类数据都过一遍 ----
+    // 上面验的是课程 / 作业 / 资料这三类。但「带 user_id 的东西」远不止这三样，
+    // 漏掉任何一类都是**看不见的**：接口照样返回 200，只是内容串了号。
+    // 现在这个站真的给同学用了，所以每一类都要有一条。
+    // （这几条是外部审计指出「隔离只测了一部分」之后补的。）
+
+    // 1) 学期：别人的学期读不到、改不动、删不掉
+    const otherTerm = await other('POST', '/api/terms', {
+      json: { name: '别人的学期', startDate: '2026-09-07', weekCount: 18 },
+    });
+    const otherTermId = otherTerm.json?.id;
+    ok('第二个账号建了自己的学期（下面拿它验隔离）',
+      otherTerm.status === 201 && Number.isFinite(otherTermId),
+      `状态码 ${otherTerm.status}：${otherTerm.text.slice(0, 120)}`);
+
+    const stealTermPatch = await req('PATCH', `/api/terms/${otherTermId}`, { json: { name: '被改了' } });
+    ok('★ 改不动别人的学期', stealTermPatch.status === 404, `状态码 ${stealTermPatch.status}`);
+
+    const stealTermDelete = await req('DELETE', `/api/terms/${otherTermId}`);
+    ok('★ 删不掉别人的学期', stealTermDelete.status === 404, `状态码 ${stealTermDelete.status}`);
+
+    const otherStillHasTerm = await other('GET', '/api/terms');
+    ok('★ 被人「改过删过」之后，别人的学期还在且没被改名',
+      (otherStillHasTerm.json?.terms || []).some((t) => t.id === otherTermId && t.name === '别人的学期'));
+
+    const myTerms = await req('GET', '/api/terms');
+    ok('★ 我的学期列表里没有别人的学期',
+      !(myTerms.json?.terms || []).some((t) => t.id === otherTermId));
+
+    // 2) 提醒渠道：别人的渠道读不到、改不动、删不掉
+    //    verify:false —— 建渠道时默认会先真发一条测试消息，这里不该真发
+    const otherChannel = await other('POST', '/api/channels', {
+      json: { type: 'bark', name: '别人的手机', config: { key: 'OtherKey123' }, isDefault: true, verify: false },
+    });
+    const otherChannelId = otherChannel.json?.id;
+    ok('第二个账号建了自己的提醒渠道', otherChannel.status === 201 && Number.isFinite(otherChannelId),
+      `状态码 ${otherChannel.status}：${otherChannel.text.slice(0, 120)}`);
+
+    const stealChannelPatch = await req('PATCH', `/api/channels/${otherChannelId}`, { json: { name: '被改了' } });
+    ok('★ 改不动别人的提醒渠道', stealChannelPatch.status === 404, `状态码 ${stealChannelPatch.status}`);
+
+    const stealChannelDelete = await req('DELETE', `/api/channels/${otherChannelId}`);
+    ok('★ 删不掉别人的提醒渠道', stealChannelDelete.status === 404, `状态码 ${stealChannelDelete.status}`);
+
+    const stealChannelTest = await req('POST', `/api/channels/${otherChannelId}/test`);
+    ok('★ 不能用别人的渠道发测试消息（否则可以拿它当骚扰工具）',
+      stealChannelTest.status === 404, `状态码 ${stealChannelTest.status}`);
+
+    const myChannels = await req('GET', '/api/channels');
+    ok('★ 我的渠道列表里没有别人的渠道',
+      !(myChannels.json?.channels || []).some((c) => c.id === otherChannelId));
+    const myChannelsText = JSON.stringify(myChannels.json || {});
+    ok('★ 别人的渠道密钥不会出现在我的接口返回里（打码之后也不该串过来）',
+      !myChannelsText.includes('OtherKey123'));
+
+    // 3) 设置：各改各的，互不影响
+    //    设置没有 GET 接口（页面是服务端渲染的），所以用 POST 的返回值比对
+    const otherSettingsSaved = await other('POST', '/api/settings', {
+      json: { daily_digest_time: '06:15' },
+    });
+    ok('第二个账号改了自己的简报时间（前提）',
+      otherSettingsSaved.json?.settings?.daily_digest_time === '06:15',
+      JSON.stringify(otherSettingsSaved.json?.settings?.daily_digest_time));
+    const mySettingsSaved = await req('POST', '/api/settings', { json: {} });
+    ok('★ 别人改了设置，我的设置没跟着变',
+      mySettingsSaved.json?.settings?.daily_digest_time !== '06:15',
+      `我的是 ${mySettingsSaved.json?.settings?.daily_digest_time}`);
+
+    // 4) 作息表：各改各的
+    await other('POST', '/api/periods', {
+      json: { periods: [{ index: 1, start: '07:00', end: '07:45' }] },
+    });
+    const myPeriods = await req('GET', '/api/periods');
+    ok('★ 别人改了作息表，我的作息表没跟着变',
+      (myPeriods.json?.periods || [])[0]?.start !== '07:00',
+      `我的第 1 节是 ${(myPeriods.json?.periods || [])[0]?.start}`);
+
+    // 5) 课件：改和删也要挡住（上面只验了「读」）
+    const stealMaterialPatch = await other('PATCH', `/api/materials/${materialId}`, { json: { title: '被改名了' } });
+    ok('★ 改不了别人的课件信息', stealMaterialPatch.status === 404, `状态码 ${stealMaterialPatch.status}`);
+
+    const stealMaterialDelete = await other('DELETE', `/api/materials/${materialId}`);
+    ok('★ 删不掉别人的课件', stealMaterialDelete.status === 404, `状态码 ${stealMaterialDelete.status}`);
+
+    const materialStillMine = await req('GET', `/api/materials/${materialId}`);
+    ok('★ 被人「改过删过」之后，我的课件还在且没被改名',
+      materialStillMine.status === 200 && materialStillMine.json?.material?.title !== '被改名了');
+
+    // 6) 作业：改也要挡住（前面验了删）
+    const stealAssignmentPatch = await other('PATCH', `/api/assignments/${assignmentId}`, { json: { title: '被改名了' } });
+    ok('★ 改不了别人的作业', stealAssignmentPatch.status === 404, `状态码 ${stealAssignmentPatch.status}`);
+
+    // 7) 日历订阅令牌 —— 这条最值得单独验：
+    //    令牌是匿名可用的（手机日历不带 Cookie），一旦串号，
+    //    等于把别人的课表和作业直接交给任何拿到链接的人。
+    const otherSub = await other('GET', '/settings');
+    const otherToken = /token=([A-Za-z0-9._-]+)/.exec(otherSub.text)?.[1];
+    ok('拿到第二个账号的订阅令牌（前提）', Boolean(otherToken));
+
+    const otherCalendar = await req('GET', `/calendar/subscribe.ics?token=${otherToken}`);
+    ok('★ 用别人的订阅令牌能拉到日历（令牌本身是有效的）',
+      otherCalendar.status === 200 && otherCalendar.text.includes('BEGIN:VCALENDAR'),
+      `状态码 ${otherCalendar.status}`);
+    ok('★ 但拉到的只有他自己的东西，没有我的课程',
+      !otherCalendar.text.includes(createCourse.json.course.name),
+      '★ 订阅令牌串号 = 把别人的课表交给了任何拿到链接的人');
+    ok('★ 也没有我的作业',
+      !otherCalendar.text.includes(createAssignment.json.assignment.title));
+
+    // 8) 导入：别人导入课表不该动到我的课程
+    //    真实风险是「导入时用错了 user_id」，那会让一个人的课表灌到所有人账号里 ——
+    //    接口全都返回 200，谁都看不出来。
+    const myCoursesBefore = (await req('GET', '/api/courses')).json?.courses?.length || 0;
+    const otherImport = await other('POST', '/api/import/confirm', {
+      json: {
+        payload: { courses: [{ name: '别人导入的课', sessions: [] }], termStart: '2026-09-07' },
+        termId: 'new',
+        onConflict: 'skip',
+      },
+    });
+    ok('第二个账号导入了一门课（前提）',
+      otherImport.status === 200 && otherImport.json?.result?.created >= 1,
+      `状态码 ${otherImport.status}：${otherImport.text.slice(0, 120)}`);
+
+    const myCoursesAfter = (await req('GET', '/api/courses')).json?.courses || [];
+    ok('★ 别人导入课程之后，我的课程数量没变',
+      myCoursesAfter.length === myCoursesBefore,
+      `${myCoursesBefore} → ${myCoursesAfter.length}`);
+    ok('★ 别人导入的课不会出现在我的课程列表里',
+      !myCoursesAfter.some((c) => c.name === '别人导入的课'));
 
     // ---- 注销账号 ----
     const victim = newBrowser();

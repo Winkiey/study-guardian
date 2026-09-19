@@ -166,7 +166,25 @@ describe('Bark 报错翻译', () => {
     assert.match(msg, /推送 Key 不对/);
     assert.match(msg, /Bark App/);
     // 要带上用户填的前几位，方便对照
-    assert.match(msg, /AbCdEf/);
+    assert.match(msg, /AbC/);
+  });
+
+  test('★ 打码只露前 3 后 2，不把完整 Key 写进消息', () => {
+    // 这条消息会被存进 notify_log.detail，然后长期显示在设置页的「发送记录」里。
+    // 以前露的是前 6 位 —— 每次推送失败都往页面上挂一段密钥前缀，
+    // 截图或投屏就跟着漏出去了。前 3 + 后 2 一样够对照「是不是这一个」。
+    const msg = explainBarkError('device token is not exists', 400, 'https://api.day.app', 'AbCdEf123456');
+    assert.ok(!msg.includes('AbCdEf123456'), '完整 Key 不能出现在消息里');
+    assert.ok(!/AbCdEf/.test(msg), '又露回到前 6 位了');
+    assert.match(msg, /AbC•••56/, '打码格式应是 前3•••后2');
+  });
+
+  test('★ 太短的 Key 不会因为打码把整串露出来', () => {
+    // Key 只有三五个字符时，前 3 + 后 2 会把它整个包进去，等于没打码。
+    // 所以短 Key 一律只说「太短了」，不显示任何字符。
+    const msg = explainBarkError('device token is not exists', 400, 'https://api.day.app', 'abc12');
+    assert.ok(!msg.includes('abc12'), `短 Key 也被完整写进了消息：${msg}`);
+    assert.match(msg, /太短/, '短 Key 应改口说「看不出来，太短了」');
   });
 
   test('★ Key 错误时不再把英文原文当主信息甩给用户', () => {

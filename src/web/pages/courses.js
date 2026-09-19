@@ -38,6 +38,8 @@ ${pageHeader({
 
 ${courses.length === 0
       ? emptyState({
+        // 这一处直接挂在页面 h1 下面，标题层级要接 h2（默认的 h3 会跳级）
+        level: 2,
         icon: 'book',
         title: keyword ? '没有找到匹配的课程' : '还没有课程',
         description: keyword ? '换个关键词试试。' : '可以从教务处导出的 .ics 文件一键导入，也可以手动添加。',
