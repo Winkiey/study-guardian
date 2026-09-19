@@ -2167,6 +2167,38 @@ async function run() {
     ok('★ 没有 markdown 语法漏到页面上（整站扫了一遍）',
       markdownLeaks.length === 0, markdownLeaks.join('；'));
 
+    // ---- PDF 路由自己的响应头（这条最关键，单独验） ----
+    // 上面那四种响应路径里**没有** /materials/:id/pdf，而它恰恰是
+    // frame-ancestors 唯一可能出问题的地方：PDF 预览页是自己用同源 iframe
+    // 嵌这个地址的。一旦这个头变成 'none'，iframe 会被浏览器挡掉 —— 表现是
+    // 预览白屏，而服务器上的课件绝大多数都是 PDF。
+    // 这里验不了「浏览器真的渲染出来了」（自测里没有浏览器），
+    // 但能把「前提条件」钉死：这个响应上的 frame-ancestors 必须是 'self'。
+    const pdfForHeaders = multipart(
+      { courseId: String(courseId), category: 'handout' },
+      { field: 'file', filename: '响应头检查.pdf', data: makeTestPdf(), mime: 'application/pdf' },
+    );
+    const pdfForHeadersRes = await req('POST', '/api/materials', {
+      body: pdfForHeaders.body,
+      headers: { 'Content-Type': pdfForHeaders.contentType },
+    });
+    const pdfForHeadersId = pdfForHeadersRes.json?.material?.id;
+    ok('上传一份 PDF 专用来验响应头', pdfForHeadersRes.status === 201,
+      `状态码 ${pdfForHeadersRes.status}`);
+
+    const pdfResponse = await req('GET', `/materials/${pdfForHeadersId}/pdf`);
+    ok('PDF 地址返回 200', pdfResponse.status === 200, `状态码 ${pdfResponse.status}`);
+    const pdfCsp = pdfResponse.headers.get('content-security-policy') || '';
+    ok('★ PDF 响应上的 frame-ancestors 是 self（是 none 的话同源 iframe 会被挡掉、预览白屏）',
+      /frame-ancestors 'self'/.test(pdfCsp), `CSP=${pdfCsp || '（没有）'}`);
+    ok('★ PDF 响应的 X-Frame-Options 是 SAMEORIGIN（不能是 DENY，同理）',
+      pdfResponse.headers.get('x-frame-options') === 'SAMEORIGIN',
+      pdfResponse.headers.get('x-frame-options') || '（没有）');
+    ok('PDF 响应也带 nosniff（避免浏览器把上传文件猜成别的类型）',
+      pdfResponse.headers.get('x-content-type-options') === 'nosniff');
+
+    await req('DELETE', `/api/materials/${pdfForHeadersId}`);
+
     // ---- 日历页也要在站内布局里（否则用户进去就出不来了）----
     // 它以前是一段手写的裸 HTML：没有导航栏、没有「跳到主要内容」，
     // 用户从书签打开之后就再也没有能点回站内的入口。
