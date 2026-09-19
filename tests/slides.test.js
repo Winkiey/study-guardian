@@ -190,7 +190,52 @@ describe('派生文件的路径解析', () => {
 describe('数据库迁移', () => {
   test('★ 迁移里给 materials 补上了 slides_dir 这一列', () => {
     assert.ok(Array.isArray(schema.MIGRATIONS[2]), 'v2 应该有迁移步骤');
-    assert.equal(schema.SCHEMA_VERSION, 3);
+    // 版本号会随着每次结构变更往上走，所以这里只钉「不低于 3」，
+    // 而不是钉死等于 3 —— 钉死的话每加一版迁移都要改这一行，
+    // 改的时候很容易顺手把它改成新数字而不再思考它在断言什么。
+    assert.ok(schema.SCHEMA_VERSION >= 3, `结构版本应该在 3 以上，实际 ${schema.SCHEMA_VERSION}`);
+  });
+
+  test('★ v4：用户名只差大小写也算重名（否则没法判断该登进哪个账号）', () => {
+    const file = path.join(DATA_DIR, 'usernames.db');
+    fs.rmSync(file, { force: true });
+    const db = new DatabaseSync(file);
+    db.exec("CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE)");
+
+    assert.ok(Array.isArray(schema.MIGRATIONS[4]), 'v4 应该有迁移步骤');
+    schema.MIGRATIONS[4][0](db);
+
+    db.prepare('INSERT INTO users (username) VALUES (?)').run('Alice');
+
+    // 逐字节相同 —— 原本的 UNIQUE 就该拦住
+    assert.throws(
+      () => db.prepare('INSERT INTO users (username) VALUES (?)').run('Alice'),
+      /UNIQUE constraint failed/,
+    );
+    // 只是大小写不同 —— 必须同样被拦住，这是 v4 那个索引存在的唯一理由
+    assert.throws(
+      () => db.prepare('INSERT INTO users (username) VALUES (?)').run('alice'),
+      /UNIQUE constraint failed/,
+      '只差大小写的用户名必须也被拒绝',
+    );
+    // 中文名不受影响，照样能建
+    assert.doesNotThrow(
+      () => db.prepare('INSERT INTO users (username) VALUES (?)').run('小王'),
+    );
+
+    db.close();
+  });
+
+  test('★ v4 可以重跑：索引已存在时不会炸', () => {
+    const file = path.join(DATA_DIR, 'usernames2.db');
+    fs.rmSync(file, { force: true });
+    const db = new DatabaseSync(file);
+    db.exec("CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE)");
+
+    schema.MIGRATIONS[4][0](db);
+    assert.doesNotThrow(() => schema.MIGRATIONS[4][0](db), '迁移中途失败重跑是常态');
+
+    db.close();
   });
 
   test('★ v3：还停在旧默认色的课程被换成新主色，用户自己挑的颜色不动', () => {

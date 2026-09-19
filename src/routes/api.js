@@ -20,7 +20,8 @@ import {
 } from '../lib/http.js';
 import config from '../config.js';
 import { all, get, run } from '../db/index.js';
-import { changePassword, requireUser, verifyPassword } from '../lib/auth.js';
+import { changePassword, clearSessionCookie, requireUser, verifyPassword } from '../lib/auth.js';
+import { deleteAccount } from '../lib/account.js';
 import * as courses from '../lib/courses.js';
 import * as assignments from '../lib/assignments.js';
 import * as materials from '../lib/materials.js';
@@ -647,6 +648,48 @@ export function registerApi(router) {
     }
     changePassword(ctx.user.id, body.newPassword);
     sendJson(ctx.res, { ok: true });
+  }));
+
+  /**
+   * 注销账号。
+   *
+   * 要两道确认，缺一不可：
+   *   1. 密码 —— 证明是本人（比如手机被同学拿去玩的时候挡住他）
+   *   2. 把用户名原样敲一遍 —— 证明不是手滑。这个操作**没有回收站**，
+   *      课表、作业、课件、发送历史会一起没掉，所以不能让一次误点就生效。
+   *
+   * 用 POST 而不是 DELETE：删除是要立刻生效、不可重复的操作，
+   * 而 DELETE 在浏览器/代理这条链路上被重试、被预取的坑更多，
+   * 而且本项目整体就是表单 + fetch 的风格，不为一处破例。
+   */
+  router.post('/api/account/delete', guard(async (ctx) => {
+    const body = await readJson(ctx.req);
+    const user = get('SELECT * FROM users WHERE id = ?', ctx.user.id);
+    if (!user) throw unauthorized('登录状态已失效，请重新登录');
+
+    if (!verifyPassword(body.password || '', user.password_hash)) {
+      throw badRequest('密码不正确');
+    }
+
+    const typed = String(body.confirmUsername ?? '').trim();
+    if (typed !== user.username) {
+      // 把期望的用户名回显出来：这里的目的不是考验记忆，
+      // 而是逼人确认「我要删的就是这个账号」，所以不该让人靠猜。
+      throw badRequest(`请原样输入你的用户名「${user.username}」以确认`);
+    }
+
+    const result = await deleteAccount(ctx.user.id);
+
+    // 账号都没了，会话必须立刻失效，否则浏览器还揣着一条指向已删用户的 Cookie，
+    // 下一次请求会走进「有令牌但查不到用户」的半登录状态。
+    clearSessionCookie(ctx.res);
+
+    sendJson(ctx.res, {
+      ok: true,
+      username: result.username,
+      removedFiles: result.removedFiles,
+      counts: result.counts,
+    });
   }));
 
   // ==========================================================

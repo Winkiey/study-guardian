@@ -4,8 +4,8 @@
  * 用 node:crypto 的 scrypt 做密码哈希、HMAC-SHA256 做签名会话 Cookie，
  * 因此不需要 bcrypt / jsonwebtoken 之类的依赖。
  *
- * 设计上是「单用户自用」，但数据表带 user_id，
- * 未来开源成多用户版本时只需放开注册接口。
+ * 多用户：一个账号一份数据，靠各业务表的 user_id 隔开（见 db/schema.js）。
+ * 这里的职责只有「凭用户名密码认出是谁」和「认错人时别泄露信息」。
  */
 
 import crypto from 'node:crypto';
@@ -170,23 +170,87 @@ export function hasAnyUser() {
   return Number(row?.c || 0) > 0;
 }
 
-/** 根据用户名查用户（含密码哈希） */
+/**
+ * 用户名规范化：去掉首尾空白。
+ *
+ * 存储和查询都走这一个函数，保证「同一个名字」在两边是同一个字符串 ——
+ * 不做的话，注册时存的「小王 」和登录时输入的「小王」就是两个不同的键，
+ * 用户会觉得「密码没错但登不上」。
+ */
+export function normalizeUsername(raw) {
+  return String(raw ?? '').trim();
+}
+
+/**
+ * 用户名校验。有问题返回一句中文说明，没问题返回空字符串。
+ *
+ * 抽成纯函数是为了能直接测：这些规则将来在「管理员改名」之类的入口
+ * 也要用同一份，写在路由里就会慢慢各写一套、口径不一。
+ */
+export function usernameProblem(raw) {
+  const name = normalizeUsername(raw);
+  if (!name) return '请填写用户名';
+  if (name.length < 2) return '用户名至少 2 个字符';
+  if (name.length > 50) return '用户名太长了（最多 50 个字符）';
+  // 控制字符（含换行、制表）会窜进日志、CSV 导出和页面标题里，
+  // 正常用途一个都没有，所以直接拒掉，而不是清洗后放行
+  if (/[\u0000-\u001f\u007f]/.test(name)) return '用户名里不能有换行或控制字符';
+  return '';
+}
+
+/** 密码校验，同样返回错误说明 */
+export function passwordProblem(password) {
+  if (String(password ?? '').length < 6) return '密码至少 6 位';
+  if (String(password ?? '').length > 200) return '密码太长了（最多 200 位）';
+  return '';
+}
+
+/**
+ * 根据用户名查用户（含密码哈希）。
+ *
+ * 不区分大小写，而且和 createUser 用的是同一套唯一性口径：
+ * 库里不会有只差大小写的两个账号（v4 的唯一索引保证），
+ * 所以这里 lower() 一定能命中唯一一行；反过来如果查询区分大小写，
+ * 用户注册时填了 Alice、登录时敲 alice 就会「密码正确却登不上」。
+ *
+ * 注意：SQLite 的 lower() 只折叠 ASCII。中文和多数字符不受影响，
+ * 所以这不是个问题 —— 只是别指望它能把 É 和 é 归一。
+ */
 export function findUserByUsername(username) {
-  return get('SELECT * FROM users WHERE username = ?', String(username || '').trim());
+  const name = normalizeUsername(username);
+  if (!name) return undefined;
+  return get('SELECT * FROM users WHERE lower(username) = lower(?)', name);
+}
+
+/** 这个用户名是不是已经被占了（含只差大小写的情况） */
+export function isUsernameTaken(username) {
+  return Boolean(findUserByUsername(username));
 }
 
 /** 创建用户 */
 export function createUser({ username, password, displayName = '', school = '' }) {
+  const name = normalizeUsername(username);
   const hash = hashPassword(password);
-  const { lastInsertRowid } = run(
-    `INSERT INTO users (username, password_hash, display_name, school)
-     VALUES (?, ?, ?, ?)`,
-    String(username).trim(),
-    hash,
-    displayName,
-    school,
-  );
-  return get('SELECT id, username, display_name, school, created_at FROM users WHERE id = ?', lastInsertRowid);
+  try {
+    const { lastInsertRowid } = run(
+      `INSERT INTO users (username, password_hash, display_name, school)
+       VALUES (?, ?, ?, ?)`,
+      name,
+      hash,
+      displayName,
+      school,
+    );
+    return get('SELECT id, username, display_name, school, created_at FROM users WHERE id = ?', lastInsertRowid);
+  } catch (err) {
+    // 撞唯一索引时给一句人话。
+    // 上层确实会先查一次重名，但那是「先查再插」：两个人在同一瞬间提交
+    // 就会双双通过检查。最终挡住的还是数据库，所以这里必须兜住，
+    // 不能把 UNIQUE constraint failed 原样抛给用户看。
+    if (/UNIQUE constraint failed/i.test(String(err?.message || ''))) {
+      throw new Error(`用户名「${name}」已经有人用了，换一个吧`);
+    }
+    throw err;
+  }
 }
 
 /** 修改密码 */

@@ -7,6 +7,7 @@
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import {
   badRequest,
   notFound,
@@ -30,7 +31,10 @@ import {
   createUser,
   currentUser,
   findUserByUsername,
+  isUsernameTaken,
+  passwordProblem,
   setSessionCookie,
+  usernameProblem,
   verifyPassword,
 } from '../lib/auth.js';
 import * as courses from '../lib/courses.js';
@@ -81,46 +85,111 @@ function navStats(userId) {
 
 export function registerPages(router) {
   // ==========================================================
-  // 登录 / 初始化
+  // 注册 / 登录 / 初始化
   // ==========================================================
+
+  /**
+   * 注册页每次都要重新算：站点是不是还没有任何账号、邀请码配了没。
+   * 不能缓存 —— 管理员在 .env 里填上邀请码后重启，
+   * 这个判断必须立刻跟着变，否则页面还在说「未开放注册」。
+   */
+  const policy = () => registerPolicy();
+
+  /** 把一个登录/注册页渲染出去（两个 GET 入口和所有失败回显共用） */
+  const renderAuth = (res, { mode, error = '', info = '', username = '' }) => {
+    const p = policy();
+    output(res, loginPage({
+      mode,
+      error,
+      info,
+      username,
+      registerOpen: p.open,
+      inviteRequired: p.inviteRequired,
+    }), { user: null, stats: {} });
+  };
 
   router.get('/login', async (ctx) => {
     if (currentUser(ctx.req)) return redirect(ctx.res, '/');
-    const needsSetup = !bootstrapState().initialized;
-    output(ctx.res, loginPage({ needsSetup }), { user: null, stats: {} });
+    // 注销成功后前端会带着 ?deleted=用户名 回到这里。
+    // 不说一句「已注销」的话，用户只会看到自己莫名其妙被登出了。
+    const deleted = String(ctx.url.searchParams.get('deleted') || '').trim();
+    renderAuth(ctx.res, {
+      mode: 'login',
+      info: deleted
+        ? `账号「${deleted}」已注销，数据已全部删除。谢谢你用过它。`
+        : '',
+    });
   });
 
+  router.get('/register', async (ctx) => {
+    if (currentUser(ctx.req)) return redirect(ctx.res, '/');
+    renderAuth(ctx.res, { mode: 'register' });
+  });
+
+  // /setup 是早期版本唯一的入口，README、老书签和端到端测试都还打着它，
+  // 所以不能删。语义收窄成「站点还没账号时的初始化」，行为等同 /register。
   router.get('/setup', async (ctx) => {
     if (bootstrapState().initialized) return redirect(ctx.res, currentUser(ctx.req) ? '/' : '/login');
-    output(ctx.res, loginPage({ needsSetup: true }), { user: null, stats: {} });
+    renderAuth(ctx.res, { mode: 'register' });
   });
 
-  router.post('/setup', async (ctx) => {
-    if (bootstrapState().initialized) return redirect(ctx.res, '/login');
-
+  /**
+   * 建账号。POST /register 和 POST /setup 共用这一份：
+   * 两者的差别只有 URL，校验、建默认学期、发会话完全一样，
+   * 复制两份必然会有一天改一边忘一边。
+   */
+  async function createAccount(ctx) {
     const parsed = await readBodyAuto(ctx.req);
     const form = parsed.data || {};
     const username = String(form.username || '').trim();
     const password = String(form.password || '');
     const password2 = String(form.password2 || '');
+    const invite = String(form.inviteCode || '').trim();
 
-    const fail = (message) => output(
-      ctx.res,
-      loginPage({ error: message, username, needsSetup: true }),
-      { user: null, stats: {} },
-    );
+    const fail = (message) => renderAuth(ctx.res, { mode: 'register', error: message, username });
 
-    if (!username) return fail('请填写用户名');
-    if (username.length > 50) return fail('用户名太长了');
-    if (password.length < 6) return fail('密码至少 6 位');
+    // 已经登录的人不该从注册接口再建一个号：注册成功会换掉会话 Cookie，
+    // 于是「我以为在给朋友建号，结果自己被切成了新账号」—— 数据看着像丢了。
+    // GET /register 已经跳回首页，POST 这边要跟上，否则守卫只挡住了一半。
+    if (currentUser(ctx.req)) return redirect(ctx.res, '/');
+
+    const p = policy();
+
+    if (!p.open) {
+      return fail('本站当前未开放注册。想用的话，请联系站点管理员索取邀请码。');
+    }
+
+    const nameProblem = usernameProblem(username);
+    if (nameProblem) return fail(nameProblem);
+
+    const passProblem = passwordProblem(password);
+    if (passProblem) return fail(passProblem);
+
     if (password !== password2) return fail('两次输入的密码不一致');
 
-    const user = createUser({
-      username,
-      password,
-      displayName: String(form.displayName || '').trim(),
-      school: String(form.school || '').trim() || '东北财经大学',
-    });
+    // 邀请码只在需要时校验。用 timingSafeEqual 是为了不靠「比较用了几纳秒」
+    // 泄露「前几位猜对了」—— 邀请码通常不长，逐字符比较的耗时差是可以量出来的。
+    if (p.inviteRequired && !inviteMatches(invite)) {
+      return fail('邀请码不正确。邀请码由站点管理员提供。');
+    }
+
+    // 先查一次给出友好提示；真正的唯一性由数据库的唯一索引兜底
+    // （两处都要有：这里管体验，索引管正确性）
+    if (isUsernameTaken(username)) {
+      return fail(`用户名「${username}」已经有人用了，换一个吧`);
+    }
+
+    let user;
+    try {
+      user = createUser({
+        username,
+        password,
+        displayName: String(form.displayName || '').trim(),
+        school: String(form.school || '').trim() || '东北财经大学',
+      });
+    } catch (err) {
+      return fail(err.message);
+    }
 
     // 顺手建一个默认学期，省得用户一进来课表算不出周次
     const monday = startOfWeek(todayStr());
@@ -133,6 +202,20 @@ export function registerPages(router) {
 
     setSessionCookie(ctx.res, user.id);
     redirect(ctx.res, '/');
+  }
+
+  router.post('/register', createAccount);
+
+  /**
+   * 老入口，语义收窄成「站点还没有账号时的初始化」。
+   *
+   * 必须有这道守卫：配了邀请码之后 policy.open 是 true，
+   * 如果 /setup 不做检查，它就会变成一条绕过「站点已就绪」状态、
+   * 无限建号的旁路 —— 而它本来只是老书签和老测试在打的一个地址。
+   */
+  router.post('/setup', async (ctx) => {
+    if (bootstrapState().initialized) return redirect(ctx.res, '/login');
+    return createAccount(ctx);
   });
 
   router.post('/login', async (ctx) => {
@@ -142,12 +225,14 @@ export function registerPages(router) {
     const password = String(form.password || '');
 
     const user = findUserByUsername(username);
+    // 用户名不存在和密码错误给**同一句**提示：
+    // 分开说等于免费提供一个「这个用户存在吗」的探测接口。
     if (!user || !verifyPassword(password, user.password_hash)) {
-      return output(
-        ctx.res,
-        loginPage({ error: '用户名或密码不正确', username }),
-        { user: null, stats: {} },
-      );
+      return renderAuth(ctx.res, {
+        mode: 'login',
+        error: '用户名或密码不正确',
+        username,
+      });
     }
 
     setSessionCookie(ctx.res, user.id);
@@ -569,6 +654,46 @@ export function registerPages(router) {
 // ============================================================
 // 辅助
 // ============================================================
+
+/**
+ * 注册闸门。
+ *
+ * 允许注册的只有两种情形：
+ *   1. 站点还没有任何账号 —— 管理员自己得先能建号，这时不要邀请码；
+ *   2. .env 里配了 INVITE_CODE —— 凭码注册。
+ *
+ * 两者都不满足就是关闭注册，而这是**默认状态**。
+ * 刻意选这个默认值：这台机器按流量计费、端口开在公网，
+ * 敞开的注册入口等于把账单和磁盘交给路过的扫描器。
+ * 需要的人多填一行 .env 就能打开；被滥用却是不可逆的。
+ *
+ * @returns {{isFirst: boolean, open: boolean, inviteRequired: boolean}}
+ */
+export function registerPolicy() {
+  const isFirst = !bootstrapState().initialized;
+  const hasInvite = Boolean(config.inviteCode);
+  return {
+    isFirst,
+    open: isFirst || hasInvite,
+    inviteRequired: !isFirst && hasInvite,
+  };
+}
+
+/**
+ * 邀请码比对，用时间恒定比较。
+ *
+ * 不直接用 === 是因为它的耗时随「前几位对上了」增长，
+ * 邀请码通常不长，这种差异是可以被量出来的。
+ * 长度不同时 timingSafeEqual 会抛错，所以先比长度 ——
+ * 长度本身泄露不了内容，可以接受。
+ */
+export function inviteMatches(input) {
+  const expected = String(config.inviteCode || '');
+  if (!expected) return false;
+  const a = Buffer.from(String(input ?? ''), 'utf8');
+  const b = Buffer.from(expected, 'utf8');
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
 
 /**
  * 组装导入页需要的公共数据。

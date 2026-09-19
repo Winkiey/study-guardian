@@ -390,7 +390,18 @@ ${card({
 
 ${card({
     title: '账号',
-    body: `<form class="form" data-password-form>
+    body: `<dl class="kv mb-md">
+      <dt>用户名</dt><dd><code>${escapeHtml(user?.username || '')}</code></dd>
+      ${user?.display_name ? `<dt>称呼</dt><dd>${escapeHtml(user.display_name)}</dd>` : ''}
+      ${user?.school ? `<dt>学校</dt><dd>${escapeHtml(user.school)}</dd>` : ''}
+      ${user?.created_at ? `<dt>注册于</dt><dd>${escapeHtml(String(user.created_at).slice(0, 10))}</dd>` : ''}
+    </dl>
+    <p class="field__help mb-md">
+      这里是你自己的账号。你的课表、作业、课件和提醒都只存在这个账号下，
+      别人注册了账号也看不到 —— 同一个站点上每个人的数据是分开的。
+      用户名不能和别人的重复（大写小写算同一个），所以别忘了它。
+    </p>
+  <form class="form" data-password-form>
     <div class="form__row">
       <div class="field field--grow">
         <label class="field__label" for="pw_old">当前密码</label>
@@ -414,6 +425,9 @@ ${card({
     <form class="logout-form" method="post" action="/logout">
       <button type="submit" class="btn btn--outline">${icon('logout', 16)} 退出登录</button>
     </form>
+    <button type="button" class="btn btn--danger-ghost" data-open-delete-account>
+      ${icon('trash', 16)}<span>注销账号</span>
+    </button>
   </div>`,
   })}
 </section>
@@ -471,6 +485,39 @@ ${card({
       <button type="button" class="btn btn--ghost" data-modal-close>取消</button>
       <button type="button" class="btn btn--outline" data-test-channel>${icon('bell', 15)}<span>发送测试</span></button>
       <button type="submit" class="btn btn--primary">保存</button>
+    </div>
+  </form>
+</template>
+
+<!-- 注销账号。做成弹窗而不是常驻表单：它是一个不可逆的操作，
+     嵌在页面里既占地方又容易被顺手点到。 -->
+<template id="delete-account-form-template">
+  <form class="form" data-delete-account-form>
+    <div class="notice notice--error notice--compact">
+      <div class="notice__icon">${icon('alert', 16)}</div>
+      <div class="notice__body">
+        这一步<strong>不可撤销、没有回收站</strong>。点下去之后，
+        你的课表、作业、课件、提醒和推送记录都会被永久删除，无法恢复。
+      </div>
+    </div>
+    <p class="field__help mb-md">
+      唯一还能补救的办法：现在先把 <code>data/</code> 目录（或数据库文件）备份一份。
+    </p>
+    <div class="field">
+      <label class="field__label" for="da_pass">你的密码</label>
+      <input id="da_pass" class="input" type="password" name="password"
+             autocomplete="current-password" required>
+    </div>
+    <div class="field">
+      <label class="field__label" for="da_name">
+        再输入一遍用户名 <code>${escapeHtml(user?.username || '')}</code> 以确认
+      </label>
+      <input id="da_name" class="input" name="confirmUsername" autocomplete="off"
+             placeholder="原样照抄上面的用户名" required>
+    </div>
+    <div class="form__actions">
+      <button type="button" class="btn btn--ghost" data-modal-close>取消</button>
+      <button type="submit" class="btn btn--danger">${icon('trash', 15)}<span>永久删除我的账号</span></button>
     </div>
   </form>
 </template>
@@ -534,12 +581,58 @@ function renderSettingField(def, value) {
 }
 
 // ============================================================
-// 登录 / 初始化
+// 登录 / 注册
 // ============================================================
 
-export function loginPage({ error = '', username = '', needsSetup = false }) {
+/**
+ * 登录与注册页。
+ *
+ * 从「单用户自用」改成「多用户」时，这个页面从**二选一**变成了**双 Tab**：
+ *   以前：没有账号 → 显示初始化表单；有账号 → 显示登录表单。永远只看到一个。
+ *   现在：两个 Tab 同时在，用户可以自己选。
+ *
+ * Tab 用「隐藏的 radio + :checked」实现，**不依赖 JavaScript**：
+ *   两个 radio 排在前面，后面的标签和面板用 ~ 兄弟选择器跟着切换。
+ *   好处是即使 JS 挂了、或者用户禁用了 JS，注册和登录照样能用 ——
+ *   这是这个页面唯一的功能，不能有闪失。
+ *
+ * @param {object} opts
+ * @param {'login'|'register'} [opts.mode] 默认展开哪个 Tab
+ * @param {string} [opts.error] 出错信息（显示在当前 Tab 里）
+ * @param {string} [opts.username] 回填的用户名
+ * @param {boolean} [opts.inviteRequired] 是否要求邀请码
+ * @param {boolean} [opts.registerOpen] 是否允许注册。false 时注册 Tab
+ *   变成长说明（而不是把表单藏起来）—— 让人知道这里本来有个注册入口、
+ *   以及该找谁，比给一个空白页面有用得多。
+ * @param {string} [opts.info] 提示信息（绿色以外的中性提示，例如「账号已注销」）
+ */
+export function loginPage({
+  mode = 'login',
+  error = '',
+  info = '',
+  username = '',
+  inviteRequired = false,
+  registerOpen = true,
+} = {}) {
+  /**
+   * 一条提示。
+   * @param {string} text 内容
+   * @param {'error'|'info'} kind 语气
+   * @param {string} iconName 图标名
+   */
+  const notice = (text, kind = 'error', iconName = 'alert') => (text
+    ? `<div class="notice notice--${kind} notice--compact">
+        <div class="notice__icon">${icon(iconName, 16)}</div>
+        <div class="notice__body">${escapeHtml(text)}</div>
+      </div>`
+    : '');
+
+  // 提示只显示在相关的那个 Tab 里，免得两个表单下面都挂着一条不相干的横幅
+  const loginError = mode === 'login' ? notice(error) + notice(info, 'info', 'check') : '';
+  const registerError = mode === 'register' ? notice(error) : '';
+
   return {
-    title: needsSetup ? '初始化' : '登录',
+    title: mode === 'register' ? '注册' : '登录',
     active: '',
     body: `
 <div class="auth-shell">
@@ -550,44 +643,90 @@ export function loginPage({ error = '', username = '', needsSetup = false }) {
       <p class="auth-sub">课程表 · 课件预览 · 作业 DDL 提醒</p>
     </div>
 
-    ${error ? `<div class="notice notice--error notice--compact">
-      <div class="notice__icon">${icon('alert', 16)}</div>
-      <div class="notice__body">${escapeHtml(error)}</div>
-    </div>` : ''}
+    <div class="auth-tabs">
+      <input type="radio" id="tab-login" name="auth-tab" class="auth-tabs__radio"
+             ${mode === 'register' ? '' : 'checked'}>
+      <input type="radio" id="tab-register" name="auth-tab" class="auth-tabs__radio"
+             ${mode === 'register' ? 'checked' : ''}>
 
-    <form class="form" method="post" action="${needsSetup ? '/setup' : '/login'}">
-      <div class="field">
-        <label class="field__label" for="lg_user">用户名</label>
-        <input id="lg_user" class="input" name="username" value="${escapeHtml(username)}" required
-               autocomplete="username" autofocus ${needsSetup ? 'placeholder="给自己起个用户名"' : ''}>
+      <div class="auth-tabs__bar" role="tablist">
+        <label for="tab-login" class="auth-tabs__tab">登录</label>
+        <label for="tab-register" class="auth-tabs__tab">注册</label>
       </div>
-      <div class="field">
-        <label class="field__label" for="lg_pass">密码</label>
-        <input id="lg_pass" class="input" type="password" name="password" required
-               autocomplete="${needsSetup ? 'new-password' : 'current-password'}"
-               ${needsSetup ? 'placeholder="至少 6 位"' : ''}>
-      </div>
-      ${needsSetup ? `
-      <div class="field">
-        <label class="field__label" for="lg_pass2">确认密码</label>
-        <input id="lg_pass2" class="input" type="password" name="password2" required autocomplete="new-password">
-      </div>
-      <div class="field">
-        <label class="field__label" for="lg_name">怎么称呼你（选填）</label>
-        <input id="lg_name" class="input" name="displayName" placeholder="例如：小王">
-      </div>
-      <div class="field">
-        <label class="field__label" for="lg_school">学校（选填）</label>
-        <input id="lg_school" class="input" name="school" value="东北财经大学">
-      </div>
-      <p class="field__help">
-        账号只保存在你自己的电脑上（<code>data/app.db</code>），不会上传到任何地方。
-        密码用 scrypt 加盐哈希存储。
-      </p>` : ''}
-      <button type="submit" class="btn btn--primary btn--block">${needsSetup ? '创建账号并开始使用' : '登录'}</button>
-    </form>
 
-    ${needsSetup ? '' : `<p class="auth-foot muted small">忘记密码？删掉 <code>data/app.db</code> 重新初始化即可（会丢失所有数据，建议先备份）。</p>`}
+      <!-- ================= 登录 ================= -->
+      <div class="auth-tabs__panel" data-panel="login">
+        ${loginError}
+        <form class="form" method="post" action="/login">
+          <div class="field">
+            <label class="field__label" for="lg_user">用户名</label>
+            <input id="lg_user" class="input" name="username" required
+                   value="${escapeHtml(username)}" autocomplete="username">
+          </div>
+          <div class="field">
+            <label class="field__label" for="lg_pass">密码</label>
+            <input id="lg_pass" class="input" type="password" name="password" required
+                   autocomplete="current-password">
+          </div>
+          <button type="submit" class="btn btn--primary btn--block">登录</button>
+        </form>
+        <p class="auth-foot muted small">
+          忘记密码？这个站点没有自助找回，<strong>找站点管理员帮你重置</strong>即可（数据不受影响）。
+        </p>
+      </div>
+
+      <!-- ================= 注册 ================= -->
+      <div class="auth-tabs__panel" data-panel="register">
+        ${registerOpen ? `
+        ${registerError}
+        <form class="form" method="post" action="/register">
+          <div class="field">
+            <label class="field__label" for="rg_user">用户名</label>
+            <input id="rg_user" class="input" name="username" required maxlength="50"
+                   value="${escapeHtml(mode === 'register' ? username : '')}"
+                   autocomplete="username" placeholder="登录时用，不能和别人重复">
+          </div>
+          <div class="field">
+            <label class="field__label" for="rg_pass">密码</label>
+            <input id="rg_pass" class="input" type="password" name="password" required
+                   autocomplete="new-password" placeholder="至少 6 位">
+          </div>
+          <div class="field">
+            <label class="field__label" for="rg_pass2">确认密码</label>
+            <input id="rg_pass2" class="input" type="password" name="password2" required
+                   autocomplete="new-password">
+          </div>
+          <div class="field">
+            <label class="field__label" for="rg_name">怎么称呼你（选填）</label>
+            <input id="rg_name" class="input" name="displayName" placeholder="例如：小王">
+          </div>
+          <div class="field">
+            <label class="field__label" for="rg_school">学校（选填）</label>
+            <input id="rg_school" class="input" name="school" placeholder="例如：东北财经大学">
+          </div>
+          ${inviteRequired ? `
+          <div class="field">
+            <label class="field__label" for="rg_invite">邀请码 <span class="field__req">*</span></label>
+            <input id="rg_invite" class="input" name="inviteCode" required
+                   autocomplete="off" placeholder="向站点管理员索取">
+          </div>` : ''}
+          <button type="submit" class="btn btn--primary btn--block">创建账号</button>
+        </form>
+        <p class="auth-foot muted small">
+          你的课表、作业、课件保存在<strong>本站服务器</strong>上，只有登录你自己的账号才看得到。
+        </p>` : `
+        <div class="notice notice--compact">
+          <div class="notice__icon">${icon('lock', 16)}</div>
+          <div class="notice__body">
+            本站暂未开放自助注册。<br>
+            想开通账号，请联系站点管理员。
+          </div>
+        </div>
+        <p class="auth-foot muted small">
+          已经有账号了？切到<strong>登录</strong>那一栏就行。
+        </p>`}
+      </div>
+    </div>
   </div>
 </div>`,
   };

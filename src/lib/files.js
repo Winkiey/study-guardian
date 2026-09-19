@@ -249,8 +249,20 @@ export async function saveUpload(buffer, ext) {
 /** 删除已上传的文件（连同其预览产物） */
 export async function removeUpload(relPath, pdfName) {
   for (const target of [relPath, pdfName].filter(Boolean)) {
+    let abs;
     try {
-      await fsp.unlink(uploadPath(target));
+      // 两种路径不能用同一条规则解析：
+      //   上传的原件在 uploads 下          → uploadPath()
+      //   转换出的 PDF 在 cache 下（存成 ../cache/pdf/xx.pdf）→ derivedPath()
+      // 一律用 uploadPath() 会让 PDF 那条抛「非法的存储路径」，
+      // 而下面又是 catch 吞掉的 —— 现象就是课件删掉了、PDF 却永远留在缓存目录里。
+      // 这属于「不报错但东西没清掉」，只能靠这里分对。
+      abs = target.startsWith('..') ? derivedPath(target) : uploadPath(target);
+    } catch {
+      continue; // 路径本身不合法，没什么可删的
+    }
+    try {
+      await fsp.unlink(abs);
     } catch {
       /* 文件可能已被删除，忽略 */
     }

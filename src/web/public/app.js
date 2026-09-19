@@ -2104,6 +2104,7 @@ function initSettings() {
   initChannelForms();
   initSettingsForm();
   initPasswordForm();
+  initDeleteAccount();
   initSchedulerButton();
   initSettingsTabs();
 }
@@ -2847,6 +2848,60 @@ function initPasswordForm() {
 
 function initSchedulerButton() {
   // 已合并进 initChannelForms 的事件委托
+}
+
+/**
+ * 注销账号（设置页 → 账号）。
+ *
+ * 刻意不进弹窗就什么都不做：这是一个没有回收站的操作，
+ * 表单藏在弹窗里、弹窗里还有一段红字说明，就是为了让「点错」多绕两步。
+ *
+ * 服务端才是真正把关的地方（要密码 + 用户名原样确认），
+ * 这里只负责把表单送过去、成功之后把人送回登录页。
+ */
+function initDeleteAccount() {
+  const trigger = document.querySelector('[data-open-delete-account]');
+  const tpl = document.getElementById('delete-account-form-template');
+  if (!trigger || !tpl) return;
+
+  trigger.addEventListener('click', () => {
+    const form = tpl.content.firstElementChild.cloneNode(true);
+
+    form.querySelector('[data-modal-close]')?.addEventListener('click', closeModal);
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+
+      const btn = form.querySelector('button[type=submit]');
+      const raw = formToObject(form);
+
+      const sure = confirmAction(
+        '真的要注销账号吗？\n\n课表、作业、课件、提醒和推送记录都会被永久删除，无法恢复。',
+      );
+      // 原生 confirm 被禁用（某些嵌入式环境）时不阻断：服务端的两道确认仍在
+      if (sure === false) return;
+
+      btn.disabled = true;
+      try {
+        const result = await api('/api/account/delete', {
+          method: 'POST',
+          body: {
+            password: raw.password,
+            confirmUsername: raw.confirmUsername,
+          },
+        });
+        closeModal();
+        // 会话已经在服务端清掉了，所以只能去登录页；
+        // 用整页跳转而不是前端路由，顺便把内存里的旧数据一起丢掉
+        window.location.href = `/login?deleted=${encodeURIComponent(result?.username || '')}`;
+      } catch (err) {
+        toast(err.message, 'error');
+        btn.disabled = false;
+      }
+    });
+
+    openModal({ title: '注销账号', content: form });
+  });
 }
 
 // ============================================================

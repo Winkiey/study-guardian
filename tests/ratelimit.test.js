@@ -148,13 +148,17 @@ describe('该用哪个限流器', () => {
   const general = { name: 'general' };
   const auth = { name: 'auth' };
 
-  test('★ 登录和初始化账号走严格的那档', () => {
+  test('★ 登录、注册、初始化账号都走严格的那档', () => {
     assert.equal(pickLimiter('/login', 'POST', { general, auth }), auth);
     assert.equal(pickLimiter('/setup', 'POST', { general, auth }), auth);
+    // 注册同样要严：不限的话邀请码就能被无限次试出来，
+    // 而且可以批量建号把磁盘和数据库当免费空间用
+    assert.equal(pickLimiter('/register', 'POST', { general, auth }), auth);
   });
 
-  test('★ 只是打开登录页不算试密码，走普通档', () => {
+  test('★ 只是打开登录页/注册页不算试密码，走普通档', () => {
     assert.equal(pickLimiter('/login', 'GET', { general, auth }), general);
+    assert.equal(pickLimiter('/register', 'GET', { general, auth }), general);
   });
 
   test('登出走普通档（它不需要密码，限它没意义）', () => {

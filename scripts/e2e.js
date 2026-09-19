@@ -247,6 +247,9 @@ function pickPort() {
   return 20000 + Math.floor(Math.random() * 20000);
 }
 
+/** 自测里配的邀请码。服务端配置和用例输入两处都要用，放一起免得改漏 */
+const E2E_INVITE_CODE = 'e2e-邀请码-请勿外传';
+
 /**
  * 可靠地结束被测服务进程。
  *
@@ -271,7 +274,7 @@ function killTree(child) {
   }
 }
 
-async function startServer(dataDir, port) {
+async function startServer(dataDir, port, extraEnv = {}) {
   // 把服务端日志写到文件而不是管道。
   // 管道在本机沙箱里是被禁的；同时文件日志在测试失败时能直接看，便于排障。
   const serverLog = path.join(dataDir, 'server.log');
@@ -290,10 +293,17 @@ async function startServer(dataDir, port) {
       ENABLE_OFFICE_CONVERT: 'false',
       SCHEDULER_RUN_ON_START: 'false',
       SCHEDULER_INTERVAL_SEC: '3600',
-      // 自测会发上千个请求，普通限流要放开，否则测试自己会被 429 挡住。
-      // 但**登录限流保持默认**（1/分钟、突发 10）—— 最后一个章节要靠它验证 429。
+      // 自测会发上千个请求，普通限流要放开，否则测试自己会被 429 挡住
       RATE_LIMIT_PER_MIN: '1000000',
+      // 注册/登录限流也一并放开：功能用例（多用户那一节要连续注册、登录
+      // 好几次）不该被限流打挂 —— 那样失败信息会指向一个跟被测功能无关的原因。
+      // 限流本身在第 14 节用一个独立实例单独验，那里用的是默认值。
+      RATE_LIMIT_AUTH_PER_MIN: '1000000',
+      // 邀请码：多用户那一节要验证「没码进不来、有码才放行」
+      INVITE_CODE: E2E_INVITE_CODE,
       NODE_ENV: 'test',
+      // 覆盖项放最后：调用方指定的配置必须是最终生效的那一份
+      ...extraEnv,
     },
   });
 
@@ -1976,6 +1986,24 @@ async function run() {
         cols === String(tabbarLinks.length),
         `CSS ${cols} 列 vs 实际 ${tabbarLinks.length} 项`);
 
+      // 间距工具类必须排在所有组件之后。
+      //
+      // 这条是真踩出来的：.mb-md 之类原本和其他工具类一起放在文件前面，
+      // 而 .field__help / .kv 这些组件在后面写了 `margin: 0`。
+      // 单类选择器只按出现顺序决胜，于是那几个 mb-* 全被盖掉 ——
+      // 写在模板里，却一点间距都没有，而且**不报任何错**，看不出来。
+      const spacingAt = Math.min(
+        ...[['.mt-sm {'], ['.mt-md {'], ['.mt-lg {'], ['.mb-sm {'], ['.mb-md {']]
+          .map(([sel]) => cssText.indexOf(sel)).filter((i) => i !== -1),
+      );
+      const lastZeroMarginComponent = Math.max(
+        ...[['.field__help {'], ['.kv {'], ['.plain-list {'], ['.warning-list {'], ['.form__actions {']]
+          .map(([sel]) => cssText.indexOf(sel)),
+      );
+      ok('★ 间距工具类定义在所有组件之后（否则会被组件的 margin:0 静默盖掉）',
+        Number.isFinite(spacingAt) && spacingAt > lastZeroMarginComponent,
+        `工具类在第 ${spacingAt} 字符，最后一条带 margin:0 的组件在第 ${lastZeroMarginComponent} 字符`);
+
       // 退出登录也只存在于侧边栏里，手机上得有别的入口
       const settingsRes = await req('GET', '/settings');
       ok('★ 设置页有退出登录（手机端侧边栏隐藏，这里是唯一入口）',
@@ -2127,11 +2155,21 @@ async function run() {
         ok('★ 服务器不重启时，静态文件一变版本号也要跟着变',
           Boolean(v1) && Boolean(v2) && v1 !== v2, `${v1} → ${v2}`);
 
-        // 恢复之后必须回到原值，否则后面的用例会拿一个飘忽的版本号
+        // 恢复之后版本号要跟着回到「文件现在这个样子」对应的值。
+        //
+        // 这里不能写成 v3 === v1：Windows 上 fs.utimesSync 会把时间戳取整，
+        // 恢复出来的毫秒数和当初读到的可能正好差 1，于是版本号最后一个字符
+        // 不同 —— 那是文件系统的精度问题，不是版本号算错了。
+        // 真正要保证的性质是「版本号永远等于现算一次 stat 的结果」，
+        // 所以直接拿现算的值来比：既抓得住「缓存了旧版本号」，也不会偶发变红。
+        const cssNow = fs.statSync(cssFile);
+        const jsNow = fs.statSync(path.join(ROOT, 'src/web/public/app.js'));
+        const expectedBack = `${jsNow.size.toString(36)}${Math.floor(jsNow.mtimeMs).toString(36)}`
+          + `-${cssNow.size.toString(36)}${Math.floor(cssNow.mtimeMs).toString(36)}`;
         const page3 = await req('GET', '/');
         const v3 = /app\.css\?v=([^"]+)/.exec(page3.text)?.[1];
-        ok('★ 修改时间恢复后版本号也回到原值',
-          v3 === v1, `${v3} 应该等于 ${v1}`);
+        ok('★ 修改时间恢复后，版本号也跟着回到当时的值（每次都现算，不缓存）',
+          v3 === expectedBack, `页面=${v3} 期望=${expectedBack}（恢复前是 ${v1}）`);
       }
 
       const versionedJs = await req('GET', jsMatch[1]);
@@ -2613,58 +2651,400 @@ async function run() {
     ok('上传的文件已落盘', uploadFiles.length === 2, `实际 ${uploadFiles.length} 个文件`);
 
     // --------------------------------------------------------
+    // 多用户
+    //
+    // 这一节钉住四件事：
+    //   1. 打开网站同时能看到「登录」和「注册」两个入口
+    //   2. 用户名不能重名（连只差大小写都不行）
+    //   3. **数据互相不干扰** —— 这条最要紧，因为把 user_id 漏在某个查询里，
+    //      界面上完全看不出来：每个人看到的都「像是自己的东西」
+    //   4. 注销要真的删干净，包括磁盘上的课件
+    // --------------------------------------------------------
+    section('13. 多用户：注册、重名、数据隔离、注销');
+
+    // 每次「换个人来操作」都要用一个全新的客户端：cookie jar 是跟着客户端走的，
+    // 用新建的客户端去访问就等于换了个浏览器 —— 之前的会话不在它身上。
+    // （第一版就是在这里栽的：注册用的是 A，后面读数据用的是新建的 B，
+    //  于是 B 根本没登录，接口全 401；而「看不到别人的课」那条断言反而
+    //  因为 401 返回空列表而"通过"了 —— 一个会骗人的假通过。）
+    const newBrowser = () => createClient(baseUrl);
+
+    // ---- 一个页面上同时有登录和注册 ----
+    const authPage = await newBrowser()('GET', '/login');
+    ok('登录页可以访问', authPage.status === 200, `状态码 ${authPage.status}`);
+    ok('★ 一个页面上同时有「登录」和「注册」两个入口',
+      authPage.text.includes('data-panel="login"') && authPage.text.includes('data-panel="register"'));
+    ok('★ 默认展开登录（回访的人是多数，不给老用户添麻烦）',
+      /id="tab-login"[^>]*checked/.test(authPage.text)
+      && !/id="tab-register"[^>]*checked/.test(authPage.text));
+    ok('★ 注册表单有「确认密码」（密码敲错一次就建出一个再也登不上的账号）',
+      authPage.text.includes('name="password2"'));
+    ok('★ 注册要填邀请码（这台机器按流量计费，不能让谁都能建号）',
+      authPage.text.includes('name="inviteCode"'));
+
+    const registerPage = await newBrowser()('GET', '/register');
+    ok('注册页可以访问', registerPage.status === 200, `状态码 ${registerPage.status}`);
+    ok('★ 直接开 /register 时默认展开的是注册那一栏',
+      /id="tab-register"[^>]*checked/.test(registerPage.text));
+
+    // ---- 邀请码把住门 ----
+    const OTHER = { username: '第二同学', password: 'other123456' };
+
+    const noCode = await newBrowser()('POST', '/register', {
+      form: { ...OTHER, password2: OTHER.password, displayName: '第二个用户' },
+    });
+    ok('★ 不填邀请码注册会被拒绝', noCode.status === 200 && /邀请码/.test(noCode.text),
+      `状态码 ${noCode.status}`);
+    ok('★ 被拒之后停在注册那一栏，不是把人丢回登录栏',
+      /id="tab-register"[^>]*checked/.test(noCode.text));
+    ok('★ 用户名被回填了（重填一整个表单是很烦的事）',
+      noCode.text.includes(OTHER.username));
+
+    const badCode = await newBrowser()('POST', '/register', {
+      form: { ...OTHER, password2: OTHER.password, inviteCode: '不是那个码' },
+    });
+    ok('★ 邀请码不对会被拒绝', badCode.status === 200 && /邀请码不正确/.test(badCode.text),
+      `状态码 ${badCode.status}`);
+    ok('★ 提示里不会把真正的邀请码泄露出来', !badCode.text.includes(E2E_INVITE_CODE));
+
+    const mismatch = await newBrowser()('POST', '/register', {
+      form: { ...OTHER, password2: '不一样123456', inviteCode: E2E_INVITE_CODE },
+    });
+    ok('★ 两次密码不一致会被拒绝', /两次输入的密码不一致/.test(mismatch.text));
+
+    const shortPw = await newBrowser()('POST', '/register', {
+      form: { ...OTHER, password: '123', password2: '123', inviteCode: E2E_INVITE_CODE },
+    });
+    ok('★ 密码太短会被拒绝', /至少 6 位/.test(shortPw.text));
+
+    const dupSame = await newBrowser()('POST', '/register', {
+      form: {
+        username: '测试同学', password: 'dup123456', password2: 'dup123456',
+        inviteCode: E2E_INVITE_CODE,
+      },
+    });
+    ok('★ 用户名和已有账号完全相同会被拒绝', /已经有人用了/.test(dupSame.text),
+      dupSame.text.slice(0, 150));
+    ok('★ 重名的提示是人话，不是 SQL 报错原文', !/UNIQUE constraint/i.test(dupSame.text));
+
+    // ---- 正常注册一个（用它自己的客户端，注册完这个 jar 里就有会话了）----
+    const other = newBrowser();
+    const regOther = await other('POST', '/register', {
+      form: { ...OTHER, password2: OTHER.password, displayName: '第二个用户', inviteCode: E2E_INVITE_CODE },
+    });
+    ok('★ 邀请码正确时注册成功并直接进入首页',
+      regOther.status === 302 && (regOther.headers.get('location') || '').endsWith('/'),
+      `状态码 ${regOther.status}`);
+
+    const otherHome = await other('GET', '/');
+    ok('★ 注册完就已经是登录状态（不用再登一次）', otherHome.status === 200,
+      `状态码 ${otherHome.status}`);
+    ok('★ 新用户的首页是自己的（看到的是自己的名字，不是别人的）',
+      otherHome.text.includes('第二个用户'));
+
+    // 再注册一个纯英文名的，用来验「只差大小写也算重名」
+    const caseName = `E2ECaseUser${Math.floor(Math.random() * 10000)}`;
+    const regCase = await newBrowser()('POST', '/register', {
+      form: {
+        username: caseName, password: 'case123456', password2: 'case123456',
+        inviteCode: E2E_INVITE_CODE,
+      },
+    });
+    ok('英文用户名可以注册', regCase.status === 302, `状态码 ${regCase.status}`);
+
+    const dupCase = await newBrowser()('POST', '/register', {
+      form: {
+        username: caseName.toLowerCase(), password: 'case123456', password2: 'case123456',
+        inviteCode: E2E_INVITE_CODE,
+      },
+    });
+    ok('★ 只差大小写的用户名同样算重名（否则登录时不知道该进哪个账号）',
+      /已经有人用了/.test(dupCase.text), dupCase.text.slice(0, 150));
+
+    const upperLogin = await newBrowser()('POST', '/login', {
+      form: { username: caseName.toUpperCase(), password: 'case123456' },
+    });
+    ok('★ 登录不区分大小写（注册时怎么写的，登录时大小写敲错也能进）',
+      upperLogin.status === 302, `状态码 ${upperLogin.status}`);
+
+    // 已登录的人不该能从注册接口再建号（否则会被悄悄切成新账号）
+    const regWhileLoggedIn = await req('POST', '/register', {
+      form: { username: '偷偷换号', password: 'swap123456', password2: 'swap123456', inviteCode: E2E_INVITE_CODE },
+    });
+    ok('★ 已登录时 POST /register 直接被挡回首页（不能悄悄把会话换成新账号）',
+      regWhileLoggedIn.status === 302
+      && (regWhileLoggedIn.headers.get('location') || '').endsWith('/'),
+      `状态码 ${regWhileLoggedIn.status} → ${regWhileLoggedIn.headers.get('location') || ''}`);
+    const stillMe = await req('GET', '/api/courses');
+    ok('★ 被挡回来之后，我还是原来那个账号', stillMe.status === 200
+      && (stillMe.json?.courses || []).length >= 3, `状态码 ${stillMe.status}`);
+
+    // ---- 数据隔离 ----
+    const mineCourses = await req('GET', '/api/courses');
+    const theirsCourses = await other('GET', '/api/courses');
+    // 先确认「真的登录上了，接口真的返回了」—— 否则一条 401 会让下面
+    // 「一门课都看不到」因为读到空数组而假通过（第一版就骗过去了一次）
+    ok('第二个用户的接口是通的（不是 401 那种假通过）',
+      theirsCourses.status === 200 && Array.isArray(theirsCourses.json?.courses),
+      `状态码 ${theirsCourses.status}`);
+    ok('★ 新用户一门课都看不到', (theirsCourses.json?.courses || []).length === 0,
+      `看到 ${theirsCourses.json?.courses?.length} 门`);
+    ok('老用户自己的课程没受影响', (mineCourses.json?.courses || []).length >= 3,
+      `${mineCourses.json?.courses?.length} 门`);
+
+    const theirNewCourse = await other('POST', '/api/courses', {
+      json: { name: '第二同学的课', teacher: '别人的老师', credits: 1 },
+    });
+    ok('新用户能建自己的课', theirNewCourse.status === 201, `状态码 ${theirNewCourse.status}`);
+    const theirCourseId = theirNewCourse.json?.course?.id;
+
+    const mineAfter = await req('GET', '/api/courses');
+    ok('★ 别人新建的课不会出现在我的列表里',
+      !(mineAfter.json?.courses || []).some((c) => c.id === theirCourseId),
+      `我的课程：${(mineAfter.json?.courses || []).map((c) => c.name).join(', ')}`);
+
+    // 直接按 id 访问别人的东西：一律 404
+    // （而不是 403 —— 连「这个 id 存在」都不该暴露出去）
+    const stealCourse = await other('GET', `/api/courses/${courseId}`);
+    ok('★ 按 id 也读不到别人的课程', stealCourse.status === 404, `状态码 ${stealCourse.status}`);
+
+    const stealPatch = await other('PATCH', `/api/courses/${courseId}`, {
+      json: { name: '被改掉的课' },
+    });
+    ok('★ 改不动别人的课程', stealPatch.status === 404, `状态码 ${stealPatch.status}`);
+
+    const stealDelete = await other('DELETE', `/api/assignments/${assignmentId}`);
+    ok('★ 删不掉别人的作业', stealDelete.status === 404, `状态码 ${stealDelete.status}`);
+
+    const stillThere = await req('GET', `/api/assignments/${assignmentId}`);
+    ok('★ 被「删」过之后，我的作业还在', stillThere.status === 200,
+      `状态码 ${stillThere.status}`);
+
+    const stealMaterial = await other('GET', `/api/materials/${materialId}`);
+    ok('★ 读不到别人的课件信息', stealMaterial.status === 404, `状态码 ${stealMaterial.status}`);
+
+    const stealRaw = await other('GET', `/materials/${materialId}/raw`);
+    ok('★ 下载不到别人的课件文件', stealRaw.status === 404, `状态码 ${stealRaw.status}`);
+
+    const stealPage = await other('GET', `/materials/${materialId}`);
+    ok('★ 打不开别人的课件预览页', stealPage.status === 404, `状态码 ${stealPage.status}`);
+
+    const stealCoursePage = await other('GET', `/courses/${courseId}`);
+    ok('★ 打不开别人的课程详情页', stealCoursePage.status === 404, `状态码 ${stealCoursePage.status}`);
+
+    const otherTimetable = await other('GET', '/timetable');
+    ok('★ 别人的课表里没有我的课程',
+      otherTimetable.status === 200 && !otherTimetable.text.includes(createCourse.json.course.name),
+      `状态码 ${otherTimetable.status}`);
+
+    const otherSettings = await other('GET', '/settings');
+    ok('★ 设置页显示的是自己的账号名',
+      otherSettings.text.includes(OTHER.username) && !otherSettings.text.includes('测试同学'));
+
+    // ---- 注销账号 ----
+    const victim = newBrowser();
+    const VICTIM = { username: `要注销的同学${Math.floor(Math.random() * 10000)}`, password: 'gone123456' };
+    const regVictim = await victim('POST', '/register', {
+      form: { ...VICTIM, password2: VICTIM.password, inviteCode: E2E_INVITE_CODE },
+    });
+    ok('第三个账号注册成功（后面用它验注销）', regVictim.status === 302,
+      `状态码 ${regVictim.status}`);
+
+    const victimCourse = await victim('POST', '/api/courses', {
+      json: { name: '待注销的课', credits: 2 },
+    });
+    ok('注销测试账号建了一门自己的课', victimCourse.status === 201);
+
+    const victimUpload = multipart(
+      { category: 'courseware' },
+      {
+        field: 'file',
+        filename: '待删课件.txt',
+        data: Buffer.from('注销之后这个文件不该还在', 'utf8'),
+        mime: 'text/plain',
+      },
+    );
+    const victimUploadRes = await victim('POST', '/api/materials', {
+      body: victimUpload.body,
+      headers: { 'Content-Type': victimUpload.contentType },
+    });
+    ok('注销测试账号上传了一个课件', victimUploadRes.status === 201,
+      `状态码 ${victimUploadRes.status}`);
+
+    const countUploads = () => {
+      let n = 0;
+      const count = (dir) => {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const p = path.join(dir, entry.name);
+          if (entry.isDirectory()) count(p);
+          else n += 1;
+        }
+      };
+      count(path.join(dataDir, 'uploads'));
+      return n;
+    };
+    ok('★ 上传之后磁盘上确实多了一个文件（否则后面的删除断言是空转的）',
+      countUploads() === 3, `实际 ${countUploads()} 个`);
+
+    // 两道确认，缺一不可
+    const wrongPw = await victim('POST', '/api/account/delete', {
+      json: { password: '不是密码', confirmUsername: VICTIM.username },
+    });
+    ok('★ 注销要输对密码', wrongPw.status === 400 && /密码不正确/.test(wrongPw.text),
+      `状态码 ${wrongPw.status}`);
+
+    const wrongName = await victim('POST', '/api/account/delete', {
+      json: { password: VICTIM.password, confirmUsername: '随便是谁' },
+    });
+    ok('★ 注销要把用户名原样敲一遍',
+      wrongName.status === 400 && /原样输入/.test(wrongName.text),
+      `状态码 ${wrongName.status}`);
+
+    const stillLoggedIn = await victim('GET', '/api/courses');
+    ok('★ 两道确认没过时，账号一点没动', stillLoggedIn.status === 200,
+      `状态码 ${stillLoggedIn.status}`);
+
+    const deleted = await victim('POST', '/api/account/delete', {
+      json: { password: VICTIM.password, confirmUsername: VICTIM.username },
+    });
+    ok('★ 两道确认都对才真的注销', deleted.status === 200 && deleted.json?.ok === true,
+      `状态码 ${deleted.status}：${deleted.text.slice(0, 120)}`);
+    ok('★ 注销之后会话立刻失效（不能揣着一条指向已删用户的 Cookie）',
+      (deleted.headers.getSetCookie?.() || []).some((c) => /^sg_session=;/.test(c)),
+      (deleted.headers.getSetCookie?.() || []).join('; ') || '(没有清 Cookie)');
+
+    const afterDelete = await victim('GET', '/api/courses');
+    ok('★ 注销之后再也拿不到数据',
+      afterDelete.status === 401 || afterDelete.status === 302,
+      `状态码 ${afterDelete.status}`);
+
+    const reloginDeleted = await newBrowser()('POST', '/login', { form: VICTIM });
+    ok('★ 注销之后这个账号登不进去了',
+      reloginDeleted.status === 200 && /用户名或密码不正确/.test(reloginDeleted.text),
+      `状态码 ${reloginDeleted.status}`);
+
+    ok('★ 注销把磁盘上的课件也删了（不能只在数据库里删掉）',
+      countUploads() === 2, `实际还剩 ${countUploads()} 个文件`);
+
+    const afterAll = await req('GET', '/api/courses');
+    ok('★ 别人注销不影响我的数据', (afterAll.json?.courses || []).length >= 3,
+      `${afterAll.json?.courses?.length} 门`);
+
+    const deletedNotice = await newBrowser()('GET', `/login?deleted=${encodeURIComponent(VICTIM.username)}`);
+    ok('★ 注销后回到登录页会说一句「已注销」，而不是莫名其妙被登出',
+      deletedNotice.text.includes('已注销'), deletedNotice.text.slice(0, 120));
+
+    // 已登录的状态下不该还能看到注册页
+    const registerWhileLoggedIn = await req('GET', '/register');
+    ok('已登录时访问 /register 会跳回首页',
+      registerWhileLoggedIn.status === 302
+      && (registerWhileLoggedIn.headers.get('location') || '').endsWith('/'),
+      `状态码 ${registerWhileLoggedIn.status}`);
+
+    // /setup 是老入口（README 和老书签里都写着）。站点已经有账号之后它不能再
+    // 用来建号 —— 否则就是一条绕过邀请码的旁路（policy.open 这时是 true）。
+    const setupAgain = await newBrowser()('POST', '/setup', {
+      form: { username: '偷偷建的号', password: 'sneak123456', password2: 'sneak123456' },
+    });
+    ok('★ 站点已有账号之后 /setup 不能再建号（否则就绕过了邀请码）',
+      setupAgain.status === 302 && (setupAgain.headers.get('location') || '').includes('/login'),
+      `状态码 ${setupAgain.status} → ${setupAgain.headers.get('location') || ''}`);
+    const sneakLogin = await newBrowser()('POST', '/login', {
+      form: { username: '偷偷建的号', password: 'sneak123456' },
+    });
+    ok('★ 那个账号确实没被建出来',
+      sneakLogin.status === 200 && /用户名或密码不正确/.test(sneakLogin.text),
+      `状态码 ${sneakLogin.status}`);
+
+    // --------------------------------------------------------
     // 登录限流
     //
-    // 这是整个自测的最后一节，因为跑完它登录桶就被耗光了 ——
-    // 放中间会把后面所有需要登录的用例一起打挂。
+    // 这一节用**另一个独立实例**跑，而不是接着用上面那个：
+    //   1. 上面那个实例的限流被放开了（功能用例不该被 429 打挂），
+    //      而这里要的正是默认值下的真实行为；
+    //   2. 原来它必须排在最后，因为跑完登录桶就空了 ——
+    //      以后任何人想在这后面加一节都会踩到。独立实例把这个地雷拆掉了。
     //
-    // 为什么这里必须兜住：这个平台原本**没有任何登录失败限制**，
+    // 为什么必须兜住：这个平台原本没有任何登录失败限制，
     // 也就是说密码可以无限次尝试。而它常常跑在按流量计费的服务器上，
     // 被脚本爆破既是安全问题，也是账单问题。
     // --------------------------------------------------------
-    console.log('\n\u001b[1m13. 登录限流\u001b[0m');
+    section('14. 登录限流');
 
     {
-      let blockedAt = null;
-      let retryAfter = null;
-      let blockBody = '';
-
-      for (let i = 1; i <= 30; i += 1) {
-        const res = await req('POST', '/login', {
-          form: { username: '测试同学', password: `wrong-password-${i}` },
+      const rlDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sg-e2e-rl-'));
+      let rlServer = null;
+      try {
+        rlServer = await startServer(rlDataDir, pickPort(), {
+          RATE_LIMIT_AUTH_PER_MIN: '1',
         });
-        if (res.status === 429) {
-          blockedAt = i;
-          retryAfter = res.headers.get('retry-after');
-          blockBody = res.text;
-          break;
+        const rl = createClient(rlServer.baseUrl);
+
+        // 先建一个账号：否则「正确的密码也被挡住」那条断言是空转的
+        // （库里没有账号时，任何密码都算错，测不出东西）
+        const rlSetup = await rl('POST', '/setup', {
+          form: { username: '限流测试', password: 'limit123456', password2: 'limit123456' },
+        });
+        ok('限流实例的账号已建好', rlSetup.status === 302, `状态码 ${rlSetup.status}`);
+
+        let blockedAt = null;
+        let retryAfter = null;
+        let blockBody = '';
+
+        for (let i = 1; i <= 30; i += 1) {
+          const res = await rl('POST', '/login', {
+            form: { username: '限流测试', password: `wrong-password-${i}` },
+          });
+          if (res.status === 429) {
+            blockedAt = i;
+            retryAfter = res.headers.get('retry-after');
+            blockBody = res.text;
+            break;
+          }
+        }
+
+        ok('★ 连续输错密码会被限流挡住（不能无限试）',
+          blockedAt !== null,
+          blockedAt ? `第 ${blockedAt} 次被拦` : '试了 30 次都没拦住');
+
+        ok('★ 429 带上了标准的 Retry-After 头',
+          Boolean(retryAfter) && Number(retryAfter) > 0,
+          `Retry-After=${retryAfter || '(无)'}`);
+
+        ok('★ 限流的提示是中文、说清了要等多久，而不是干巴巴一个 429',
+          /请求太频繁/.test(blockBody) && /等/.test(blockBody),
+          blockBody.slice(0, 80));
+
+        // 被限流之后，连正确密码也进不去 —— 这是有意的：
+        // 否则攻击者只要在每次猜错后夹一次正确密码就能绕过限流。
+        const correct = await rl('POST', '/login', {
+          form: { username: '限流测试', password: 'limit123456' },
+        });
+        ok('★ 限流生效期间，正确的密码同样被挡住（不然限流可以被绕过）',
+          correct.status === 429, `状态码 ${correct.status}`);
+
+        // 但读静态资源不该被牵连：登录接口的桶是独立的
+        const stillOk = await rl('GET', '/static/app.css');
+        ok('★ 登录被限流不会连累静态资源（两个桶是分开的）',
+          stillOk.status === 200, `状态码 ${stillOk.status}`);
+
+        // 注册走的是同一档：不限的话邀请码可以被无限次试出来
+        const regBlocked = await rl('POST', '/register', {
+          form: { username: '限流测试2', password: 'limit123456', password2: 'limit123456' },
+        });
+        ok('★ 注册接口也走严格档（否则邀请码可以被无限次试）',
+          regBlocked.status === 429, `状态码 ${regBlocked.status}`);
+      } finally {
+        if (rlServer?.child) {
+          killTree(rlServer.child);
+          await new Promise((r) => setTimeout(r, 300));
+        }
+        try {
+          fs.rmSync(rlDataDir, { recursive: true, force: true });
+        } catch {
+          /* Windows 上偶发文件占用，忽略 */
         }
       }
-
-      ok('★ 连续输错密码会被限流挡住（不能无限试）',
-        blockedAt !== null,
-        blockedAt ? `第 ${blockedAt} 次被拦` : '试了 30 次都没拦住');
-
-      ok('★ 429 带上了标准的 Retry-After 头',
-        Boolean(retryAfter) && Number(retryAfter) > 0,
-        `Retry-After=${retryAfter || '(无)'}`);
-
-      ok('★ 限流的提示是中文、说清了要等多久，而不是干巴巴一个 429',
-        /请求太频繁/.test(blockBody) && /等/.test(blockBody),
-        blockBody.slice(0, 80));
-
-      // 被限流之后，连正确密码也进不去 —— 这是有意的：
-      // 否则攻击者只要在每次猜错后夹一次正确密码就能绕过限流。
-      const correct = await req('POST', '/login', {
-        form: { username: '测试同学', password: 'test123456' },
-      });
-      ok('★ 限流生效期间，正确的密码同样被挡住（不然限流可以被绕过）',
-        correct.status === 429, `状态码 ${correct.status}`);
-
-      // 但读静态资源不该被牵连：登录接口的桶是独立的
-      const stillOk = await req('GET', '/static/app.css');
-      ok('★ 登录被限流不会连累静态资源（两个桶是分开的）',
-        stillOk.status === 200, `状态码 ${stillOk.status}`);
     }
   } finally {
     if (server?.child) {

@@ -365,12 +365,24 @@ export async function tick() {
   try {
     const reminders = await processDueReminders();
 
-    let digest = { skipped: true, reason: '未检查' };
-    try {
-      digest = await maybeSendDailyDigest(1);
-    } catch (err) {
-      digest = { skipped: true, reason: `播报失败：${err.message}` };
+    // 每日播报必须**逐个用户**判断：开关、时间、接收渠道都是每个人自己设的。
+    //
+    // 这里原来写死的是 maybeSendDailyDigest(1)。单用户时看不出问题，
+    // 多用户之后就是：除了 1 号，其他人把「每日播报」打开也永远收不到，
+    // 而且不报任何错 —— 恰好是最难排查的那一类。
+    const digests = [];
+    for (const { id } of all('SELECT id FROM users ORDER BY id')) {
+      try {
+        digests.push({ userId: id, ...(await maybeSendDailyDigest(id)) });
+      } catch (err) {
+        digests.push({ userId: id, skipped: true, reason: `播报失败：${err.message}` });
+      }
     }
+    const digest = {
+      users: digests.length,
+      sent: digests.filter((d) => d.skipped === false).length,
+      details: digests,
+    };
 
     cleanupOldReminders();
 

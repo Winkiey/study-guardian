@@ -195,6 +195,20 @@ export const config = {
    */
   trustProxy: envBool('TRUST_PROXY', false),
 
+  /**
+   * 邀请码 —— 注册闸门。
+   *
+   * 这台机器按流量计费、端口开在公网，所以「谁能注册」必须有个闸门：
+   * 敞开的注册入口等于把账单和数据库交给路过的扫描器。
+   *
+   * 配了 = 凭码注册；留空 = 关闭注册（只有站点第一个账号例外，
+   * 否则管理员自己都进不去，见 routes/pages.js 的 registerPolicy）。
+   *
+   * 刻意让「没配」等于「关着」：这里宁可默认关门，
+   * 也不要默认敞开——需要的人多花一步就能打开，敞开被滥用却是不可逆的。
+   */
+  inviteCode: env('INVITE_CODE', ''),
+
   /** 生产模式标记，用于关闭调试信息 */
   isDev: env('NODE_ENV', 'development') !== 'production',
 };

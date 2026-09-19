@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 640" width="720" height="640" role="img"
+     aria-label="登录页示意：一个卡片上同时有「登录」和「注册」两个分栏，默认展开登录">
+  <title>登录页：登录 / 注册两个分栏</title>
+  <desc>示意登录页的结构：品牌区、登录与注册的分栏切换、用户名与密码输入框、登录按钮。
+        颜色与圆角取自项目实际的设计令牌。</desc>
+
+  <defs>
+    <filter id="cardShadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#0f1116" flood-opacity="0.10"/>
+      <feDropShadow dx="0" dy="36" stdDeviation="34" flood-color="#0f1116" flood-opacity="0.10"/>
+    </filter>
+    <filter id="pillShadow" x="-30%" y="-30%" width="160%" height="180%">
+      <feDropShadow dx="0" dy="1" stdDeviation="1.6" flood-color="#0f1116" flood-opacity="0.16"/>
+    </filter>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3a63e8"/>
+      <stop offset="1" stop-color="#7c5cff"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0" r="0.9">
+      <stop offset="0" stop-color="#3a63e8" stop-opacity="0.14"/>
+      <stop offset="1" stop-color="#3a63e8" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glow2" cx="0.85" cy="1" r="0.7">
+      <stop offset="0" stop-color="#7c5cff" stop-opacity="0.10"/>
+      <stop offset="1" stop-color="#7c5cff" stop-opacity="0"/>
+    </radialGradient>
+    <style>
+      .sans { font-family: 'PingFang SC','HarmonyOS Sans SC','Source Han Sans SC',
+              'Noto Sans CJK SC','Microsoft YaHei',-apple-system,'Segoe UI',sans-serif; }
+      .field-label   { font-size: 13px;   fill: #565d68; }
+      .field-value   { font-size: 14px;   fill: #0f1116; }
+      .tab-on        { font-size: 14px;   fill: #0f1116; font-weight: 600; }
+      .tab-off       { font-size: 14px;   fill: #565d68; font-weight: 550; }
+      .btn-text      { font-size: 15px;   fill: #ffffff; font-weight: 600; }
+      .foot          { font-size: 12.5px; fill: #868d99; }
+    </style>
+  </defs>
+
+  <!-- 页面背景：和真实登录页一样铺一层极淡的彩色光晕 -->
+  <rect width="720" height="640" fill="#f2f3f6"/>
+  <rect width="720" height="640" fill="url(#glow)"/>
+  <rect width="720" height="640" fill="url(#glow2)"/>
+
+  <!-- 卡片 -->
+  <rect x="180" y="44" width="360" height="548" rx="28"
+        fill="#ffffff" stroke="#e6e8ee" filter="url(#cardShadow)"/>
+
+  <!-- 品牌区 -->
+  <rect x="334" y="84" width="52" height="52" rx="16" fill="url(#brand)"/>
+  <g stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <path d="M352 100h8a3 3 0 0 1 3 3v14a2.5 2.5 0 0 0-2.5-2.5H352z"/>
+    <path d="M368 100h8a3 3 0 0 1 3 3v14a2.5 2.5 0 0 1-2.5-2.5H368z"/>
+  </g>
+  <text class="sans" x="360" y="176" text-anchor="middle"
+        font-size="23" font-weight="700" fill="#0f1116" letter-spacing="-0.5">学习守护</text>
+  <text class="sans" x="360" y="200" text-anchor="middle" font-size="13" fill="#565d68">
+    课程表 · 课件预览 · 作业 DDL 提醒
+  </text>
+
+  <!-- 分段切换：登录 / 注册 -->
+  <rect x="212" y="232" width="296" height="44" rx="14" fill="#f1f2f5" stroke="#e6e8ee"/>
+  <rect x="216" y="236" width="144" height="36" rx="9" fill="#ffffff" filter="url(#pillShadow)"/>
+  <text class="sans tab-on"  x="288" y="259" text-anchor="middle">登录</text>
+  <text class="sans tab-off" x="432" y="259" text-anchor="middle">注册</text>
+
+  <!-- 用户名 -->
+  <text class="sans field-label" x="212" y="312">用户名</text>
+  <rect x="212" y="322" width="296" height="44" rx="10" fill="#ffffff" stroke="#d2d6df"/>
+  <text class="sans field-value" x="228" y="350">小王</text>
+
+  <!-- 密码 -->
+  <text class="sans field-label" x="212" y="396">密码</text>
+  <rect x="212" y="406" width="296" height="44" rx="10" fill="#ffffff" stroke="#d2d6df"/>
+  <g fill="#868d99">
+    <circle cx="234" cy="428" r="3.6"/><circle cx="250" cy="428" r="3.6"/>
+    <circle cx="266" cy="428" r="3.6"/><circle cx="282" cy="428" r="3.6"/>
+    <circle cx="298" cy="428" r="3.6"/><circle cx="314" cy="428" r="3.6"/>
+    <circle cx="330" cy="428" r="3.6"/><circle cx="346" cy="428" r="3.6"/>
+  </g>
+
+  <!-- 主按钮 -->
+  <rect x="212" y="478" width="296" height="46" rx="10" fill="#3a63e8"/>
+  <text class="sans btn-text" x="360" y="506" text-anchor="middle">登录</text>
+
+  <!-- 脚注 -->
+  <text class="sans foot" x="360" y="558" text-anchor="middle">
+    忘记密码？找站点管理员帮你重置即可
+  </text>
+
+  <!-- 结构标注 -->
+  <g>
+    <line x1="572" y1="254" x2="640" y2="254" stroke="#d2d6df" stroke-dasharray="3 3"/>
+    <text class="sans" x="646" y="251" font-size="12.5" fill="#565d68">两栏都在，自己选</text>
+    <text class="sans" x="646" y="269" font-size="11.5" fill="#868d99">默认展开「登录」</text>
+
+    <line x1="572" y1="500" x2="640" y2="500" stroke="#d2d6df" stroke-dasharray="3 3"/>
+    <text class="sans" x="646" y="497" font-size="12.5" fill="#565d68">纯 CSS 切换</text>
+    <text class="sans" x="646" y="515" font-size="11.5" fill="#868d99">禁用 JS 也能注册</text>
+  </g>
+</svg>

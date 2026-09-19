@@ -324,10 +324,11 @@ hr { border: 0; border-top: 1px solid var(--c-border); margin: 18px 0; }
 .text-warn { color: var(--c-warn); }
 .text-primary { color: var(--c-primary); }
 .nowrap { white-space: nowrap; }
-.mt-sm { margin-top: 8px; }
-.mt-md { margin-top: 16px; }
-.mt-lg { margin-top: 24px; }
-.mb-sm { margin-bottom: 8px; }
+/* 注意：间距工具类（mt-* / mb-*）**不在这里**，它们放在文件最末尾。
+   原因是单类选择器靠出现顺序决胜，而 .field__help / .kv / .plain-list
+   这些组件在后面写了 `margin: 0` —— 工具类放在前面就会被它们静默盖掉，
+   写了等于没写（这个坑真踩过：设置页两处 mb-* 一直没生效，而且不报任何错）。
+   颜色、字号类没有这个问题（属性不冲突），所以留在这一节。 */
 .icon { flex: 0 0 auto; vertical-align: -0.15em; }
 
 /* 小圆点（课程色标）。加一圈柔和外扩，让它看起来是「发光」而不是「贴纸」 */
@@ -457,14 +458,22 @@ hr { border: 0; border-top: 1px solid var(--c-border); margin: 18px 0; }
 }
 .logout-form { margin: 0; }
 
-/* 设置页「账号」卡里的退出登录。
+/* 设置页「账号」卡里的退出登录 / 注销账号。
    电脑上侧边栏底部已经有退出按钮，这块是多余的；
-   但手机端侧边栏整个是 display:none 的 —— 这里是手机上唯一的退出入口。 */
+   但手机端侧边栏整个是 display:none 的 —— 这里是手机上唯一的退出入口。
+   注销放在这一行靠右：除了结构上同属「离开这个账号」，
+   也是有意让它离「修改密码」按钮远一点，别顺手点到。 */
 .account-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
   margin-top: 24px;
   padding-top: 20px;
   border-top: 1px solid var(--c-border);
 }
+.account-footer .logout-form { margin: 0; }
 
 .theme-toggle {
   display: flex; align-items: center; gap: 8px;
@@ -2423,11 +2432,16 @@ select.input { cursor: pointer; }
    28 · 登录页
    ========================================================================== */
 .auth-shell {
-  display: grid; place-items: center;
+  /* 用 flex + 卡片自带 margin:auto 来居中，而不是 grid + place-items:center。
+     原因：注册表单比登录表单高得多，小屏上会超出视口，而居中布局会把
+     超出部分同时顶到上面去、且不可滚动 —— 用户根本够不到「创建账号」按钮。
+     margin:auto 在内容超高时会退回 0，配合 overflow-y 就能正常滚动。 */
+  display: flex;
   min-height: 100vh;
   padding: 24px;
   position: relative;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   /* 背景铺一层极淡的彩色光晕，避免纯色背景的空洞感 */
   background:
     radial-gradient(ellipse 70% 55% at 50% -10%,
@@ -2438,6 +2452,7 @@ select.input { cursor: pointer; }
 }
 .auth-card {
   position: relative;
+  margin: auto;
   width: 100%; max-width: 404px;
   padding: 34px 32px;
   background: var(--c-surface);
@@ -2453,6 +2468,86 @@ select.input { cursor: pointer; }
 }
 .auth-title { font-size: 23px; letter-spacing: -0.024em; }
 .auth-sub { color: var(--c-text-2); font-size: 13px; margin-top: 5px; }
+
+/* ---- 登录 / 注册 分段切换 ----
+   纯 CSS 实现：两个透明的 radio 排在最前，后面靠 `:checked ~` 兄弟选择器
+   决定哪个标签高亮、哪个面板显示。
+   刻意不用 JavaScript —— 这个页面唯一的功能就是注册和登录，
+   即使 JS 加载失败或被禁用，也必须是能用的。 */
+.auth-tabs { position: relative; }
+.auth-tabs__radio {
+  position: absolute;
+  width: 1px; height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+.auth-tabs__bar {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  padding: 4px;
+  margin-bottom: 24px;
+  background: var(--c-surface-3);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius);
+}
+/* 白色的滑动高亮块。移动它本身而不是切换标签背景，
+   这样「切换」看起来是一块牌子滑过去，而不是颜色忽然跳一下。 */
+.auth-tabs__bar::before {
+  content: '';
+  position: absolute;
+  top: 4px; bottom: 4px; left: 4px;
+  width: calc(50% - 4px);
+  background: var(--c-surface);
+  border-radius: calc(var(--radius) - 5px);
+  box-shadow: var(--shadow-sm);
+  transition: transform var(--transition-slow);
+}
+#tab-register:checked ~ .auth-tabs__bar::before { transform: translateX(100%); }
+
+.auth-tabs__tab {
+  position: relative; /* 压在滑动块上面 */
+  z-index: 1;
+  padding: 9px 4px;
+  text-align: center;
+  font-size: 14px;
+  font-weight: 550;
+  color: var(--c-text-2);
+  border-radius: calc(var(--radius) - 5px);
+  cursor: pointer;
+  user-select: none;
+  transition: color var(--transition);
+}
+.auth-tabs__tab:hover { color: var(--c-text); }
+#tab-login:checked ~ .auth-tabs__bar [for="tab-login"],
+#tab-register:checked ~ .auth-tabs__bar [for="tab-register"] {
+  color: var(--c-text);
+}
+/* radio 虽然透明，但仍在键盘的焦点顺序里，所以 Tab 键也能切换 ——
+   把焦点环画在对应的标签上，否则焦点会「消失」在一个看不见的控件上。 */
+#tab-login:focus-visible ~ .auth-tabs__bar [for="tab-login"],
+#tab-register:focus-visible ~ .auth-tabs__bar [for="tab-register"] {
+  outline: 2px solid var(--c-primary);
+  outline-offset: 2px;
+}
+
+/* 面板：默认全隐藏，只有被选中的那个显示 */
+.auth-tabs__panel { display: none; }
+#tab-login:checked ~ .auth-tabs__panel[data-panel="login"],
+#tab-register:checked ~ .auth-tabs__panel[data-panel="register"] {
+  display: block;
+  animation: auth-panel-in 240ms var(--ease-out);
+}
+@keyframes auth-panel-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .auth-tabs__bar::before { transition: none; }
+  #tab-login:checked ~ .auth-tabs__panel[data-panel="login"],
+  #tab-register:checked ~ .auth-tabs__panel[data-panel="register"] { animation: none; }
+}
+
 .auth-foot { text-align: center; margin-top: 20px; }
 
 /* ==========================================================================
@@ -2787,3 +2882,20 @@ select.input { cursor: pointer; }
     scroll-behavior: auto !important;
   }
 }
+
+/* ==========================================================================
+   36 · 间距工具类（必须放在最后）
+   ── 为什么在最后，而不是和其他工具类放在第 4 节 ────────────────────
+   这五个类经常和别的类叠在同一个元素上，比如
+       <p class="field__help mb-md">  、 <dl class="kv mb-md">
+   而 .field__help 和 .kv 自己都写了 `margin: 0`（消掉 <p>/<dl> 的默认边距）。
+   单类选择器之间的胜负只看出现顺序 —— 工具类如果排在前面，就会被后面那个
+   `margin: 0` 盖掉，**写了跟没写一样，而且不报任何错**。
+   放在文件末尾，工具类才是真正「最后生效」的那一层，也才叫工具类。
+   （E2E 里有一条断言专门防止它们被挪回前面。）
+   ========================================================================== */
+.mt-sm { margin-top: 8px; }
+.mt-md { margin-top: 16px; }
+.mt-lg { margin-top: 24px; }
+.mb-sm { margin-bottom: 8px; }
+.mb-md { margin-bottom: 16px; }

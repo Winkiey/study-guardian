@@ -12,7 +12,7 @@
  */
 
 /** 当前结构版本号，配合 PRAGMA user_version 做迁移 */
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 /**
  * 课程标记色的默认值。
@@ -49,6 +49,18 @@ export const MIGRATIONS = {
     (db) => db.prepare('UPDATE courses SET color = ? WHERE color = ?')
       .run(DEFAULT_COURSE_COLOR, LEGACY_COURSE_COLOR),
   ],
+  // v4：多用户。
+  // 用户名原来只在「逐字节完全相等」上唯一（SQLite 的 TEXT 默认区分大小写），
+  // 于是 Alice 和 alice 可以同时注册成两个账号：后注册的人以为自己拿到了
+  // 那个名字，实际上登录时也得原样拼对大小写，输错一个字母就进不去，
+  // 而按名字发邀请码、认人时更是必然搞混。
+  // 用表达式索引把口径统一成「小写后唯一」，改动最小又能让数据库自己兜住。
+  4: [
+    (db) => db.exec(
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_lower '
+      + 'ON users(lower(username))',
+    ),
+  ],
 };
 
 /** 缺了才加，已经有了就跳过（让迁移可以安全重跑） */
@@ -61,8 +73,13 @@ export function addColumnIfMissing(db, table, column, ddl) {
 
 export const SCHEMA_SQL = `
 -- ============================================================
--- 用户。当前是单用户自用，但表结构从一开始就带 user_id，
--- 这样未来要开源支持多用户时不需要重做数据迁移。
+-- 用户。多用户：每个人的数据靠各表的 user_id 隔开。
+--
+-- username 上的唯一性有两条：
+--   users.username UNIQUE     —— 完全相同的不许重名
+--   idx_users_username_lower  —— 只差大小写的也不许重名（v4 加的）
+-- 第二条是必须的：登录本身不区分大小写，如果库里同时存在 Alice 和 alice，
+-- 就没法判断该登进哪一个。
 -- ============================================================
 CREATE TABLE IF NOT EXISTS users (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -72,6 +89,7 @@ CREATE TABLE IF NOT EXISTS users (
   school        TEXT NOT NULL DEFAULT '',
   created_at    TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_lower ON users(lower(username));
 
 -- ============================================================
 -- 学期。课表的周次计算依赖「第 1 周周一」是哪一天。

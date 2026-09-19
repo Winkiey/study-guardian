@@ -136,6 +136,10 @@ export function createRateLimiter({ capacity, perMinute, name = 'limiter' }) {
  *     而本项目没有登录失败锁定，所以这里必须自己兜住。
  */
 export function pickLimiter(pathname, method, { general, auth }) {
-  if (method === 'POST' && (pathname === '/login' || pathname === '/setup')) return auth;
+  // 注册也走严格档：它同样能刷（批量建号、把磁盘和数据库当免费空间用），
+  // 而且不严的话「邀请码」就只是个摆设 —— 可以无限次试。
+  if (method === 'POST' && (pathname === '/login' || pathname === '/setup' || pathname === '/register')) {
+    return auth;
+  }
   return general;
 }
