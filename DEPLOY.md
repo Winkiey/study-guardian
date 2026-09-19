@@ -332,6 +332,21 @@ pm2 start study-guardian
 改完代码要经过**两步**：先在电脑上推送到 GitHub，再到服务器上拉下来。
 服务器上的 `git pull` 只能拿到**已经推上去**的东西，所以顺序不能颠倒。
 
+> ### ⚠️ 顺序反了不会报错，只会「静默地什么都没发生」
+>
+> 真的踩过：先跑 `git pull` 再回忆「我推了吗」，结果 `git pull` 打印
+> `Already up to date.`，看起来一切正常 —— 其实拉到的是**旧代码**，
+> 之后再 `pm2 restart` 就是「认认真真重启了一个旧版本」。
+>
+> 所以每次更新完，**用这两行确认一下**（服务器上跑）：
+>
+> ```bash
+> git log -1 --format="%h %s"              # 应该是你刚推的那个提交号
+> pm2 describe study-guardian | grep -E "uptime|restarts"   # uptime 应该是几秒
+> ```
+>
+> 提交号对不上、或者 uptime 是几小时 —— 那就是没拉成功，回去看第一步的 `tmp-push-log.txt`。
+
 **第一步 · 电脑**：双击项目根目录里的 `推送到GitHub.cmd`。
 
 它会执行 `git push`，并把整次推送的完整输出写进 `tmp-push-log.txt`。
@@ -350,6 +365,9 @@ cd /opt/study-guardian
 git pull
 pm2 restart study-guardian
 ```
+
+`git pull` 那一步要看到 **`Fast-forward`** 和一行文件统计；如果它说
+`Already up to date.`，而你在电脑上明明刚推过，就说明第一步没成功。
 
 不用重新安装、不用构建。CSS 和 JS 的缓存标记是每次请求现算的，
 所以手机和电脑上**刷新一下页面**就能看到新版本，不用清缓存。
