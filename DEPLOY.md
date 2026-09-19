@@ -469,6 +469,80 @@ node scripts/create-user.mjs 用户名 密码
 </details>
 
 <details>
+<summary><b>新传的课件打开只有文字，没有排版（以前的能正常看）</b></summary>
+
+老课件的 PDF 早就转好放在缓存里了，不用重新转，所以**只有新传的会暴露问题**。
+原因几乎总是「转 PDF 这一步失败了」。
+
+在服务器上跑一次诊断，它会把原因直接打出来：
+
+```bash
+cd /opt/study-guardian
+node scripts/diagnose-preview.mjs
+```
+
+它会检查：磁盘剩多少、内存够不够、有没有上次超时后留下的僵尸进程、
+转换器还在不在、最近传的每份课件各自是什么状态和原因。
+
+**最常见的两个原因：**
+
+**① LibreOffice 没装（或者在系统更新里被删掉了）**
+
+```bash
+sudo apt update
+sudo apt install -y libreoffice-impress libreoffice-writer libreoffice-calc
+pm2 restart study-guardian
+```
+
+> 装之前先看一眼诊断里「转换器状态」那一节 ——
+> 如果它显示可用，就别装，那是别的原因。
+
+**② 上次转换超时，留下的僵尸进程把内存吃光了**
+
+```bash
+pkill -f soffice          # 清掉残留进程
+rm -rf data/cache/lo-profile-* data/cache/*.log   # 清掉残留的临时目录
+pm2 restart study-guardian
+```
+
+诊断里「残留的 LibreOffice 进程」那一节会告诉你有没有这种情况。
+
+**为什么会出现②**：转换超过 120 秒会被强制结束，而旧版本只杀得掉外层脚本、
+杀不掉真正的 `soffice.bin`。它就一直占着内存，越积越多，
+最后新的一次转换必然失败。这个已经在代码里修了（现在会连整棵进程树一起收），
+但如果服务器上已经积了一批，得按上面的命令手动清一次。
+
+**转换器没问题、只是上次临时失败了**，可以直接重试：
+
+```bash
+node scripts/diagnose-preview.mjs --retry
+```
+
+</details>
+
+<details>
+<summary><b>一次传了好几个课件，后面的半天没反应</b></summary>
+
+这是**排队**，不是卡住。预览转换默认同时只跑 1 个
+（`PREVIEW_CONCURRENCY=1`）。
+
+为什么不让它一起跑：上传接口把转换丢到后台就立刻返回，所以连着传几个
+课件时本来是会同时在跑的。LibreOffice 每个实例要几百 MB 内存，
+2 核 2G 的服务器上 3 个就能把内存打满、被系统杀掉 ——
+代价是所有转换**全都失败**。
+
+串行只是慢一点：一份课件十几秒，排在后面的多等一会儿。
+页面刷新后状态会从「正在生成预览」变成正常。
+
+内存够大（4GB 以上）想换点速度，可以改 `.env`：
+
+```
+PREVIEW_CONCURRENCY=2
+```
+
+</details>
+
+<details>
 <summary><b>浏览器一直转圈打不开</b></summary>
 
 九成是第 1 步的安全组没放行 3081 端口。先在服务器上确认服务本身是活的：

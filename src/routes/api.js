@@ -36,7 +36,6 @@ import {
   hasCustomPeriodSchedule,
   DEFAULT_PERIOD_SCHEDULE,
 } from '../lib/settings.js';
-import { buildPreview } from '../lib/materials.js';
 import { detectKind, normalizeExt, sanitizeFilename } from '../lib/files.js';
 import { runOnce, schedulerStatus } from '../lib/scheduler.js';
 import { parseIcsTimetable, importCourses } from '../lib/import/ics-import.js';
@@ -348,9 +347,12 @@ export function registerApi(router) {
 
     // 预览生成（Office 转 PDF）可能要十几秒，所以不阻塞响应。
     // 前端会看到 preview_status = 'pending'，刷新后变成 ready 或 failed。
-    buildPreview(material.id).catch((err) => {
-      console.error(`[预览] 资料 ${material.id} 生成失败：`, err.message);
-    });
+    //
+    // 用 schedulePreview 而不是直接 buildPreview：它会**排队**，
+    // 同时只跑 config.previewConcurrency 个转换。连传几个课件时，
+    // 不排队就等于同时起好几个 LibreOffice，小内存服务器会被打爆
+    // （详见 materials.js 里那段说明）。它自己也吞掉异常，不会变成未捕获拒绝。
+    materials.schedulePreview(material.id);
 
     sendJson(ctx.res, { ok: true, material }, 201);
   }));

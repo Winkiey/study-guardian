@@ -223,11 +223,92 @@ export async function createMaterialFromUpload(userId, file, meta = {}) {
   return getMaterial(userId, lastInsertRowid);
 }
 
+// ============================================================
+// 预览生成的并发闸门
+//
+// 上传接口把转换丢到后台就立刻返回给浏览器，而浏览器传下一个文件时
+// 上一个转换还在跑 —— 于是「一次选 5 个课件」就等于让 5 个 LibreOffice
+// 同时起来。它每个实例要几百 MB 内存，2 核 2G 的服务器上 3 个就打满，
+// 然后被 OOM 杀掉：转换失败、预览退化成纯文字。
+//
+// 给人的感觉非常有迷惑性 ——「以前传的课件都能正常看，今天新传的
+// 全都没排版了」，因为老课件的 PDF 早就躺在缓存里，根本不用重转。
+// ============================================================
+
+/** 正在跑的转换数量 */
+let previewRunning = 0;
+/** 排队等着开始的转换（存的是「启动」函数） */
+const previewWaiting = [];
+
+/** 现在的排队情况，诊断和测试用 */
+export function previewQueueState() {
+  return { running: previewRunning, waiting: previewWaiting.length };
+}
+
+/**
+ * 让 fn 排队执行，保证同时在跑的转换不超过 config.previewConcurrency 个。
+ *
+ * 用 FIFO：先进先出最好解释，也不会让某一份课件永远排在后面。
+ */
+function withPreviewSlot(fn) {
+  return new Promise((resolve, reject) => {
+    const start = () => {
+      previewRunning += 1;
+      Promise.resolve()
+        .then(fn)
+        .then(resolve, reject)
+        .finally(() => {
+          previewRunning -= 1;
+          const next = previewWaiting.shift();
+          if (next) next();
+        });
+    };
+
+    if (previewRunning < config.previewConcurrency) start();
+    else previewWaiting.push(start);
+  });
+}
+
 /**
  * 跑预览流水线。上传后异步调用（不阻塞响应），
  * 所以资料刚上传时 preview_status 是 pending，前端会轮询或下次刷新看到结果。
+ *
+ * 注意：它会**排队**。并发上限见 config.previewConcurrency。
  */
 export async function buildPreview(materialId) {
+  return withPreviewSlot(() => buildPreviewNow(materialId));
+}
+
+/**
+ * 排队生成预览，但不等结果、也不抛错 —— 给上传接口用。
+ *
+ * 上传接口关心的是「尽快把 201 还回去」，转换排多久都不该影响它。
+ */
+export function schedulePreview(materialId) {
+  return withPreviewSlot(() => buildPreviewNow(materialId))
+    .then(() => undefined)
+    .catch((err) => {
+      console.error(`[预览] 资料 ${materialId} 生成失败：`, err.message);
+    });
+}
+
+/**
+ * 找出卡在 pending 的课件。
+ *
+ * 为什么需要：进程在转换途中被重启（pm2 restart、断电、OOM），
+ * 那份课件就永远停在 pending，界面上一直转圈，谁也不会再去动它。
+ * 启动时把它们重新排进队列，就自愈了。
+ */
+export function pendingPreviewMaterials(limit = 50) {
+  return all(
+    `SELECT id FROM materials
+      WHERE preview_status = 'pending'
+      ORDER BY id ASC LIMIT ?`,
+    limit,
+  ).map((r) => r.id);
+}
+
+async function buildPreviewNow(materialId) {
   const row = get('SELECT * FROM materials WHERE id = ?', materialId);
   if (!row) return { ok: false, error: '资料不存在' };
 

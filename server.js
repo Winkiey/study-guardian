@@ -21,6 +21,7 @@ import { createRouter } from './src/routes/index.js';
 import { startScheduler, stopScheduler, tick } from './src/lib/scheduler.js';
 import { bootstrapState } from './src/lib/auth.js';
 import { converterStatus } from './src/lib/convert.js';
+import { pendingPreviewMaterials, schedulePreview } from './src/lib/materials.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STATIC_DIR = path.join(__dirname, 'src', 'web', 'public');
@@ -401,7 +402,33 @@ async function main() {
     printBanner();
     startScheduler();
     startLimiterSweeper();
+    requeueStuckPreviews();
   });
+}
+
+/**
+ * 把卡在「等待生成」的课件重新排进预览队列。
+ *
+ * 为什么需要：预览转换是在后台跑的，进程如果在转换途中被重启
+ * （pm2 restart、被 OOM 杀掉、断电），那份课件就永远停在 pending ——
+ * 界面上一直显示「正在生成预览」，而没有任何东西会再去碰它，
+ * 用户只能删掉重传。
+ *
+ * 启动时扫一遍就自愈了，还顺带把「服务重启时正在排队的那几个」捡回来。
+ */
+function requeueStuckPreviews() {
+  let ids = [];
+  try {
+    ids = pendingPreviewMaterials();
+  } catch (err) {
+    console.error('[预览] 扫描未完成的预览时出错：', err.message);
+    return;
+  }
+
+  if (ids.length === 0) return;
+
+  console.log(`[预览] 有 ${ids.length} 份课件停在「等待生成」，重新排队：${ids.join(' ')}`);
+  for (const id of ids) schedulePreview(id);
 }
 
 main();

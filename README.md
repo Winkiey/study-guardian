@@ -748,13 +748,37 @@ node scripts/reset-password.mjs 新密码 用户名      # 有多个账号时必
 <details>
 <summary><b>PPT 预览显示的是「网页版预览」，没有排版？</b></summary>
 
-说明本机没有可用的 Office 转换器。装一个（任一即可）：
+说明**转 PDF 这一步没成功**，平台退到了内置的文本解析器。
+
+**如果一直是这样**：本机没有可用的转换器。装一个（任一即可）：
 
 - [LibreOffice](https://www.libreoffice.org/)（免费开源，推荐）
 - Microsoft Office
 - WPS Office
 
-装完重启服务。跑 `npm run doctor` 能看到探测结果。
+装完重启服务。设置 →「文件预览能力」那一栏会显示当前探测到的是哪个。
+
+**如果以前能正常看、新传的却不行**：老课件的 PDF 早就转好放在缓存里了，
+所以只有新传的会暴露问题。跑这个诊断脚本，它会把原因直接打出来：
+
+```bash
+node scripts/diagnose-preview.mjs
+```
+
+常见原因它都能认出来：转换器没装/调不动、磁盘满了、内存不够、
+上一次转换超时后留下的僵尸进程把内存占满了。
+
+诊断说转换器可用时，可以直接重试（比如上次只是临时超时）：
+
+```bash
+node scripts/diagnose-preview.mjs --retry
+```
+
+> 另外，预览转换是**排队**跑的（默认同时只跑 1 个）。一次传很多课件时
+> 排在后面的会多等一会儿，那是正常的，不是卡住了 ——
+> 小内存服务器上同时起好几个 LibreOffice 会被系统杀掉，
+> 那才会真的转不出来。机器够大可以设 `PREVIEW_CONCURRENCY=2`。
+
 </details>
 
 <details>

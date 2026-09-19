@@ -164,6 +164,21 @@ export const config = {
   maxUploadBytes: envInt('MAX_UPLOAD_MB', 200) * 1024 * 1024,
   enableOfficeConvert: envBool('ENABLE_OFFICE_CONVERT', true),
 
+  /**
+   * 同时最多跑几个课件预览转换。默认 1（串行）。
+   *
+   * 为什么必须有个上限：上传接口把转换丢到后台就立刻返回，
+   * 所以「连着传 5 个课件」会让 5 个 LibreOffice 同时起来。
+   * LibreOffice 每个实例要几百 MB 内存，2 核 2G 的云服务器上 3 个就能
+   * 把内存打满，然后被系统 OOM 杀掉 —— 转换失败，预览退化成纯文字。
+   * 用户看到的现象是「以前传的课件都能看，今天新传的全都没排版了」，
+   * 而且重启服务也未必立刻好转。
+   *
+   * 串行是慢一点，但结果是对的：一份课件十几秒，排在后面的多等一会儿而已；
+   * 并发失控的代价是**全都失败**。机器够大可以调高，比如 PREVIEW_CONCURRENCY=2。
+   */
+  previewConcurrency: Math.max(1, envInt('PREVIEW_CONCURRENCY', 1)),
+
   schedulerIntervalSec: Math.max(10, envInt('SCHEDULER_INTERVAL_SEC', 60)),
   schedulerRunOnStart: envBool('SCHEDULER_RUN_ON_START', true),
 

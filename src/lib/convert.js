@@ -424,6 +424,54 @@ function fileExistsNonEmpty(p) {
  *
  * @returns {Promise<number|null>} 子进程退出码
  */
+/**
+ * 结束**整棵**子进程树。
+ *
+ * 为什么不能只 `child.kill()`：
+ *   Linux 上 /usr/bin/soffice 是个 shell 包装脚本，它自己去起 soffice.bin。
+ *   给包装脚本发信号只杀得掉包装脚本本身，**soffice.bin 会留在后台**，
+ *   继续占着几百 MB 内存和刚才那个临时 profile 目录。
+ *   一两次看不出来；转几次大课件之后机器上就积了一堆 LibreOffice，
+ *   2GB 内存的服务器随即开始 OOM —— 表现是「以前好好的，
+ *   现在新传的课件全都只剩文字预览」，而且重启服务也未必立刻好转
+ *   （残留进程不跟着 pm2 一起走）。
+ *
+ * 收尾办法分平台：
+ *   POSIX  起进程时就放进独立进程组（detached），这里对**整个组**发信号
+ *   Windows 没有进程组，用 taskkill /T 连整棵树一起收
+ */
+function killTree(child) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  const pid = child.pid;
+  if (!pid) return;
+
+  if (process.platform === 'win32') {
+    try {
+      spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], {
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+      return;
+    } catch {
+      /* 退回到普通 kill */
+    }
+  } else {
+    // 进程组 id 就是组长（我们起的那个子进程）的 pid，负号表示发给整组
+    try {
+      process.kill(-pid, 'SIGKILL');
+      return;
+    } catch {
+      /* 组已经不存在了，退回到普通 kill */
+    }
+  }
+
+  try {
+    child.kill('SIGKILL');
+  } catch {
+    /* 已经退出了 */
+  }
+}
+
 function spawnToLog(exe, args, { logPath, timeoutMs, timeoutMessage } = {}) {
   let fd = null;
   try {
@@ -441,6 +489,9 @@ function spawnToLog(exe, args, { logPath, timeoutMs, timeoutMessage } = {}) {
       // 无论如何都不要用 'ignore' + windowsHide 那个坏组合
       stdio: fd === null ? 'inherit' : ['ignore', fd, fd],
       windowsHide: true,
+      // POSIX 上单独开一个进程组，超时才能把 soffice.bin 一起收掉（见 killTree）。
+      // Windows 上没有这个概念，开了也没用。
+      detached: process.platform !== 'win32',
     });
 
     const closeFd = () => {
@@ -451,7 +502,7 @@ function spawnToLog(exe, args, { logPath, timeoutMs, timeoutMessage } = {}) {
     };
 
     const timer = setTimeout(() => {
-      child.kill();
+      killTree(child);
       closeFd();
       reject(new Error(timeoutMessage || `子进程超时（${Math.round((timeoutMs || 0) / 1000)} 秒）`));
     }, timeoutMs || 120_000);
