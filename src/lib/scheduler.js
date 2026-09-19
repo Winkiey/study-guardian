@@ -12,7 +12,7 @@
 
 import config from '../config.js';
 import { all, get, run } from '../db/index.js';
-import { notifyUser } from './notify/index.js';
+import { notifyUser, resolveTargetChannels } from './notify/index.js';
 import {
   addMinutes,
   diffMinutes,
@@ -220,8 +220,49 @@ function baseUrl() {
 // ============================================================
 
 /**
+ * 每天最多尝试几次、两次之间至少隔多久。
+ *
+ * 为什么需要这两个上限（实测出来的，不是理论上的）：
+ * 发送失败时**不能**记成「今天已播报」—— 那样用户把渠道修好之后，
+ * 今天这条就再也等不到了。但也不能不管：调度器默认 60 秒扫一次，
+ * 而 notifyUser 每失败一次就往 notify_log 写一行。
+ * 实测「没配渠道」的用户连续 3 次 tick 就写了 3 行失败日志，
+ * 照这么算一整天 1440 行，而设置页只显示最近 30 行 ——
+ * 结果就是真正的发送记录被一墙一模一样的失败糊掉，看不出别的问题。
+ *
+ * 3 次 × 间隔 30 分钟：既能在「刚配好渠道」之后一小时内补上，
+ * 一天最多也只留 3 行日志。
+ */
+const DIGEST_MAX_ATTEMPTS = 3;
+const DIGEST_RETRY_MINUTES = 30;
+
+/**
+ * 读今天的重试状态。跨天自动归零，不需要额外的清理任务。
+ * @returns {{lastTry: string, count: number}} lastTry 为空表示今天还没试过
+ */
+function digestRetryState(userId, today) {
+  const lastTry = String(getSetting(userId, 'daily_digest_last_try', '') || '');
+  const sameDay = lastTry.slice(0, 10) === today;
+  return {
+    lastTry: sameDay ? lastTry : '',
+    count: sameDay ? Number(getSetting(userId, 'daily_digest_try_count', '0')) || 0 : 0,
+  };
+}
+
+/** 记下这次尝试（成功失败都记）。 */
+function recordDigestAttempt(userId, count) {
+  const write = (key, value) => run(
+    `INSERT INTO settings (user_id, key, value) VALUES (?, ?, ?)
+     ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value`,
+    userId, key, value,
+  );
+  write('daily_digest_last_try', nowStr());
+  write('daily_digest_try_count', String(count));
+}
+
+/**
  * 每天早上推送「今日课表 + 最近作业」。
- * 由设置项 daily_digest_enabled / daily_digest_time 控制。
+ * 由设置项 daily_digest_enabled / daily_digest_time 控制，**每个人都各有一份**。
  */
 export async function maybeSendDailyDigest(userId = 1) {
   const enabled = getSetting(userId, 'daily_digest_enabled', '0') === '1';
@@ -237,11 +278,38 @@ export async function maybeSendDailyDigest(userId = 1) {
   const nowHm = nowStr().slice(11, 16);
   if (nowHm < time) return { skipped: true, reason: '还没到播报时间' };
 
+  // 一个启用的渠道都没有时**直接跳过，不算一次尝试、也不写日志**。
+  //
+  // 这不是「发送失败」，而是「还没配」——要等的是人去配置，不是等时间，
+  // 所以重试毫无意义。而下一段那个 up-front 检查也顺带保证了
+  // 「用户刚配好渠道」最多 60 秒就会被捡起来发出去。
+  const channels = getSetting(userId, 'daily_digest_channels', '');
+  if (resolveTargetChannels(userId, channels).length === 0) {
+    return { skipped: true, reason: '还没有配置通知渠道' };
+  }
+
+  // 试过了就先等等，别每个调度周期都重来
+  const state = digestRetryState(userId, today);
+  if (state.count >= DIGEST_MAX_ATTEMPTS) {
+    return { skipped: true, reason: `今天已尝试 ${state.count} 次都没发出去，明天再试` };
+  }
+  if (state.lastTry) {
+    const waited = diffMinutes(state.lastTry, nowStr());
+    if (waited < DIGEST_RETRY_MINUTES) {
+      return {
+        skipped: true,
+        reason: `上次发送失败，${DIGEST_RETRY_MINUTES - Math.max(0, waited)} 分钟后再试`,
+      };
+    }
+  }
+
   const message = await buildDailyDigest(userId);
   if (!message) return { skipped: true, reason: '无法生成播报内容' };
 
-  const channels = getSetting(userId, 'daily_digest_channels', '');
   const result = await notifyUser(userId, message, { channels });
+
+  // 成败都记一笔：失败也要留下痕迹，否则会退回到「每 60 秒重试一次」
+  recordDigestAttempt(userId, state.count + 1);
 
   if (result.ok) {
     run(
@@ -252,7 +320,12 @@ export async function maybeSendDailyDigest(userId = 1) {
     );
   }
 
-  return { skipped: false, ok: result.ok, results: result.results };
+  return {
+    skipped: false,
+    ok: result.ok,
+    attempts: state.count + 1,
+    results: result.results,
+  };
 }
 
 /**
