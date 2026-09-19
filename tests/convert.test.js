@@ -185,14 +185,24 @@ describe('converterStatus 不对用户说大话', () => {
 
     assert.equal(status.available, false);
     assert.equal(status.powershellUnavailable, true);
-    assert.match(status.label, /调不动/);
-    assert.match(status.message, /PowerShell/, '要点名是 PowerShell 这一环');
+    assert.ok(!/可用/.test(status.label), `标签不能还说「可用」：${status.label}`);
+    assert.match(status.label, /不可用/, '要一眼看出不行了');
+    // 给用户的说明里只说「现在是什么效果」，不提 PowerShell / COM 这些内部机制
+    assert.match(status.message, /文字版预览|没有排版/);
+    assert.ok(!/PowerShell|COM\b/.test(status.message),
+      `用户看不懂这些内部名词：${status.message}`);
+    // 内部机制写在 adminHint 里，给站长看的
+    assert.match(status.adminHint, /PowerShell/, 'adminHint 里要保留诊断信息');
   });
 
-  test('★ 调不动时要给出真正有用的做法（装 LibreOffice 绕开）', () => {
+  test('★ 运维建议归 adminHint，不能出现在给用户的 message 里', () => {
+    // 用户是拿手机看课件的同学，他改不了服务器。
+    // 「装个免费的 LibreOffice」这类话写在 message 里，
+    // 用户会以为自己得去做点什么，而其实什么都不用做。
     const status = convert.converterStatus();
-    if (status.powershellUnavailable !== true) return;
-    assert.match(status.message, /LibreOffice/, '没给出可绕开的替代方案');
+    assert.ok(!/LibreOffice|apt install|重装|安装/.test(status.message),
+      `message 里不该有安装/运维指引：${status.message}`);
+    assert.equal(typeof status.adminHint, 'string', 'adminHint 字段要一直存在（可能是空串）');
   });
 
   test('★ 不能把「装个 Office / 重装 Office」当成解决办法', () => {
@@ -424,7 +434,9 @@ describe('★ 中文字体的检测', () => {
       'converterStatus() 应该给出 missingCjkFonts，供设置页显示警告');
     if (s.missingCjkFonts) {
       assert.match(s.message, /中文字体/, '缺字体时要在说明里讲清楚');
-      assert.match(s.message, /apt install/, '并给出装字体的命令');
+      assert.ok(!/apt install/.test(s.message),
+        '装字体的命令不该出现在给用户看的说明里（那是站长的事）');
+      assert.match(s.adminHint, /apt install/, '命令要保留在给站长看的 adminHint 里');
     }
   });
 });

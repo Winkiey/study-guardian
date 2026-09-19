@@ -96,7 +96,7 @@ export const SETTING_DEFS = [
     label: '简报发送时间',
     type: 'time',
     default: '07:30',
-    help: '需要服务在运行。电脑关机时不会发。',
+    help: '按这个时间发。需要先在上面配好至少一个提醒渠道。',
   },
   {
     key: 'daily_digest_channels',

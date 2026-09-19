@@ -12,7 +12,7 @@ import { sendHtml } from '../lib/http.js';
 import { get } from '../db/index.js';
 import { currentUser } from '../lib/auth.js';
 import { buildCalendar, exportStats, verifyCalendarToken } from '../lib/export/ics-export.js';
-import config from '../config.js';
+import { renderPage, pageHeader, card } from '../web/layout.js';
 
 export function registerCalendarRoutes(router) {
   /** 下载：需要登录 */
@@ -69,7 +69,14 @@ export function registerCalendarRoutes(router) {
     ctx.res.end(body);
   });
 
-  /** 给用户看的订阅说明页（用浏览器打开订阅链接时） */
+  /**
+   * 给用户看的导出说明页。
+   *
+   * ⚠️ 这一页以前是手写的一小段裸 HTML，**没有导航栏、也没有「跳到主要内容」**，
+   * 和站内其它每一页都不一样。后果很具体：用户从书签或历史记录打开它之后，
+   * 页面上没有任何一个能点回站内的入口，只能手动改地址栏。
+   * 所以现在走公共布局（renderPage），和别的页面长得一样、也能正常导航。
+   */
   router.get('/calendar', async (ctx) => {
     const user = currentUser(ctx.req);
     if (!user) {
@@ -79,20 +86,33 @@ export function registerCalendarRoutes(router) {
     }
 
     const stats = exportStats(user.id);
-    return sendHtml(ctx.res, `<!doctype html><html lang="zh-CN"><head>
-<meta charset="utf-8"><title>日历导出 · ${config.appName}</title>
-<link rel="stylesheet" href="/static/app.css"></head>
-<body><div class="main" style="max-width:640px;margin:40px auto">
-<h1 class="page-title">日历导出</h1>
-<p class="page-subtitle">把课表和作业 DDL 导出到手机日历。</p>
-<div class="card mt-lg"><div class="card__body">
-<p>当前有 <strong>${stats.courseCount}</strong> 门课程、<strong>${stats.sessionCount}</strong> 条上课时间、<strong>${stats.assignmentCount}</strong> 项待办作业。</p>
-<div class="btn-row mt-md">
-  <a class="btn btn--primary" href="/calendar/download.ics">下载 .ics 文件</a>
-  <a class="btn btn--outline" href="/settings#calendar">查看订阅链接</a>
-</div>
-</div></div>
-</div></body></html>`);
+    const body = `
+${pageHeader({
+    title: '导出到手机日历',
+    subtitle: '把课表和作业 DDL 放进 iPhone 自带的「日历」App。',
+  })}
+
+${card({
+    body: `
+  <p>当前有 <strong>${stats.courseCount}</strong> 门课程、<strong>${stats.sessionCount}</strong> 条上课时间、<strong>${stats.assignmentCount}</strong> 项待办作业。</p>
+  <div class="btn-row mt-md">
+    <a class="btn btn--primary" href="/calendar/download.ics">下载 .ics 文件</a>
+    <a class="btn btn--outline" href="/settings#calendar">查看订阅链接</a>
+  </div>
+  <p class="field__help mt-md">
+    <strong>下载</strong>下来的事件带闹钟，到点会响；用<strong>订阅</strong>方式添加的日历，
+    iOS 会忽略事件里的闹钟，只适合用来看课表。作业提醒请用 Bark 或邮箱。
+  </p>`,
+  })}
+`;
+
+    return sendHtml(ctx.res, renderPage({
+      title: '导出到手机日历',
+      active: 'timetable',
+      body,
+      user,
+      stats: {},
+    }));
   });
 
   return router;

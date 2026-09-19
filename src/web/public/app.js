@@ -367,16 +367,6 @@ function initMisc() {
       return;
     }
 
-    const openBtn = e.target.closest('[data-open-path]');
-    if (openBtn) {
-      try {
-        await api('/api/open-path', { method: 'POST', body: { path: openBtn.dataset.openPath } });
-      } catch (err) {
-        toast(err.message, 'error');
-      }
-      return;
-    }
-
     const toggleAll = e.target.closest('[data-toggle-all-courses]');
     if (toggleAll) {
       const table = toggleAll.closest('table');

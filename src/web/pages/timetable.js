@@ -131,7 +131,7 @@ ${usingPeriodRows
 </section>
 
 ${card({
-    title: '按天查看',
+    title: '每天安排',
     body: `<div class="day-list">
     ${days.map((d) => `
       <div class="day-row${d.date === today ? ' is-today' : ''}">
@@ -178,12 +178,12 @@ ${card({
     body: `
     <p class="small">导出一份 <code>.ics</code> 日历文件，用 iPhone「日历」App 打开就能导入。这样不用打开本平台也能看课表。</p>
     <div class="btn-row">
-      <a class="btn btn--primary btn--sm" href="/calendar/download.ics">${icon('download', 16)}<span>下载 .ics 导入</span></a>
+      <a class="btn btn--primary btn--sm" href="/calendar/download.ics">${icon('download', 16)}<span>下载 .ics 文件</span></a>
       <a class="btn btn--outline btn--sm" href="/settings#calendar">${icon('external', 16)}<span>订阅链接</span></a>
     </div>
     <p class="muted small mt-sm">
       说明：<strong>下载导入</strong>的日历事件带闹钟，到点会响；<strong>订阅</strong>的日历 iOS 会忽略闹钟，
-      只适合用来看课表。作业提醒请用 Bark。
+      只适合用来看课表。作业提醒请用 Bark 或邮箱（在<a href="/settings#notify">设置</a>里开启）。
     </p>`,
   })}
 </div>

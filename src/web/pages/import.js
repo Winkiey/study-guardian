@@ -56,7 +56,7 @@ ${preview ? renderPreview(preview, courses, terms) : renderChooser()}
     <p class="field__help">
       导入时如果教务系统给的是「第 3-4 节」而不是具体时间，本平台会按上表换算。
       ${usingDefault
-        ? '目前用的是<strong>内置默认值</strong>——和你们学校不一致的话，先去<a href="/settings#periods">设置里改一次</a>，再导入。'
+        ? '当前用的是<strong>内置默认时间</strong>。如果和你们学校的作息不一样，先点上面的「修改」按自己的课表改一遍，再导入。'
         : '这是<strong>你自己设置的</strong>作息表。'} 导入之后每门课的时间也都能单独调整。
     </p>`,
   })}
@@ -70,11 +70,7 @@ ${preview ? renderPreview(preview, courses, terms) : renderChooser()}
       <li><strong>教务 App / 小程序</strong> —— 有些学校的课表小程序支持「导出到手机日历」，导出后在手机日历里再导出一次就是 .ics。</li>
       <li><strong>用 Excel 手工整理</strong> —— 从教务系统把课表复制到 Excel，按我们给的 CSV 模板排好列，再导入。这是最通用的兜底方案。</li>
       <li><strong>第三方课表 App</strong> —— 有些 App 支持导入教务系统课表后导出 .ics。</li>
-    </ol>
-    <p class="field__help">
-      本平台预留了「教务系统适配器」的位置。如果你愿意帮忙摸清东财教务系统的接口，
-      以后可以做到一键同步。详见 README 的「贡献」一节。
-    </p>`,
+    </ol>`,
   })}
 </div>
 `;

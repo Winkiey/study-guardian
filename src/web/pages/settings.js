@@ -1,12 +1,18 @@
 /**
  * 设置页。
  *
- * 分成五块：
+ * 分成五块（锚点导航就是按这个顺序）：
  *   1. 学期 —— 周次计算的基础
- *   2. 手机提醒 —— Bark / 邮件 / 企业微信等渠道的配置与测试
- *   3. 提醒调度 —— 调度器状态、日志
+ *   2. 作息时间
+ *   3. 手机提醒 —— Bark / 邮件 / 企业微信等渠道的配置与测试
  *   4. 课表导入导出 —— ICS / CSV
- *   5. 系统 —— 转换器状态、存储占用、修改密码
+ *   5. 系统 —— 文件预览能力、存储占用、账号与密码
+ *
+ * ⚠️ 这个页面**只写给用户看**。
+ * 服务器路径、运行时版本、数据目录怎么备份、怎么装转换器这类
+ * 「运维这台机器」的内容不要放在这里 —— 那是 DEPLOY.md 的事。
+ * 用户是拿手机看课表的同学，他既不运维服务器，也看不到它的文件系统；
+ * 混进来只会让人以为「我得去做点什么」，而其实什么都不用做。
  */
 
 import { escapeHtml } from '../../lib/http.js';
@@ -49,7 +55,6 @@ export function settingsPage({
   storage,
   subscription,
   officeConvertEnabled,
-  appInfo,
   periodSchedule = [],
   defaultPeriodSchedule = [],
   hasCustomPeriods = false,
@@ -57,14 +62,14 @@ export function settingsPage({
   const body = `
 ${pageHeader({
     title: '设置',
-    subtitle: '学期、作息时间、手机提醒、课表导入导出与系统信息',
+    subtitle: '学期、作息时间、手机提醒、课表导入导出与账号',
   })}
 
 <nav class="anchor-nav" aria-label="设置分区">
   <a href="#term">学期</a>
   <a href="#periods">作息时间</a>
   <a href="#notify">手机提醒</a>
-  <a href="#schedule">提醒调度</a>
+  <a href="#schedule">发送情况</a>
   <a href="#calendar">课表导入导出</a>
   <a href="#prefs">个人偏好</a>
   <a href="#system">系统</a>
@@ -109,7 +114,7 @@ ${card({
     </table>
     </div>
     <p class="field__help">
-      「第一周周一」是课表周次计算的基准，**必须是星期一**。教务处的校历上会写「第 1 教学周」，那就是它。
+      「第一周周一」是课表周次计算的基准，<strong>必须是星期一</strong>。教务处的校历上会写「第 1 教学周」，那就是它。
       填错的话整个课表的周次都会偏——比如今天明明已经是第 2 周，页面却显示第 1 周，
       多半就是这个日期差了一周，点「编辑」改一下即可。
     </p>`
@@ -243,29 +248,19 @@ ${card({
 <!-- ============ 提醒调度 ============ -->
 <section id="schedule" class="anchor-section">
 ${card({
-    title: '提醒调度',
+    title: '提醒发送情况',
     body: `
   <div class="status-row">
     <div class="status-item">
       <span class="status-dot ${scheduler.running ? 'is-on' : 'is-off'}"></span>
       <div>
-        <strong>调度器${scheduler.running ? '运行中' : '未运行'}</strong>
-        <p class="muted small">每 ${scheduler.intervalSec} 秒检查一次待发提醒。${scheduler.lastTickAt ? `上次检查：${escapeHtml(scheduler.lastTickAt)}` : ''}</p>
+        <strong>${scheduler.running ? '提醒服务正常' : '提醒服务已停止'}</strong>
+        <p class="muted small">${scheduler.running
+        ? '快到截止时间的作业会按你设的提前量发到上面选的渠道。'
+        : '现在不会有提醒发出去，请联系站点管理员。'}</p>
       </div>
     </div>
-    <button type="button" class="btn btn--outline btn--sm" data-run-scheduler>${icon('refresh', 15)}<span>立即检查一次</span></button>
-  </div>
-
-  <div class="notice notice--info notice--compact">
-    <div class="notice__icon">${icon('alert', 16)}</div>
-    <div class="notice__body">
-      <strong>提醒依赖服务在运行</strong>
-      <p class="small">
-        调度器跟着本平台的服务进程跑。<strong>电脑关机 / 服务停止时，提醒不会发出。</strong>
-        想让 DDL 提醒 100% 可靠，需要把服务放到一台常开的机器上——
-        云服务器（学生机约 10 元/月）、树莓派，或者家里一直开着的旧电脑都行。
-      </p>
-    </div>
+    <button type="button" class="btn btn--outline btn--sm" data-run-scheduler>${icon('refresh', 15)}<span>现在检查一次</span></button>
   </div>
 
   <div class="log-stats">
@@ -289,7 +284,7 @@ ${card({
         </tbody>
       </table>
     </div>
-  </details>` : '<p class="muted small">还没有任何发送记录。配置好渠道后，可以点上面的「立即检查一次」或直接发测试消息。</p>'}`,
+  </details>` : '<p class="muted small">还没有发送记录。配好渠道之后，可以点「现在检查一次」，或者在渠道列表里发一条测试消息。</p>'}`,
   })}
 </section>
 
@@ -355,10 +350,14 @@ ${card({
     body: `
     <div class="status-row">
       <div class="status-item">
-        <span class="status-dot ${converter.available ? 'is-on' : 'is-off'}"></span>
+        <span class="status-dot ${converter.available && officeConvertEnabled ? 'is-on' : 'is-off'}"></span>
         <div>
           <strong>${escapeHtml(converter.label)}</strong>
-          <p class="muted small">${escapeHtml(converter.message)}</p>
+          <p class="muted small">${escapeHtml(converter.available && !officeConvertEnabled
+        // 转换器装了、但自动转换被关掉了 —— 这时候不能照抄 converter.message，
+        // 它会说「会自动转成 PDF」，而下面那行又写着「已关闭」，自相矛盾。
+        ? '服务器上关掉了自动转换，PPT / Word 会以文字版显示。'
+        : converter.message)}</p>
         </div>
       </div>
     </div>
@@ -367,30 +366,21 @@ ${card({
       <dt>可预览格式</dt><dd class="small">PDF、PPT/PPTX、Word、Excel、图片、音视频、纯文本</dd>
     </dl>
     <p class="field__help">
-      装一个免费开源的 <a href="https://www.libreoffice.org/" target="_blank" rel="noopener">LibreOffice</a>
-      就能让 PPT/Word 的预览效果和原件完全一致。也可以在你的电脑上关掉 WPS/Office 的自动更新，
-      本平台会自动探测并调用它们。
+      PPT / Word 会按原件排版显示；转换器不可用时会退化成网页版（能看文字，排版和图片会丢）。
+      点开一份课件就能看到它实际用的哪种方式。
     </p>`,
   })}
 
   ${card({
-    title: '存储与系统',
+    title: '存储占用',
     body: `
     <dl class="kv">
-      <dt>资料占用</dt><dd>${escapeHtml(storage.materialsLabel)}</dd>
-      <dt>转换缓存</dt><dd>${escapeHtml(storage.cacheLabel)}</dd>
+      <dt>课件与资料</dt><dd>${escapeHtml(storage.materialsLabel)}</dd>
+      <dt>预览缓存</dt><dd>${escapeHtml(storage.cacheLabel)}</dd>
       <dt>数据库</dt><dd>${escapeHtml(storage.dbLabel)}</dd>
-      <dt>数据目录</dt><dd><code class="small">${escapeHtml(appInfo.dataDir)}</code></dd>
-      <dt>服务地址</dt><dd><code class="small">${escapeHtml(appInfo.url)}</code></dd>
-      <dt>版本</dt><dd>${escapeHtml(appInfo.version)}</dd>
-      <dt>Node.js</dt><dd>${escapeHtml(appInfo.nodeVersion)}</dd>
     </dl>
-    <div class="btn-row mt-sm">
-      <a class="btn btn--outline btn--sm" href="#" data-open-path="${escapeHtml(appInfo.dataDir)}">${icon('folder', 15)}<span>打开数据目录</span></a>
-    </div>
     <p class="field__help">
-      所有数据都在 <code>data/</code> 目录里：数据库、上传的课件、转换缓存。
-      备份就是复制这个目录，换电脑直接搬过去即可。
+      预览缓存是课件转出来给浏览器看的中间文件，删掉也不影响原文件，下次打开会重新生成。
     </p>`,
   })}
 </div>
@@ -509,7 +499,7 @@ ${card({
       </div>
     </div>
     <p class="field__help mb-md">
-      唯一还能补救的办法：现在先把 <code>data/</code> 目录（或数据库文件）备份一份。
+      如果你想留一份课件，建议先把要保留的文件下载下来 —— 删掉之后就没有了。
     </p>
     <div class="field">
       <label class="field__label" for="da_pass">你的密码</label>

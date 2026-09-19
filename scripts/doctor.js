@@ -315,6 +315,16 @@ async function checkOffice() {
   if (config && !config.enableOfficeConvert) {
     check('自动转换开关', 'warn', '已在配置中关闭', '把 .env 里的 ENABLE_OFFICE_CONVERT 改成 true 可以打开。');
   }
+
+  // 站长专属的运维建议统一放在 converterStatus().adminHint 里。
+  // 以前这些建议是直接写在给用户看的 message 里的，于是设置页上出现了一串
+  // 「装个免费的 LibreOffice」——用户是拿手机看课件的同学，他改不了服务器。
+  // 现在搬到这里：设置页只讲「现在是什么效果」，怎么修只有这个脚本会说。
+  if (status.adminHint) {
+    for (const line of status.adminHint.split('\n')) {
+      console.log(`      · ${line}`);
+    }
+  }
 }
 
 // ============================================================

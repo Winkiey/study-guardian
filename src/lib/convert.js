@@ -104,7 +104,7 @@ export function detectConverter() {
         cachedConverter = {
           type: 'powerpoint',
           path: null,
-          label: 'Microsoft Office（COM 自动化）',
+          label: 'Microsoft Office',
         };
         return cachedConverter;
       }
@@ -113,7 +113,7 @@ export function detectConverter() {
     // WPS
     for (const p of WINDOWS_CANDIDATES.wps) {
       if (isExecutable(p)) {
-        cachedConverter = { type: 'wps', path: p, label: 'WPS Office（COM 自动化）' };
+        cachedConverter = { type: 'wps', path: p, label: 'WPS Office' };
         return cachedConverter;
       }
     }
@@ -1057,12 +1057,22 @@ async function runSlideChunk(converterType, inputPath, outDir, from, to) {
 }
 
 /**
- * 转换状态描述，用于设置页展示「你的电脑能不能转 PPT」。
+ * 转换状态描述，用于设置页展示「课件能不能按原件的样子显示」。
  *
  * 这里必须说真话：以前它只看磁盘上有没有 POWERPNT.EXE，
  * 有就报「可用，预览效果与原件一致」。可实际上 COM 还要靠 PowerShell 起进程，
  * 而受限环境里 PowerShell 根本起不来——于是界面承诺得很好，
  * 用户上传完看到的却是纯文字预览，完全不知道哪儿出了问题。
+ *
+ * ⚠️ 两个字段面向的人不一样，别写串：
+ *   - `message`   给**用户**看的。用户是拿手机看课件的同学，他改不了服务器，
+ *                 所以这里只说「现在是什么效果」，不提怎么修。
+ *   - `adminHint` 给**站长**看的（运维建议：装字体、换转换器）。
+ *                 设置页不显示它；`scripts/doctor.js` 和
+ *                 `scripts/diagnose-preview.mjs` 会把它打进终端。
+ * 之前这些运维建议全都写在 message 里，于是设置页上出现了一串
+ * 「装个免费的 LibreOffice」「在你的电脑上关掉 WPS 自动更新」——
+ * 对同学来说既看不懂也做不到，还以为是自己的问题。
  */
 export function converterStatus() {
   const ready = converterReadiness();
@@ -1070,50 +1080,48 @@ export function converterStatus() {
 
   // 转换器能用，但系统里没有中文字体 —— 这是 Linux 服务器上最常见的坑，
   // 而且它**不报任何错**：转换「成功」、PDF 也生成了，只是中文全是方框。
-  // 所以只要查得出来，就直接写在状态里，别让用户自己去猜。
+  // 对用户只说「中文可能变方框，告诉管理员」，装字体的命令放进 adminHint。
   const fonts = ready.available ? cjkFontStatus() : null;
-  const fontWarning = fonts && !fonts.ok
-    ? ` ⚠️ 但系统里没有任何中文字体，转出来的 PDF 里中文会显示成方框或乱码。`
-      + `装一下中文字体就好了：${CJK_FONT_INSTALL_HINT}`
+  const fontsMissing = Boolean(fonts && !fonts.ok);
+  const fontNote = fontsMissing
+    ? ' 另外这台服务器缺少中文字体，个别课件里的中文可能显示成方框 —— 跟站点管理员说一声就能修好。'
     : '';
 
   if (ready.available) {
-    if (ready.converter.type === 'libreoffice') {
-      return {
-        available: true,
-        label: ready.converter.label + (fontWarning ? '（缺中文字体）' : ''),
-        missingCjkFonts: Boolean(fontWarning),
-        message: `${ready.converter.label} 可用，PPT / Word / Excel 会自动转换成 PDF，预览效果与原件一致。${fontWarning}`,
-      };
-    }
     return {
       available: true,
-      label: ready.converter.label + (fontWarning ? '（缺中文字体）' : ''),
-      missingCjkFonts: Boolean(fontWarning),
-      message:
-        `${ready.converter.label} 可用（PowerShell 正常），`
-        + `PPT / Word / Excel 会自动转换成 PDF，预览效果与原件一致。${fontWarning}`,
+      label: ready.converter.label + (fontsMissing ? '（缺中文字体）' : ''),
+      missingCjkFonts: fontsMissing,
+      message: 'PPT / Word / Excel 会自动转成 PDF，预览效果和原件一致。' + fontNote,
+      adminHint: fontsMissing
+        ? `缺中文字体，转出来的 PDF 里中文会变成方框。装上即可：${CJK_FONT_INSTALL_HINT}`
+          + '（装完不用重启服务，但要把课件重新转一遍才会生效）'
+        : '',
     };
   }
 
   if (ready.reason === 'powershell-unavailable') {
     return {
       available: false,
-      label: `${label}（调不动）`,
+      label: '预览转换不可用',
       powershellUnavailable: true,
       message:
-        `检测到 ${label}，但它需要靠 PowerShell 调用 COM 组件，`
-        + `而${ready.powershell.message}`
-        + ' 课件内容不会丢，目前用内置解析器渲染成网页版（只保留文字和结构，没有排版）。'
-        + '装个免费的 LibreOffice 可以绕开 PowerShell，它也走不通时请把这条信息反馈给开发者。',
+        'PPT / Word / Excel 现在只能看文字版预览（内容都在，但没有排版和图片）。'
+        + '课件本身没有损坏，跟站点管理员说一声就能打开完整预览。',
+      adminHint:
+        `检测到 ${label}，但它需要靠 PowerShell 调用 COM 组件，而${ready.powershell.message}`
+        + ' 装个免费的 LibreOffice 可以绕开 PowerShell：https://www.libreoffice.org/',
     };
   }
 
   return {
     available: false,
-    label: '未检测到',
+    label: '未检测到转换器',
     message:
-      '未找到 LibreOffice / Microsoft Office / WPS。'
-      + 'PPT、Word、Excel 将使用内置解析器渲染成网页版预览（排版会简化），不影响查看内容。',
+      'PPT / Word / Excel 现在显示的是文字版预览（内容都在，但没有排版和图片）。'
+      + '课件本身没有损坏。',
+    adminHint:
+      '没找到 LibreOffice / Microsoft Office / WPS，所以 PPT、Word、Excel 只能走内置解析器。'
+      + '想要和原件一致的预览，装一个免费的 LibreOffice 即可：https://www.libreoffice.org/',
   };
 }

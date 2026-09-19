@@ -131,11 +131,11 @@ ${pageHeader({
     ${course.category ? `<span class="stat__hint">${escapeHtml(course.category)}</span>` : ''}
   </div>
   <div class="stat ${grade.scoredRate !== null ? 'stat--primary' : ''}">
-    <span class="stat__label">已出分部分得分率</span>
-    <span class="stat__value">${grade.scoredRate !== null ? grade.scoredRate : '—'}</span>
+    <span class="stat__label">已出分作业的得分率</span>
+    <span class="stat__value">${grade.scoredRate !== null ? grade.scoredRate : '暂无成绩'}</span>
     <span class="stat__hint">${grade.hasItems
       ? `已出分权重 ${grade.baseWeight}%，已得 ${grade.earnedPoints} 分`
-      : '未设置成绩构成'}</span>
+      : '还没设置成绩构成'}</span>
   </div>
 </section>
 
@@ -172,7 +172,7 @@ ${pageHeader({
       : emptyState({
         icon: 'calendar',
         title: '还没有设置上课时间',
-        description: '设置后才能在课程表和总览里看到这门课。',
+        description: '填上之后，这门课就会出现在课程表和总览里。',
         action: `<button type="button" class="btn btn--outline btn--sm" data-edit-sessions="${course.id}">设置上课时间</button>`,
       }),
   })}
@@ -209,7 +209,7 @@ ${pageHeader({
             <strong class="text-primary">${grade.earnedPoints}</strong>
           </div>
           <div class="grade-summary__item">
-            <span class="muted small">已出分部分得分率</span>
+            <span class="muted small">已出分作业的得分率</span>
             <strong>${grade.scoredRate}%</strong>
           </div>
           <div class="grade-summary__item">

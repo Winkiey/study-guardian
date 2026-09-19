@@ -835,25 +835,14 @@ export function registerApi(router) {
     });
   }));
 
-  /** 在文件管理器里打开数据目录 */
-  router.post('/api/open-path', guard(async (ctx) => {
-    const body = await readJson(ctx.req);
-    // 只允许打开数据目录，防止被当成任意命令执行器
-    const target = path.resolve(String(body.path || config.dataDir));
-    if (target !== path.resolve(config.dataDir)) {
-      throw badRequest('只允许打开数据目录');
-    }
-
-    const command = process.platform === 'win32' ? 'explorer.exe'
-      : process.platform === 'darwin' ? 'open' : 'xdg-open';
-
-    try {
-      spawn(command, [target], { detached: true, stdio: 'ignore' }).unref();
-      sendJson(ctx.res, { ok: true });
-    } catch (err) {
-      throw new HttpError(500, `无法打开目录：${err.message}`);
-    }
-  }));
+  // 这里原来有一个 POST /api/open-path：在文件管理器里打开服务器上的数据目录。
+  // 已经删掉了，两个原因：
+  //   1. 它只对「服务跑在自己电脑上」那套用法有意义。部署到云服务器之后，
+  //      点了什么都不会发生 —— 无头 Linux 上 xdg-open 无处可开。
+  //      设置页上那个按钮也一并去掉了（那属于运维，不属于用户界面）。
+  //   2. 它会 spawn 一个进程，而守卫只是普通的登录校验 ——
+  //      多用户场景下，等于**任何注册用户**都能让服务器去起一个程序。
+  //      这个功能对用户没有任何价值，留着就只是多一处可以拿来搞事的入口。
 
   return router;
 }

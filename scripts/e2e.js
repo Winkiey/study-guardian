@@ -412,7 +412,7 @@ async function run() {
     ok('首页渲染成功', home.status === 200, `状态码 ${home.status}`);
     ok('首页显示问候语', home.text.includes('小王'));
     ok('首页提示配置手机提醒',
-      home.text.includes('还没有配置手机提醒渠道'));
+      home.text.includes('还没设置提醒渠道'));
     ok('默认学期已自动创建', home.text.includes('第 ') && home.text.includes(' 周'));
 
     // --------------------------------------------------------
@@ -2016,10 +2016,38 @@ async function run() {
       schedulerRun.json?.result?.reminders?.failed >= 0);
 
     const logsPage = await req('GET', '/settings');
-    ok('设置页显示发送日志', logsPage.text.includes('发送记录') || logsPage.text.includes('还没有任何发送记录'));
-    ok('设置页显示调度器状态', logsPage.text.includes('调度器'));
+    ok('设置页显示发送日志', logsPage.text.includes('发送记录') || logsPage.text.includes('还没有发送记录'));
+    ok('设置页显示提醒服务状态', logsPage.text.includes('提醒服务'));
     ok('设置页显示 Office 转换状态', logsPage.text.includes('Office 转 PDF'));
-    ok('设置页显示数据目录', logsPage.text.includes('data'));
+
+    // ★ 这条是**反向**的：设置页**不该**出现服务器路径、运行时版本、
+    //   以及「电脑关机 / 装个 LibreOffice / 备份 data 目录」这类运维建议。
+    //   这个站是给同学用的，他改不了服务器，看到这些只会以为自己得去做点什么。
+    //   （以前这些都是真的显示在这里的，所以钉一条防它长回来。）
+    //
+    // ⚠️ 覆盖范围的实话：这一条守的是**设置页这个模板**。
+    //    `converterStatus().message` 那类文案它守不到 —— 自测环境把
+    //    ENABLE_OFFICE_CONVERT 设成了 false，设置页走的是「自动转换已关掉」
+    //    那一支，根本不渲染 message。那部分由 tests/convert.test.js 里的
+    //    「★ 运维建议归 adminHint」守着。（A/B 校验时发现的：把
+    //    「装个免费的 LibreOffice」塞回 message，这条端到端断言照样是绿的。）
+    for (const [what, re] of [
+      ['服务器绝对路径', /[A-Z]:\\|^\/opt\/|data[\\/](app\.db|uploads)/m],
+      ['运行时版本', /Node\.js|v2\d\.\d+\.\d+/],
+      ['「电脑关机」这类本机说法', /电脑关机|换电脑|搬到?一台常开|树莓派/],
+      // ⚠️ 这几个模式要「瞄着服务器上的运维动作」，不能笼统地匹配「装个」：
+      //    「App Store 装个 Bark」是**给用户手机**的正常指引，必须放行；
+      //    而「装个免费的 LibreOffice」「在你电脑上关掉 WPS 自动更新」
+      //    是在让用户去动服务器，那才是要挡的。
+      ['服务器上的安装指引', /apt install|(装个|装一个|安装)[^。；\n]{0,12}LibreOffice|的自动更新/],
+      ['内部机制名词（PowerShell / COM）', /PowerShell|COM 自动化/],
+      ['打开数据目录那个本机按钮', /data-open-path|打开数据目录/],
+    ]) {
+      ok(`★ 设置页不再出现${what}`, !re.test(logsPage.text),
+        `命中了：${re.exec(logsPage.text)?.[0]}`);
+    }
+    ok('★ 设置页仍然显示存储占用（这部分对用户是有用的）',
+      logsPage.text.includes('存储占用') && logsPage.text.includes('预览缓存'));
 
     // --------------------------------------------------------
     section('9. 安全与边界');
@@ -2059,8 +2087,13 @@ async function run() {
     const wrongMethod = await req('PUT', '/api/password');
     ok('错误的方法返回 405', wrongMethod.status === 405, `状态码 ${wrongMethod.status}`);
 
+    // 这个接口已经删掉了（设置页上那个「打开数据目录」按钮也一起去掉了）。
+    // 为什么删：它只对「服务跑在自己电脑上」有意义，部署到云服务器之后点了什么都不会发生；
+    // 而它会 spawn 一个进程，守卫却只是普通登录校验 —— 多用户下等于**任何注册用户**
+    // 都能让服务器去起一个程序。这里钉住它不会再回来。
     const openPath = await req('POST', '/api/open-path', { json: { path: 'C:\\Windows' } });
-    ok('open-path 只允许数据目录', openPath.status === 400, `状态码 ${openPath.status}`);
+    ok('★ 会 spawn 进程的「打开数据目录」接口已经删掉（返回 404）',
+      openPath.status === 404, `状态码 ${openPath.status}`);
 
     // 登出后 API 不可用
     const logout = await req('POST', '/logout');
@@ -2111,6 +2144,40 @@ async function run() {
       'PDF 预览页是自己用同源 iframe 嵌自己的 PDF，写成 none 会把那个 iframe 一起挡掉');
     ok('★ CSP 只写那三条，不写 default-src / style-src（否则内联样式全被拦掉）',
       /frame-ancestors/.test(cspValue) && !/default-src|style-src|script-src/.test(cspValue), cspValue);
+
+    // ---- 全站扫一遍：不该有 markdown 语法漏到页面上 ----
+    // 起因是真的漏过一次：学期那一块写了 `**必须是星期一**`，
+    // 模板是纯 HTML，于是页面上直接显示出一对星号。
+    // 这类问题不会报错、也不影响任何功能，只有人眼看到才会发现，
+    // 所以用一个「整站过一遍」的断言兜住，而不是等下次有人注意到。
+    const markdownLeaks = [];
+    for (const url of ['/', '/timetable', '/courses', '/assignments', '/materials', '/settings', '/settings#prefs', '/import', '/calendar']) {
+      // eslint-disable-next-line no-await-in-loop
+      const page = await req('GET', url);
+      const body = page.text.replace(/<script[\s\S]*?<\/script>/gi, '');
+      for (const [what, re] of [
+        ['加粗星号 **…**', /\*\*[^*\n]{1,80}\*\*/],
+        ['反引号 `…`', /`[^`\n]{1,60}`/],
+        ['markdown 链接 [文字](地址)', /\[[^\]\n]{1,40}\]\([^)\n]{1,80}\)/],
+      ]) {
+        const hit = re.exec(body);
+        if (hit) markdownLeaks.push(`${url} 里的${what}：${hit[0].slice(0, 40)}`);
+      }
+    }
+    ok('★ 没有 markdown 语法漏到页面上（整站扫了一遍）',
+      markdownLeaks.length === 0, markdownLeaks.join('；'));
+
+    // ---- 日历页也要在站内布局里（否则用户进去就出不来了）----
+    // 它以前是一段手写的裸 HTML：没有导航栏、没有「跳到主要内容」，
+    // 用户从书签打开之后就再也没有能点回站内的入口。
+    const calendarPage = await req('GET', '/calendar');
+    ok('★ 日历页有站内导航（不是孤岛页面）',
+      calendarPage.text.includes('class="sidebar"') && calendarPage.text.includes('class="tabbar"'),
+      '缺导航栏的话，用户从书签进来就只能手动改地址栏');
+    ok('★ 日历页也有「跳到主要内容」',
+      calendarPage.text.includes('跳到主要内容'));
+    ok('★ 日历页给出了「作业提醒用 Bark 或邮箱」的完整说法（不是只说 Bark）',
+      calendarPage.text.includes('Bark 或邮箱'));
 
     // ---- 日志里的凭据要打码 ----
     // 日历订阅是 `?token=…`，那个 token 有效期一年、拿到就能拉走全部课表和作业，
@@ -2704,9 +2771,9 @@ async function run() {
 
     const importPageWithPeriods = await req('GET', '/import');
     ok('导入页展示当前作息表', importPageWithPeriods.text.includes('当前使用的作息时间表'));
-    ok('导入页提示用的是默认值',
-      importPageWithPeriods.text.includes('内置默认值'),
-      '未自定义时应该提示用的是默认值');
+    ok('导入页提示用的是默认作息',
+      importPageWithPeriods.text.includes('内置默认时间'),
+      '未自定义时应该提示用的是默认作息');
 
     // 自定义之后，导入页不再说「用的是默认值」
     await req('POST', '/api/periods', { json: { periods: customSchedule } });

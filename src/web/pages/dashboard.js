@@ -45,15 +45,15 @@ ${pageHeader({
       : `<span class="muted">还没有设置学期。设置学期后就能看到「第几周」，课表也会自动按周次过滤。</span>`,
     actions: `
       <a class="btn btn--primary" href="/assignments?new=1">${icon('plus', 17)}<span>新建作业</span></a>
-      <a class="btn btn--outline" href="/materials?upload=1">${icon('upload', 17)}<span>上传课件</span></a>`,
+      <a class="btn btn--outline" href="/materials?upload=1">${icon('upload', 17)}<span>上传资料</span></a>`,
   })}
 
 ${!schedulerOk ? `
 <div class="notice notice--warn">
   <div class="notice__icon">${icon('alert', 18)}</div>
   <div class="notice__body">
-    <strong>还没有配置手机提醒渠道</strong>
-    <p>作业 DDL 提醒目前无处可发。<a href="/settings#notify">去设置 Bark 或邮件</a>，只要 2 分钟，iPhone 上就能准时收到提醒。</p>
+    <strong>还没设置提醒渠道</strong>
+    <p>设置之后，作业快到截止时间时会自动推到你手机上。<a href="/settings#notify">去添加 Bark 或邮箱</a>，两分钟就能配好。</p>
   </div>
 </div>` : ''}
 
@@ -73,9 +73,9 @@ ${!schedulerOk ? `
     href: '/assignments',
   })}
   ${statTile({
-    label: '课件资料',
+    label: '资料',
     value: materialCount,
-    hint: '份文件',
+    hint: '份',
     href: '/materials',
   })}
   ${statTile({

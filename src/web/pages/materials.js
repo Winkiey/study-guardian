@@ -44,7 +44,9 @@ export function materialsPage({ user, materials, courses, stats, filters, storag
   const body = `
 ${pageHeader({
     title: '资料库',
-    subtitle: `${stats.total} 份文件 · 共 ${stats.totalLabel}`,
+    // 一份也没有的时候不要说「0 份文件 · 共 0 B」——
+    // 「0 B」是给程序员看的字节单位，对空库来说既别扭又没信息量。
+    subtitle: stats.total ? `${stats.total} 份 · 共 ${stats.totalLabel}` : '',
     actions: `<button type="button" class="btn btn--primary" data-upload-material>${icon('upload', 17)}<span>上传资料</span></button>`,
   })}
 
@@ -86,7 +88,7 @@ ${materials.length === 0
         icon: 'folder',
         title: filters.keyword ? '没有找到匹配的资料' : '资料库还是空的',
         description: filters.keyword
-          ? '试试别的关键词。标题、说明、标签和课件正文都会被搜索。'
+          ? '试试别的关键词。标题、说明、标签和资料正文都会被搜索。'
           : '把老师发的课件传上来，之后不管在哪台设备上都能直接打开看，不用再翻微信/QQ 聊天记录。',
         action: `<button type="button" class="btn btn--primary" data-upload-material>${icon('upload', 17)}<span>上传资料</span></button>`,
       })
@@ -431,7 +433,7 @@ export function renderUploadForm({ courses, maxUploadMB, currentCourseId }) {
     <div class="dropzone" data-dropzone>
       <div class="dropzone__icon">${icon('upload', 28)}</div>
       <p class="dropzone__title">把文件拖到这里，或点击选择</p>
-      <p class="dropzone__hint">支持 PDF、PPT、Word、Excel、图片、音视频，单个文件最大 ${maxUploadMB} MB</p>
+      <p class="dropzone__hint">支持 PDF、PPT、Word、Excel、图片、音视频、文本和压缩包，单个文件最大 ${maxUploadMB} MB</p>
       <input type="file" name="files" multiple class="dropzone__input" data-file-input hidden>
       <button type="button" class="btn btn--outline btn--sm" data-browse>选择文件</button>
     </div>

@@ -514,12 +514,6 @@ export function registerPages(router) {
       periodSchedule: getPeriodSchedule(userId),
       defaultPeriodSchedule: DEFAULT_PERIOD_SCHEDULE,
       hasCustomPeriods: hasCustomPeriodSchedule(userId),
-      appInfo: {
-        dataDir: config.dataDir,
-        url: requestBase(ctx.req),
-        version: readVersion(),
-        nodeVersion: process.version,
-      },
     }), { user: ctx.user, stats: navStats(userId) });
   }));
 
@@ -762,16 +756,6 @@ function storageInfo() {
     dbLabel: humanSize(dbBytes),
     lowSpace: false,
   };
-}
-
-/** 读取 package.json 里的版本号 */
-function readVersion() {
-  try {
-    const raw = fs.readFileSync(path.join(config.root, 'package.json'), 'utf8');
-    return `v${JSON.parse(raw).version || '0.0.0'}`;
-  } catch {
-    return 'v0.0.0';
-  }
 }
 
 /** 文本解码（UTF-8 / GB18030） */
