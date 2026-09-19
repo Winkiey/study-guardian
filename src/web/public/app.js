@@ -10,6 +10,28 @@
 // 基础工具
 // ============================================================
 
+/**
+ * 把「断网」这一类错误翻译成人话。
+ *
+ * `fetch` 在连不上时抛的是 `TypeError: Failed to fetch`（Safari 是 `Load failed`，
+ * Node/undici 是 `fetch failed`）—— 这些字符串对用户没有任何意义，
+ * 但以前它们会被原样弹到手机上（见调用点的 catch → toast(err.message)）。
+ *
+ * 判断只看消息文本，不看 `instanceof TypeError`：
+ * 各浏览器抛的类型和措辞都不一样，认字符串反而更稳。识别不出来就原样返回，
+ * 不能把「服务器返回的业务错误」也误判成断网（那会把真正的原因盖掉）。
+ *
+ * @param {unknown} err
+ * @returns {string} 给用户看的中文
+ */
+function describeFetchError(err) {
+  const raw = String(err?.message || err || '').trim();
+  if (/Failed to fetch|NetworkError|Load failed|fetch failed|network error|ERR_NETWORK|ERR_INTERNET_DISCONNECTED/i.test(raw)) {
+    return '网络连接失败：请检查手机的网络（或确认服务还在运行），然后重试';
+  }
+  return raw || '操作失败';
+}
+
 /** 统一的 fetch 封装：自动带 Cookie、处理 JSON、把服务端错误转成异常 */
 async function api(url, options = {}) {
   const opts = { credentials: 'same-origin', ...options };
@@ -19,7 +41,13 @@ async function api(url, options = {}) {
     opts.body = JSON.stringify(opts.body);
   }
 
-  const res = await fetch(url, opts);
+  let res;
+  try {
+    res = await fetch(url, opts);
+  } catch (err) {
+    // 网络层就没通：换成中文再抛出，调用点的 catch → toast 里就是人话了
+    throw new Error(describeFetchError(err));
+  }
   const text = await res.text();
 
   let data = null;
@@ -64,8 +92,24 @@ function toast(message, type = 'info', duration = 3600) {
   }, duration);
 }
 
-/** 确认对话框（用原生 confirm，简单可靠；后续可换成自绘弹窗） */
-function confirmAction(message) {
+/**
+ * 全局兜底用的提示：**同一个错误只说一次**。
+ *
+ * 为什么需要去重：toast 现在没有任何抑制，同一个错误如果每次操作都抛
+ * （比如某个初始化函数坏了），用户会看到一模一样的提示条叠满屏幕，
+ * 反而盖住了真正要看的东西。全局兜底是「最后一道网」，
+ * 它的职责是提醒一次，不是把每一次都播报出来。
+ */
+const reportedGlobalErrors = new Set();
+
+function reportGlobalError(message) {
+  const text = String(message || '操作失败');
+  if (reportedGlobalErrors.has(text)) return;
+  reportedGlobalErrors.add(text);
+  toast(text, 'error', 6000);
+}
+
+/** 确认对话框（用原生 confirm，简单可靠；后续可换成自绘弹窗） */function confirmAction(message) {
   return window.confirm(message);
 }
 
@@ -3106,10 +3150,24 @@ function boot() {
   initImport();
   initTimetable();
 
-  // 全局错误兜底：网络断了或接口 500 时给出提示而不是静默失败
+  // 全局错误兜底：漏网的失败（没被任何地方 catch 的）也要说出来，不能静默。
+  //
+  // 这里以前是 `if (!/Failed to fetch|NetworkError/i.test(msg))` —— 也就是
+  // **恰好把断网这一类挡掉了**，和上面那句注释写的正好相反。
+  // 当时的用意应该是「别把英文原文甩给用户」，但正确的做法是翻译，不是闭嘴。
   window.addEventListener('unhandledrejection', (e) => {
-    const msg = e.reason?.message || '操作失败';
-    if (!/Failed to fetch|NetworkError/i.test(msg)) toast(msg, 'error');
+    reportGlobalError(describeFetchError(e.reason));
+  });
+
+  // 同步异常同样要兜住。
+  // 以前只监听 unhandledrejection，于是事件处理函数里抛的 TypeError
+  // 会让按钮「点了完全没反应」，而且除了控制台不留任何痕迹 ——
+  // 这正是最容易让人以为是「网站坏了」的那一类。
+  window.addEventListener('error', (e) => {
+    // 资源加载失败（<img>/<script>）走的是元素上的 error 事件，
+    // 正常不会冒到这里；真冒上来了也没有 error 对象，跳过，免得盖住真正的问题
+    if (!e.error && !e.message) return;
+    reportGlobalError(`页面出错了：${describeFetchError(e.error || e.message)}`);
   });
 
   document.body.dataset.maxUpload = String(MAX_UPLOAD_BYTES);

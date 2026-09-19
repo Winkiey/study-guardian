@@ -2066,6 +2066,63 @@ async function run() {
     ok('重新登录后数据仍在', (afterRelogin.json?.courses || []).length >= 3,
       `${afterRelogin.json?.courses?.length} 门课`);
 
+    // ---- 安全响应头 ----
+    // 外部审计报告指出站点一个安全头都没发。这些都是一行一个的东西，
+    // 但「没发出去」是**没有任何外部症状**的（页面照样正常），所以必须钉住。
+    // 抽查四种不同的响应路径：动态 HTML、静态资源、404、302 ——
+    // 实现是「在请求入口 setHeader 一次」，理应四种全都带上。
+    const securedPage = await req('GET', '/settings');
+    const headerCases = [
+      ['★ 动态页面（HTML）', securedPage],
+      ['★ 静态资源', await req('GET', '/static/app.css')],
+      ['★ 404 页面', noSuchPage],
+      ['★ 302 跳转', relogin],
+    ];
+    for (const [label, res] of headerCases) {
+      const got = (name) => res.headers.get(name) || '';
+      ok(`${label}带 nosniff`, got('x-content-type-options') === 'nosniff',
+        got('x-content-type-options') || '（没有这个头）');
+      ok(`${label}带 Referrer-Policy`,
+        got('referrer-policy') === 'strict-origin-when-cross-origin',
+        got('referrer-policy') || '（没有这个头）');
+      ok(`${label}带点击劫持防护`,
+        got('x-frame-options') === 'SAMEORIGIN' && /frame-ancestors 'self'/.test(got('content-security-policy')),
+        `XFO=${got('x-frame-options') || '无'} CSP=${got('content-security-policy') || '无'}`);
+      ok(`${label}带 Permissions-Policy`, got('permissions-policy').includes('camera=()'),
+        got('permissions-policy') || '（没有这个头）');
+      ok(`${label}明确禁止被收录`, got('x-robots-tag') === 'noindex, nofollow',
+        got('x-robots-tag') || '（没有这个头）');
+    }
+
+    const cspValue = securedPage.headers.get('content-security-policy') || '';
+    ok('★ frame-ancestors 没有被收紧成 none（收紧会让 PDF 预览白屏）',
+      !/frame-ancestors 'none'/.test(cspValue),
+      'PDF 预览页是自己用同源 iframe 嵌自己的 PDF，写成 none 会把那个 iframe 一起挡掉');
+    ok('★ CSP 只写那三条，不写 default-src / style-src（否则内联样式全被拦掉）',
+      /frame-ancestors/.test(cspValue) && !/default-src|style-src|script-src/.test(cspValue), cspValue);
+
+    // ---- 日志里的凭据要打码 ----
+    // 日历订阅是 `?token=…`，那个 token 有效期一年、拿到就能拉走全部课表和作业，
+    // 而手机日历会**定时轮询**它 —— 明文进日志等于把凭据抄一份到磁盘上。
+    const RAW_TOKEN = 'e2e-fake-token-should-not-be-logged';
+    const forgedSub = await req('GET', `/calendar/subscribe.ics?token=${RAW_TOKEN}`);
+    ok('伪造的订阅令牌被拒绝（下面还要看日志）', forgedSub.status === 403,
+      `状态码 ${forgedSub.status}`);
+
+    // 日志是在响应之后才写的，轮询等一下，别用固定 sleep 赌时序
+    let logText = server.readLog();
+    for (let i = 0; i < 20 && !logText.includes('token=***'); i += 1) {
+      await new Promise((r) => setTimeout(r, 25));
+      logText = server.readLog();
+    }
+
+    ok('★ 访问日志里看不到订阅 token 原文',
+      !logText.includes(RAW_TOKEN),
+      '订阅 token 被明文写进了服务器日志（日志会落盘，还会被 pm2 收集）');
+    ok('★ 但请求本身仍然记了下来（路径和参数名还在，排查问题时有用）',
+      logText.includes('/calendar/subscribe.ics?token=***'),
+      '找不到被打了码的那行日志');
+
     // --------------------------------------------------------
     section('10. 全部页面可访问');
 
@@ -2617,6 +2674,22 @@ async function run() {
     ok('设置页有恢复默认按钮', settingsWithPeriods.text.includes('data-reset-periods'));
     ok('设置页有自动推算下一节的按钮',
       settingsWithPeriods.text.includes('data-auto-fill-periods'));
+
+    // ---- 窄屏放不下的表格要能横向滚 ----
+    // 「学期」那张表有 6 列，手机上装不下；而 .card 是 overflow:hidden ——
+    // 不套滚动容器的话右边的列会被**直接裁掉**：既看不见，也滚不动，
+    // 用户只会觉得「编辑按钮不见了」。
+    const termTableAt = settingsWithPeriods.text.indexOf('第一周周一');
+    const termScrollAt = settingsWithPeriods.text.lastIndexOf('table-scroll', termTableAt);
+    ok('★ 学期表格套了横向滚动容器（否则手机上右边的列被裁掉、还滚不动）',
+      termTableAt > -1 && termScrollAt > -1 && termTableAt - termScrollAt < 400,
+      '学期表格没有被 .table-scroll 包住');
+    ok('★ 学期表格确实有 6 列（前提：它真的会在窄屏溢出）',
+      /<th>学期<\/th><th>第一周周一<\/th><th>周数<\/th><th>现在第几周<\/th><th>状态<\/th>/.test(settingsWithPeriods.text));
+
+    const scrollCss = (await req('GET', '/static/app.css')).text;
+    ok('★ 横向滚动里加了 overscroll-behavior-x（否则手机右滑会当成「返回上一页」）',
+      /\.table-scroll\s*\{[^}]*overscroll-behavior-x:\s*contain/.test(scrollCss));
 
     const importPageWithPeriods = await req('GET', '/import');
     ok('导入页展示当前作息表', importPageWithPeriods.text.includes('当前使用的作息时间表'));

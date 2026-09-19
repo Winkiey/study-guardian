@@ -584,6 +584,31 @@ HTTPS 不只是「更安全」，还直接影响两个功能：
 > 🔑 账号密码是这个平台唯一的防线。它**没有**短信验证、没有登录失败锁定，
 > 别用弱密码，也别把它当成能抗攻击的公网服务。
 
+### 已经做了什么（不需要你配）
+
+有件事不用等 HTTPS —— 程序自己会发这几个响应头，**任何部署方式下都生效**：
+
+| 响应头 | 作用 |
+|---|---|
+| `X-Content-Type-Options: nosniff` | 不让浏览器猜文件类型。本站会把上传的文件原样发回去，猜错了就可能把上传的 `.html` 当页面执行 |
+| `X-Frame-Options: SAMEORIGIN` + CSP `frame-ancestors 'self'` | 不许**别的站**用 iframe 把你套起来（点按劫持的经典手法） |
+| `Referrer-Policy: strict-origin-when-cross-origin` | 跳到外站时只带域名，不带完整地址 |
+| `Permissions-Policy` | 明确关掉摄像头、麦克风、定位等用不到的能力 |
+| `X-Robots-Tag: noindex, nofollow` | 私人数据，别被搜索引擎收录 |
+
+两处**刻意**这么写的地方，改之前请先看 `server.js` 里的注释：
+
+- **`frame-ancestors` 是 `'self'`，不是 `'none'`。** 这条头会加到所有响应上，
+  包括 `/materials/:id/pdf` —— 而 PDF 预览页恰恰是**自己用同源 iframe 嵌自己的 PDF**。
+  写成 `'none'` 会把那个 iframe 一起挡掉，**PDF 预览直接白屏**。
+  `'self'` 一样挡得住第三方，只是放行自己。
+- **CSP 里没有 `default-src` / `script-src` / `style-src`。** 页面里有内联主题脚本和
+  大量 `style="--dot-color:…"` 内联样式（课程颜色就靠它）。写上这些指令会把内联样式
+  全部拦掉 —— 表现是「课程颜色没了」，而且不会有任何报错，很难联想到是 CSP 干的。
+
+另外，**访问日志里的凭据会打码**：日历订阅地址带着 `?token=…`，而手机日历会定时轮询它，
+那个 token 是「拿到就能拉走全部课表和作业」的凭据。日志里只留下 `token=***`。
+
 ### Windows 上长期开着，注意这三点
 
 1. **别注销 Windows 账号**，锁屏没关系。注销会连同服务一起关掉。
@@ -723,8 +748,8 @@ cp -r data ~/backup/study-guardian-$(date +%F)
 **带来的好处**：别人 `git clone` 之后一条命令就能跑起来。
 对非计算机专业的同学来说，"要装 Node、要 npm install、还编译失败" 是很高的门槛。
 
-**代价**：手写的东西测试必须做扎实。所以项目里有 **531 个单元测试**和
-**544 项端到端断言**（数字会随着功能变，以跑出来的为准）：
+**代价**：手写的东西测试必须做扎实。所以项目里有 **561 个单元测试**和
+**572 项端到端断言**（数字会随着功能变，以跑出来的为准）：
 
 ```bash
 npm test              # 单元测试：ICS 解析/生成、ZIP/ZIP64、Office 提取、SMTP、注销与多用户
@@ -1001,11 +1026,12 @@ node scripts/diagnose-preview.mjs --retry
 │   ├── diagnose-preview.mjs  课件预览出问题时先跑这个，它会把原因打出来
 │   ├── create-user.mjs       命令行建号（注册关着时用）
 │   ├── reset-password.mjs    重置密码，数据不动
+│   ├── delete-user.mjs       删账号（连课件一起删，网页端删号要原密码，忘了就用这个）
 │   ├── make-snapshot.mjs     打一份干净的数据快照，用于搬家
 │   ├── doctor.js             环境自检
 │   └── make-icons.js         生成 PWA 图标
 ├── docs/                     README 里用到的示意图
-└── tests/                    单元测试（20 个文件 / 531 项）
+└── tests/                    单元测试（23 个文件 / 561 项）
 ```
 
 ---

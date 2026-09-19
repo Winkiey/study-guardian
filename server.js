@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 
 import config, { ensureRuntimeDirs } from './src/config.js';
 import { getDb, closeDb } from './src/db/index.js';
-import { HttpError, serveStatic, sendHtml, clientIp } from './src/lib/http.js';
+import { HttpError, serveStatic, sendHtml, clientIp, redactUrl } from './src/lib/http.js';
 import { attachGzip } from './src/lib/compress.js';
 import { createRateLimiter, limiterKey, pickLimiter } from './src/lib/ratelimit.js';
 import { createRouter } from './src/routes/index.js';
@@ -131,6 +131,62 @@ function setupGracefulShutdown(server) {
 }
 
 // ============================================================
+// 全局安全响应头
+// ============================================================
+
+/**
+ * 只写三条指令的 CSP。
+ *
+ * **故意不写** default-src / script-src / style-src：
+ * 一个完整的 CSP 会把页面里的内联 `<script>`（首屏主题）和大量
+ * `style="--dot-color:…"` 内联样式全部挡掉 —— 直接后果是**课程颜色消失**。
+ * 要上完整版得先把这些内联写法重构掉，那是另一件事，别顺手做。
+ *
+ * 剩下这三条不碰任何资源加载，只做三件事，风险为零：
+ *   frame-ancestors 'self'  不许被**别的站**套 iframe
+ *   object-src 'none'       不许加载 <object>/<embed> 这类老式插件（本项目一个都没用）
+ *   base-uri 'self'         不许有人注入 <base> 把页面里所有相对链接劫走
+ *
+ * ⚠️ frame-ancestors 必须是 `'self'`，**不能写成 `'none'`**。
+ * 这条头会加到**所有**响应上，包括 /materials/:id/pdf —— 而 PDF 预览页
+ * 恰恰是自己用 <iframe> 嵌自己的 PDF（同源）。
+ * 写成 'none' 会把 iframe 一起挡掉，**PDF 预览直接白屏**。
+ * X-Frame-Options 同理：用 SAMEORIGIN，不用 DENY。
+ * 两者都挡得住「第三方页面套你」，区别只在于放不放行自己。
+ */
+const CONTENT_SECURITY_POLICY = "frame-ancestors 'self'; object-src 'none'; base-uri 'self'";
+
+/**
+ * 给响应装上安全头。
+ *
+ * 用 setHeader 而不是在每个 writeHead 里各写一遍：Node 会把 setHeader 设过的头
+ * 和之后 `writeHead(status, headers)` 里的头**合并**（同名的以 writeHead 为准）。
+ * 所以在这里设一次，HTML、JSON、静态资源、302、304、404、429、500 全都会带上 ——
+ * 本项目有七八个 writeHead 调用点，逐个改迟早漏一个，而漏掉的那个不会有任何报错。
+ *
+ * @param {import('node:http').ServerResponse} res
+ */
+function applySecurityHeaders(res) {
+  // 别让浏览器猜内容类型：本站会把用户上传的文件原样发回去，
+  // 猜错了就可能把上传的 .html 当页面执行（存储型 XSS 的经典触发方式）
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+
+  // 跳到外站时只带域名、不带完整地址
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+
+  res.setHeader('Content-Security-Policy', CONTENT_SECURITY_POLICY);
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+
+  // 这个站用不到这些能力，明确关掉（别人就算想办法塞了脚本也用不了）
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=()');
+
+  // 私人数据，别被搜索引擎收录。
+  // 为什么要用响应头而不是只放 robots.txt：robots.txt 只对守规矩的爬虫有效，
+  // 而这条头是随每个响应发出去的，更直接。以后绑了域名也不会突然被搜到。
+  res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+}
+
+// ============================================================
 // 主处理流程
 // ============================================================
 
@@ -142,8 +198,9 @@ async function handleRequest(req, res) {
   const startedAt = Date.now();
 
   try {
-    // 0. 装上自动 gzip。放在最前面，这样后面所有响应（HTML / JSON / 404 / 错误页）
-    //    都自动受益，不需要每个地方各写一遍。
+    // 0. 安全头 + 自动 gzip。都放在最前面，这样后面所有响应
+    //    （HTML / JSON / 静态资源 / 302 / 404 / 错误页）都自动受益。
+    applySecurityHeaders(res);
     attachGzip(req, res);
 
     // 1. 限流。必须在做任何实际工作之前 ——
@@ -247,7 +304,9 @@ function errorResponse(req, res, err) {
   const status = err instanceof HttpError ? err.status : 500;
 
   if (status >= 500) {
-    console.error(`[错误] ${req.method} ${req.url}`);
+    // 这里也不能直接打 req.url：它带着完整查询串，
+    // 而订阅地址的 token 就在查询串里（和 logAccess 同一个理由）。
+    console.error(`[错误] ${req.method} ${redactUrl(req.url)}`);
     console.error(err);
   }
 
@@ -291,6 +350,12 @@ function escapeForHtml(value) {
     .replace(/"/g, '&quot;');
 }
 
+/**
+ * 把日志里的敏感查询参数打码 —— 实现放在 src/lib/http.js 的 redactUrl()，
+ * 那里有完整的理由说明（一句话：日历订阅 token 会被手机定时轮询，
+ * 明文写进日志等于把凭据抄一份到磁盘上）。
+ */
+
 /** 访问日志。静态资源不记，避免刷屏。 */
 function logAccess(req, res, url, durationMs) {
   if (url.pathname.startsWith('/static/')) return;
@@ -301,7 +366,7 @@ function logAccess(req, res, url, durationMs) {
   const time = new Date().toTimeString().slice(0, 8);
   const ms = durationMs > 1000 ? `${(durationMs / 1000).toFixed(1)}s` : `${durationMs}ms`;
 
-  console.log(`${mark} ${time} ${req.method.padEnd(6)} ${status} ${url.pathname}${url.search} ${ms}`);
+  console.log(`${mark} ${time} ${req.method.padEnd(6)} ${status} ${redactUrl(url.pathname + url.search)} ${ms}`);
 }
 
 // ============================================================

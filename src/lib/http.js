@@ -631,3 +631,55 @@ export function clientIp(req) {
   if (typeof forwarded === 'string' && forwarded) return forwarded.split(',')[0].trim();
   return req.socket?.remoteAddress || '-';
 }
+
+/**
+ * 日志里出现密码/令牌类查询参数时要打码。
+ *
+ * 为什么必须有：日历订阅是 `GET /calendar/subscribe.ics?token=…`，
+ * 而那个 token 是「拿到即可拉走全部课表和作业」的凭据，有效期一年。
+ * 手机日历会**定时轮询**这个地址 —— 于是这串 token 会被反复写进访问日志，
+ * 日志落到磁盘上、还会被 pm2 收集，等于把凭据到处抄了一份。
+ *
+ * 只替换值，保留参数名和其余部分（含原样的编码）：
+ * 排查问题时照样看得出请求长什么样，而机密不再落盘。
+ */
+const SENSITIVE_QUERY_KEYS = new Set([
+  'token',
+  'password',
+  'passwd',
+  'secret',
+  'key',
+  'apikey',
+  'api_key',
+  'access_token',
+  'auth_token',
+  'signature',
+  'sig',
+]);
+
+export function redactUrl(rawUrl) {
+  const raw = String(rawUrl ?? '');
+  const q = raw.indexOf('?');
+  if (q === -1) return raw;
+
+  const head = raw.slice(0, q);
+  let changed = false;
+
+  const masked = raw.slice(q + 1).split('&').map((pair) => {
+    if (!pair) return pair;
+    const eq = pair.indexOf('=');
+    const key = eq === -1 ? pair : pair.slice(0, eq);
+    let decoded = key;
+    try {
+      decoded = decodeURIComponent(key);
+    } catch {
+      /* 编码坏了就按原样比，不抛 */
+    }
+    if (!SENSITIVE_QUERY_KEYS.has(decoded.toLowerCase())) return pair;
+    changed = true;
+    return eq === -1 ? pair : `${key}=***`;
+  }).join('&');
+
+  // 没有敏感参数就原样返回，免得把日志里的原始转义改得认不出来
+  return changed ? `${head}?${masked}` : raw;
+}

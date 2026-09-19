@@ -75,7 +75,12 @@ ${card({
     title: '学期',
     actions: `<button type="button" class="btn btn--outline btn--sm" data-new-term>${icon('plus', 15)}<span>新增学期</span></button>`,
     body: terms.length
-      ? `<table class="table">
+      // 六列的表格在手机上装不下，而 .card 有 overflow:hidden ——
+      // 不套滚动容器的话右边的列会被**直接裁掉**：既看不见，也滚不动，
+      // 用户只会觉得「编辑按钮不见了」。
+      // .table-scroll 是本项目现成的类（发送记录表在用），这里直接复用。
+      ? `<div class="table-scroll">
+      <table class="table">
       <thead><tr><th>学期</th><th>第一周周一</th><th>周数</th><th>现在第几周</th><th>状态</th><th></th></tr></thead>
       <tbody>
         ${terms.map((t) => {
@@ -101,6 +106,7 @@ ${card({
       }).join('')}
       </tbody>
     </table>
+    </div>
     <p class="field__help">
       「第一周周一」是课表周次计算的基准，**必须是星期一**。教务处的校历上会写「第 1 教学周」，那就是它。
       填错的话整个课表的周次都会偏——比如今天明明已经是第 2 周，页面却显示第 1 周，

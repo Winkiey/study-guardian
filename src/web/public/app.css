@@ -894,7 +894,11 @@ select.input { cursor: pointer; }
 .table--compact th, .table--compact td { padding: 6px 9px; }
 .table--grid th, .table--grid td { border: 1px solid var(--c-border); }
 .table__actions { text-align: right; white-space: nowrap; }
-.table-scroll { overflow-x: auto; }
+/* 窄屏放不下的表格套这一层横向滚动。
+   overscroll-behavior-x 是给手机加的：不加的话，在表格上左右拖动
+   拖到头之后会**继续传给浏览器**，iOS Safari 上「向右滑」正好是返回上一页 ——
+   想看看右边那列，结果整页退出去了。 */
+.table-scroll { overflow-x: auto; overscroll-behavior-x: contain; }
 .is-active-row { background: var(--c-primary-soft); }
 
 /* 键值列表 */
