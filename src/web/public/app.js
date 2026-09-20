@@ -2394,6 +2394,7 @@ function initSettings() {
   initChannelForms();
   initSettingsForm();
   initPasswordForm();
+  initRevokeButtons();
   initDeleteAccount();
   initSchedulerButton();
   initSettingsTabs();
@@ -3197,12 +3198,62 @@ function initPasswordForm() {
         method: 'POST',
         body: { currentPassword: raw.currentPassword, newPassword: raw.newPassword },
       });
-      toast('密码已修改', 'success');
+      // 提示要说清副作用：改密码会踢掉其他设备、并且把日历订阅链接作废。
+      // 不说明的话，用户过几天发现手机日历不更新了，会以为是自己弄坏的。
+      toast('密码已修改。其他设备已退出登录，日历订阅链接也已作废（需要在设置里重新复制一条）',
+        'success', 8000);
       form.reset();
     } catch (err) {
       toast(err.message, 'error');
     } finally {
       btn.disabled = false;
+    }
+  });
+}
+
+/**
+ * 「退出其他所有设备」和「重新生成订阅链接」。
+ *
+ * 两个都是「把已经发出去的钥匙作废」，点了立刻生效、没有回收站，
+ * 所以都先弹一句确认 —— 但**不用弹窗**：影响的只是登录状态和一条链接，
+ * 重新弄一次成本很低，不像注销账号那样不可逆。
+ */
+function initRevokeButtons() {
+  const confirmThen = async (btn, message, url, done) => {
+    if (!window.confirm(message)) return;
+    btn.disabled = true;
+    btn.classList.add('is-loading');
+    try {
+      await api(url, { method: 'POST' });
+      done();
+    } catch (err) {
+      toast(err.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.classList.remove('is-loading');
+    }
+  };
+
+  document.addEventListener('click', (e) => {
+    const sessionBtn = e.target.closest('[data-revoke-sessions]');
+    if (sessionBtn) {
+      confirmThen(sessionBtn,
+        '把其他所有设备上的登录都退出？\n（这台设备不受影响）',
+        '/api/sessions/revoke-others',
+        () => toast('其他设备已全部退出登录', 'success'));
+      return;
+    }
+
+    const calBtn = e.target.closest('[data-regenerate-calendar]');
+    if (calBtn) {
+      confirmThen(calBtn,
+        '重新生成订阅链接？\n以前发出去的链接会立刻失效，手机日历里需要重新添加一次订阅。',
+        '/api/calendar/regenerate',
+        () => {
+          toast('订阅链接已重新生成，正在刷新页面…', 'success');
+          // 页面上显示的链接是服务端渲染出来的，必须重载才能拿到新的。
+          setTimeout(() => window.location.reload(), 700);
+        });
     }
   });
 }

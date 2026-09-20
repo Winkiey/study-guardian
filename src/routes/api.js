@@ -20,7 +20,7 @@ import {
 } from '../lib/http.js';
 import config from '../config.js';
 import { all, get, run } from '../db/index.js';
-import { changePassword, clearSessionCookie, passwordProblem, requireUser, verifyPassword } from '../lib/auth.js';
+import { changePassword, clearSessionCookie, passwordProblem, requireUser, revokeCalendarTokens, revokeOtherSessions, setSessionCookie, verifyPassword } from '../lib/auth.js';
 import { deleteAccount } from '../lib/account.js';
 import * as courses from '../lib/courses.js';
 import * as assignments from '../lib/assignments.js';
@@ -690,6 +690,36 @@ export function registerApi(router) {
     const badPassword = passwordProblem(body.newPassword);
     if (badPassword) throw badRequest(badPassword.replace('密码', '新密码'));
     changePassword(ctx.user.id, body.newPassword);
+
+    // ⚠️ 改密码会把 session_version +1（同时踢掉其他设备、作废日历链接），
+    // 所以**当前这台设备必须立刻换一张新 Cookie** ——
+    // 手里那张是旧计数的，下一秒就成了废票，用户会莫名其妙被登出。
+    setSessionCookie(ctx.res, ctx.user.id);
+
+    sendJson(ctx.res, { ok: true, revokedOtherSessions: true });
+  }));
+
+  /**
+   * 退出其他所有设备。
+   *
+   * 场景：在图书馆/网吧/同学电脑上登过，忘了退。这里一下就把那些会话作废，
+   * 当前这台不受影响（紧接着给自己重发一张新计数的 Cookie）。
+   */
+  router.post('/api/sessions/revoke-others', guard(async (ctx) => {
+    revokeOtherSessions(ctx.user.id);
+    setSessionCookie(ctx.res, ctx.user.id);
+    sendJson(ctx.res, { ok: true });
+  }));
+
+  /**
+   * 重新生成日历订阅链接。
+   *
+   * 场景：链接被截图 / 投屏 / 粘到群里了，或者以前用同学手机加过订阅。
+   * 点一下，**以前所有链接立刻失效**（回 403），设置页显示一条新的。
+   * 只影响自己，不会像换密钥那样把所有人踢下线。
+   */
+  router.post('/api/calendar/regenerate', guard(async (ctx) => {
+    revokeCalendarTokens(ctx.user.id);
     sendJson(ctx.res, { ok: true });
   }));
 

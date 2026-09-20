@@ -79,17 +79,31 @@ function sign(payload) {
     .digest('base64url');
 }
 
+/** 读某个用户的会话计数器（没有这个用户就返回 null） */
+function sessionVersionOf(userId) {
+  const row = get('SELECT session_version FROM users WHERE id = ?', userId);
+  return row ? Number(row.session_version) || 0 : null;
+}
+
 /**
- * 生成会话令牌。格式：`v1.<userId>.<过期时间戳>.<签名>`
+ * 生成会话令牌。格式：`v2.<userId>.<会话计数>.<过期时间戳>.<签名>`
+ *
+ * 中间那个计数是「吊销开关」：把 users.session_version +1，
+ * 所有旧令牌立刻失效（见 schema.js 的 v5 迁移）。
  */
 export function createToken(userId, days = SESSION_DAYS) {
   const expires = Date.now() + days * 86_400_000;
-  const payload = `v1.${userId}.${expires}`;
+  const ver = sessionVersionOf(userId) ?? 0;
+  const payload = `v2.${userId}.${ver}.${expires}`;
   return `${payload}.${sign(payload)}`;
 }
 
 /**
  * 校验会话令牌，成功返回 payload，失败返回 null。
+ *
+ * 兼容升级前发出去的 `v1.<userId>.<过期>`：那种令牌没有计数值，
+ * 一律按 0 处理。所以**升级本身不会把任何人踢下线**，
+ * 而一旦某次「退出其他设备」把计数变成了 1，那些 v1 令牌同样立刻失效。
  */
 export function verifyToken(token) {
   if (!token || typeof token !== 'string') return null;
@@ -104,11 +118,23 @@ export function verifyToken(token) {
   if (signature.length !== expected.length) return null;
   if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return null;
 
-  const [version, userId, expires] = payload.split('.');
-  if (version !== 'v1') return null;
+  const parts = payload.split('.');
+  let userId;
+  let ver;
+  let expires;
+  if (parts[0] === 'v2' && parts.length === 4) {
+    [, userId, ver, expires] = parts;
+  } else if (parts[0] === 'v1' && parts.length === 3) {
+    // 旧格式：没有计数值，当作 0
+    [, userId, expires] = parts;
+    ver = '0';
+  } else {
+    return null;
+  }
+
   if (Number(expires) < Date.now()) return null;
 
-  return { userId: Number(userId), expires: Number(expires) };
+  return { userId: Number(userId), sessionVersion: Number(ver) || 0, expires: Number(expires) };
 }
 
 /** 下发会话 Cookie */
@@ -145,10 +171,33 @@ export function currentUser(req) {
   if (!payload) return null;
 
   const user = get(
-    'SELECT id, username, display_name, school, created_at FROM users WHERE id = ?',
+    'SELECT id, username, display_name, school, created_at, session_version FROM users WHERE id = ?',
     payload.userId,
   );
-  return user || null;
+  if (!user) return null;
+
+  // 令牌里的计数和库里对不上 → 这个会话已经被「退出其他设备」或「改密码」作废了。
+  // 注意：数据库里读出来的可能是 null（升级前建的行），统一按 0 算 ——
+  // 和 verifyToken 里对 v1 旧令牌的处理保持一致，不然升级瞬间所有人都会掉线。
+  if ((Number(user.session_version) || 0) !== payload.sessionVersion) return null;
+
+  delete user.session_version;
+  return user;
+}
+
+/**
+ * 把这个人所有**其他**设备的登录作废。
+ *
+ * 做法是把 session_version +1：库里所有旧令牌的计数立刻对不上，
+ * 而调用方要紧接着给自己重新下发一次 Cookie，当前这台设备才不会跟着掉线。
+ */
+export function revokeOtherSessions(userId) {
+  run('UPDATE users SET session_version = session_version + 1 WHERE id = ?', userId);
+}
+
+/** 把这个人已经发出去的日历订阅链接全部作废 */
+export function revokeCalendarTokens(userId) {
+  run('UPDATE users SET calendar_version = calendar_version + 1 WHERE id = ?', userId);
 }
 
 /**
@@ -271,9 +320,23 @@ export function createUser({ username, password, displayName = '', school = '' }
   }
 }
 
-/** 修改密码 */
+/**
+ * 修改密码。
+ *
+ * 顺手把两个吊销计数都 +1：密码泄露是「钥匙丢了」最常见的原因，
+ * 所以改密码应该同时做到两件事 ——
+ *   · 把别人正拿着的登录状态踢掉（不然改了密码对方照样在线）
+ *   · 把已经发出去的日历订阅链接作废（那个链接不需要登录就能看课表）
+ * 调用方要紧接着给当前设备重新下发 Cookie，否则自己也会被踢下线。
+ */
 export function changePassword(userId, newPassword) {
-  run('UPDATE users SET password_hash = ? WHERE id = ?', hashPassword(newPassword), userId);
+  run(
+    `UPDATE users SET password_hash = ?,
+       session_version = session_version + 1,
+       calendar_version = calendar_version + 1
+     WHERE id = ?`,
+    hashPassword(newPassword), userId,
+  );
 }
 
 /** 首页应该跳去哪里：没账号跳初始化，有账号未登录跳登录页 */

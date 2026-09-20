@@ -328,6 +328,22 @@ ${card({
       <strong>重要区别：</strong>下载后<strong>导入</strong>的日历事件自带闹钟，到点会响；
       用<strong>订阅</strong>方式添加的日历，iOS 会忽略事件里的闹钟，只能用来看课表。
       作业提醒请依赖 Bark 这类推送渠道。
+    </p>
+    <p class="field__help">
+      ⚠️ 订阅地址本身就是钥匙：它<strong>不需要登录</strong>就能看到你的课表和作业
+      （手机日历不会带登录信息，所以只能这样），有效期一年。
+      别截图发出去，也别粘到群里。
+    </p>
+    <div class="btn-row mt-sm">
+      <button type="button" class="btn btn--outline btn--sm" data-regenerate-calendar>
+        ${icon('refresh', 16)}<span>重新生成订阅链接</span>
+      </button>
+    </div>
+    <p class="field__help">
+      怀疑链接被谁抄走了（截图过、投屏过、发给过同学、在公共 WiFi 上用过），
+      点这个按钮：<strong>以前发出去的所有订阅链接立刻失效</strong>，
+      上面那条会换成新的。手机日历里需要重新添加一次订阅。
+      只影响你自己，不会影响别人。
     </p>`,
   })}
 </div>
@@ -450,7 +466,24 @@ ${card({
     <div class="form__actions">
       <button type="submit" class="btn btn--primary">修改密码</button>
     </div>
+    <p class="field__help">
+      改密码会顺手做两件事：<strong>把其他设备上的登录踢掉</strong>，
+      并且<strong>作废已经发出去的日历订阅链接</strong>（那个链接不用登录就能看课表）。
+      当前这台设备不受影响。
+    </p>
   </form>
+
+  <div class="subsection">
+    <h4 class="subsection__title">登录状态</h4>
+    <p class="field__help mb-sm">
+      在图书馆、机房、同学电脑上登录过又忘了退，用这个把它们全部踢下线。
+      你自己现在这台设备会保持登录。
+    </p>
+    <button type="button" class="btn btn--outline btn--sm" data-revoke-sessions>
+      ${icon('logout', 16)}<span>退出其他所有设备</span>
+    </button>
+  </div>
+
   <div class="account-footer">
     <form class="logout-form" method="post" action="/logout">
       <button type="submit" class="btn btn--outline">${icon('logout', 16)} 退出登录</button>

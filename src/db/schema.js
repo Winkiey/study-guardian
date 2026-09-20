@@ -12,7 +12,7 @@
  */
 
 /** 当前结构版本号，配合 PRAGMA user_version 做迁移 */
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 /**
  * 课程标记色的默认值。
@@ -61,6 +61,27 @@ export const MIGRATIONS = {
       + 'ON users(lower(username))',
     ),
   ],
+  // v5：让「已经发出去的钥匙」能作废。
+  //
+  // 会话 Cookie 和日历订阅链接都是**无状态签名令牌**：服务端不存它们，
+  // 只看签名对不对。好处是不用查表、重启不掉线；坏处是**发出去就收不回来**。
+  // 日历链接尤其难受 —— 有效期一年、不需要登录，谁拿到链接谁就能看你的课表，
+  // 而唯一的作废办法是换 SESSION_SECRET，那会把所有人的登录状态一起清掉。
+  //
+  // 加两个计数器就解决了：令牌里带上当时的计数值，校验时跟库里的比。
+  // 想作废就把计数 +1，旧令牌立刻全部失效，而且只影响这一个人。
+  //
+  //   改密码          → 两个都 +1（钥匙可能就是因为密码泄露才丢的）
+  //   退出其他设备    → session_version + 1
+  //   重新生成订阅链接 → calendar_version + 1
+  //
+  // 默认 0，而且**旧格式的令牌（不带计数值）按 0 处理** ——
+  // 这样升级本身不会把任何人踢下线、也不会让已经订阅好的日历失效；
+  // 一旦哪次真的 +1 了，那些旧令牌照样一起失效。兼容和有效两头都不丢。
+  5: [
+    (db) => addColumnIfMissing(db, 'users', 'session_version', 'INTEGER NOT NULL DEFAULT 0'),
+    (db) => addColumnIfMissing(db, 'users', 'calendar_version', 'INTEGER NOT NULL DEFAULT 0'),
+  ],
 };
 
 /** 缺了才加，已经有了就跳过（让迁移可以安全重跑） */
@@ -82,12 +103,16 @@ export const SCHEMA_SQL = `
 -- 就没法判断该登进哪一个。
 -- ============================================================
 CREATE TABLE IF NOT EXISTS users (
-  id            INTEGER PRIMARY KEY AUTOINCREMENT,
-  username      TEXT NOT NULL UNIQUE,
-  display_name  TEXT NOT NULL DEFAULT '',
-  password_hash TEXT NOT NULL,
-  school        TEXT NOT NULL DEFAULT '',
-  created_at    TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  username         TEXT NOT NULL UNIQUE,
+  display_name     TEXT NOT NULL DEFAULT '',
+  password_hash    TEXT NOT NULL,
+  school           TEXT NOT NULL DEFAULT '',
+  created_at       TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  -- 两个「吊销计数器」。见 v5 迁移里的说明：会话令牌和日历订阅令牌
+  -- 都是无状态签名令牌，想把已经发出去的作废，唯一办法就是把计数 +1。
+  session_version  INTEGER NOT NULL DEFAULT 0,
+  calendar_version INTEGER NOT NULL DEFAULT 0
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_lower ON users(lower(username));
 

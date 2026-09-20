@@ -254,15 +254,30 @@ export function buildCalendar(userId, opts = {}) {
 // 订阅链接
 // ============================================================
 
+/** 读订阅计数（用户不存在就当 0） */
+function calendarVersionOf(userId) {
+  const row = get('SELECT calendar_version FROM users WHERE id = ?', userId);
+  return row ? Number(row.calendar_version) || 0 : 0;
+}
+
 /**
  * 生成订阅令牌。
  *
- * 用 SESSION_SECRET 做 HMAC，因此不需要在数据库里额外存一列；
- * 令牌里带 userId 和过期时间，改密/换密钥即失效。
+ * 格式：`cal.<userId>.<订阅计数>.<过期时间戳>.<签名>`
+ *
+ * 用 SESSION_SECRET 做 HMAC，因此不需要在数据库里额外存一列。
+ * 中间那个计数来自 users.calendar_version，是**吊销开关**：
+ * 用户点一下「重新生成订阅链接」，计数 +1，以前发出去的链接全部失效。
+ *
+ * 为什么必须能吊销：这条链接是**不需要登录**就能看的 —— 手机日历不会带
+ * Cookie，所以链接本身就是钥匙，而且有效期一年。没有吊销手段的话，
+ * 它一旦被截图、被投屏、被粘到群里，或者在同一个 WiFi 上被抄走，
+ * 就只能靠换 SESSION_SECRET 收场，而代价是所有人的登录状态一起清掉。
  */
 export function calendarToken(userId, days = 365) {
   const expires = Date.now() + days * 86_400_000;
-  const payload = `cal.${userId}.${expires}`;
+  const ver = calendarVersionOf(userId);
+  const payload = `cal.${userId}.${ver}.${expires}`;
   const sig = crypto.createHmac('sha256', config.sessionSecret).update(payload).digest('base64url');
   return `${payload}.${sig}`;
 }
@@ -281,9 +296,29 @@ export function verifyCalendarToken(token) {
   if (sig.length !== expected.length) return null;
   if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
 
-  const [kind, userId, expires] = payload.split('.');
-  if (kind !== 'cal') return null;
+  const parts = payload.split('.');
+  if (parts[0] !== 'cal') return null;
+
+  let userId;
+  let ver;
+  let expires;
+  if (parts.length === 4) {
+    [, userId, ver, expires] = parts;
+  } else if (parts.length === 3) {
+    // 升级前发出去的旧格式：没有计数值，按 0 处理。
+    // 这样升级本身不会让已经订阅好的手机日历失效；
+    // 等哪次真的「重新生成」把计数变成 1，这些旧链接同样立刻失效。
+    [, userId, expires] = parts;
+    ver = '0';
+  } else {
+    return null;
+  }
+
   if (Number(expires) < Date.now()) return null;
+
+  // 计数对不上 = 这条链接已经被用户主动作废了
+  if (calendarVersionOf(Number(userId)) !== (Number(ver) || 0)) return null;
+
   return { userId: Number(userId) };
 }
 

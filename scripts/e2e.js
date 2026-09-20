@@ -1750,6 +1750,36 @@ async function run() {
       ok('伪造的订阅令牌被拒绝', badToken.status === 403, `状态码 ${badToken.status}`);
     }
 
+    // ---- 订阅链接可以作废 ----
+    // 这条链接**不需要登录**就能看课表，有效期还长达一年。
+    // 被截图、被投屏、粘到群里、或者在学校 WiFi 上被抄走，都可能；
+    // 没有吊销手段的话，唯一的收场办法是换 SESSION_SECRET，
+    // 而那会把所有人的登录状态一起清掉。
+    if (subscribeMatch) {
+      const oldLink = subscribeMatch[1];
+      ok('（前提）作废之前这条链接是能用的',
+        (await req('GET', `/calendar/subscribe.ics?token=${oldLink}`)).status === 200);
+
+      const regen = await req('POST', '/api/calendar/regenerate', { json: {} });
+      ok('★ 重新生成订阅链接的接口可用', regen.status === 200, `状态码 ${regen.status}`);
+
+      const afterRevoke = await req('GET', `/calendar/subscribe.ics?token=${oldLink}`);
+      ok('★ 旧的订阅链接立刻失效（403，而不是继续能用一年）',
+        afterRevoke.status === 403, `状态码 ${afterRevoke.status}`);
+
+      const settingsAfter = await req('GET', '/settings');
+      const newMatch = /webcal:\/\/[^"'\s]+token=([A-Za-z0-9._-]+)/.exec(settingsAfter.text);
+      ok('★ 设置页给出一条新的订阅链接', Boolean(newMatch), '重新生成后没拿到新链接');
+      if (newMatch) {
+        ok('★ 新链接和旧的不是同一个', newMatch[1] !== oldLink);
+        const fresh = await req('GET', `/calendar/subscribe.ics?token=${newMatch[1]}`);
+        ok('★ 新链接可以正常拉取日历', fresh.status === 200
+          && fresh.text.includes('BEGIN:VCALENDAR'), `状态码 ${fresh.status}`);
+      }
+      ok('★ 换链接不会把自己踢下线（订阅链接和登录状态是两件事）',
+        (await req('GET', '/settings')).status === 200);
+    }
+
     // --------------------------------------------------------
     section('7. 课表导入（CSV 与 ICS）');
 
@@ -2197,6 +2227,39 @@ async function run() {
       sevenCharPassword.status === 400, `状态码 ${sevenCharPassword.status}`);
     ok('★ 改密码被拒后原密码仍然可用（没被改坏）',
       (await req('POST', '/login', { form: { username: '测试同学', password: 'test123456' } })).status === 302);
+
+    // ---- 退出其他所有设备 ----
+    // 拿同一个账号在「第二台设备」上登一次（模拟：手机 + 图书馆的电脑）。
+    // 这不是越权测试，而是「钥匙丢了要能收回来」——
+    // 会话 Cookie 是无状态签名的，服务端原来没有任何办法让它提前失效。
+    const secondDevice = createClient(baseUrl);
+    const secondLogin = await secondDevice('POST', '/login', {
+      form: { username: '测试同学', password: 'test123456' },
+    });
+    ok('（前提）同一个账号在第二台设备上也能登录',
+      secondLogin.status === 302 && (await secondDevice('GET', '/settings')).status === 200);
+
+    const revokeOthers = await req('POST', '/api/sessions/revoke-others', { json: {} });
+    ok('★ 「退出其他所有设备」接口可用', revokeOthers.status === 200,
+      `状态码 ${revokeOthers.status}`);
+
+    const secondAfter = await secondDevice('GET', '/settings');
+    ok('★ 其他设备被踢下线（旧 Cookie 立刻作废）',
+      secondAfter.status !== 200, `状态码 ${secondAfter.status} —— 还能继续用就是没踢掉`);
+    ok('★ 而且第二台设备看到的是登录页，不是一个空白页',
+      secondAfter.status === 302
+      && (secondAfter.headers.get('location') || '').includes('/login'),
+      `状态码 ${secondAfter.status} → ${secondAfter.headers.get('location')}`);
+
+    ok('★ 当前这台设备不受影响（自己没被踢出去）',
+      (await req('GET', '/settings')).status === 200);
+
+    // 被踢之后重新登录应该正常（别把账号本身弄坏）
+    const reloginSecond = await secondDevice('POST', '/login', {
+      form: { username: '测试同学', password: 'test123456' },
+    });
+    ok('★ 被踢的设备可以用同一个密码重新登录',
+      reloginSecond.status === 302 && (await secondDevice('GET', '/settings')).status === 200);
 
     const traversal = await req('GET', '/static/../../../package.json');
     ok('静态资源路径穿越被阻止', traversal.status === 404 || traversal.status === 403,
