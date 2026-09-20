@@ -31,7 +31,6 @@ export function dashboardPage({
   termProgress,
   todayCourses,
   assignments,
-  materialCount,
   recentMaterials,
   stats,
   nextCourse,
@@ -107,11 +106,15 @@ ${!schedulerOk && !isNewcomer ? `
   </div>
 </div>` : ''}
 
-${/* 新同学现在什么都还没有。给他看四个 0 和两张「没有数据」的空卡片，
+${/* 新同学现在什么都还没有。给他看几个 0 和两张「没有数据」的空卡片，
      只会让人觉得「这站是空的」；所以这一段整体不渲染，位置让给上面那张引导卡。
      一旦导入了课程（courseCount > 0），这里立刻恢复正常。 */ ''}
 ${isNewcomer ? '' : `
-<section class="stat-grid">
+${/* 只留三个数字。原来有四个（今日课程 / 待办作业 / 资料 / 已完成作业），
+     四个一样大的数字排在一起，等于没有重点 —— 眼睛不知道先看哪个。
+     去掉的是「资料」：它是资料库的总量，不是"今天要做什么"，
+     想看的话侧栏点一下就进去了。留下的三个都直接对应一个动作。 */ ''}
+<section class="stat-grid stat-grid--3">
   ${statTile({
     label: '今日课程',
     value: todayCourses.length,
@@ -127,12 +130,6 @@ ${isNewcomer ? '' : `
     href: '/assignments',
   })}
   ${statTile({
-    label: '资料',
-    value: materialCount,
-    hint: '份',
-    href: '/materials',
-  })}
-  ${statTile({
     label: '已完成作业',
     value: stats.done,
     hint: '累计',
@@ -141,7 +138,7 @@ ${isNewcomer ? '' : `
 </section>
 
 ${nextCourse ? `
-<div class="next-up">
+<div class="next-up" style="--next-up-color:${escapeHtml(nextCourse.courseColor || '#3a63e8')}">
   <div class="next-up__label">${icon('clock', 16)} 下一节课</div>
   <div class="next-up__main">
     <span class="next-up__name">${escapeHtml(nextCourse.courseName)}</span>

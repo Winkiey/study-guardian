@@ -51,7 +51,10 @@ export function assignmentsPage({
   const body = `
 ${pageHeader({
     title: '作业',
-    subtitle: `共 ${activeCount} 项待办${filters.courseId ? '（已按课程筛选）' : ''}`,
+    // 副标题跟着当前筛选走：在「已逾期」页说「共 12 项待办」是答非所问
+    subtitle: filters.status === 'overdue'
+      ? `${activeCount} 项已逾期${filters.courseId ? '（已按课程筛选）' : ''}`
+      : `共 ${activeCount} 项待办${filters.courseId ? '（已按课程筛选）' : ''}`,
     actions: `<button type="button" class="btn btn--primary" data-new-assignment>${icon('plus', 17)}<span>新建作业</span></button>`,
   })}
 
@@ -72,6 +75,7 @@ ${pageHeader({
          is-active 只管「看起来像选中」，读屏不知道哪个是当前项。
          两者必须同源，否则会出现「看起来选中了、读屏说没选中」。 */ ''}
     <a class="filter-tab${!filters.status ? ' is-active' : ''}"${!filters.status ? ' aria-current="page"' : ''} href="/assignments${filters.courseId ? `?courseId=${filters.courseId}` : ''}">待办</a>
+    <a class="filter-tab${filters.status === 'overdue' ? ' is-active' : ''}"${filters.status === 'overdue' ? ' aria-current="page"' : ''} href="/assignments?status=overdue">已逾期</a>
     <a class="filter-tab${filters.status === 'done' ? ' is-active' : ''}"${filters.status === 'done' ? ' aria-current="page"' : ''} href="/assignments?status=done">已完成</a>
     <a class="filter-tab${filters.status === 'all' ? ' is-active' : ''}"${filters.status === 'all' ? ' aria-current="page"' : ''} href="/assignments?status=all">全部</a>
   </div>
@@ -94,9 +98,15 @@ ${activeCount === 0 && filters.status !== 'done' && filters.status !== 'all'
         // 这一处直接挂在页面 h1 下面，标题层级要接 h2（默认的 h3 会跳级）
         level: 2,
         icon: 'check',
-        title: '当前没有待办作业',
-        description: '新建作业时填上截止时间，并选好提前多久提醒，到点会自动推送到你手机。',
-        action: `<button type="button" class="btn btn--primary" data-new-assignment>${icon('plus', 17)}<span>新建作业</span></button>`,
+        // 空状态的文案要跟着当前筛选变：在「已逾期」这一页说
+        // 「当前没有待办作业」是答非所问 —— 用户明明有作业，只是都没过期。
+        title: filters.status === 'overdue' ? '没有逾期的作业' : '当前没有待办作业',
+        description: filters.status === 'overdue'
+          ? '很好，手上的作业都还没到截止时间。'
+          : '新建作业时填上截止时间，并选好提前多久提醒，到点会自动推送到你手机。',
+        action: filters.status === 'overdue'
+          ? `<a class="btn btn--outline" href="/assignments">${icon('chevronRight', 15)}<span>看全部待办</span></a>`
+          : `<button type="button" class="btn btn--primary" data-new-assignment>${icon('plus', 17)}<span>新建作业</span></button>`,
       })
       : GROUP_META.map((meta) => {
         const list = grouped[meta.key] || [];

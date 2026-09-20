@@ -305,7 +305,6 @@ export function registerPages(router) {
       termProgress: courses.activeTermProgress(userId),
       todayCourses,
       assignments: assignments.upcomingAssignments(userId, 14, 6),
-      materialCount: Number(get('SELECT COUNT(*) AS c FROM materials WHERE user_id = ?', userId)?.c || 0),
       recentMaterials: materials.listMaterials(userId, { limit: 4 }),
       stats: assignments.assignmentStats(userId),
       nextCourse,
@@ -422,7 +421,10 @@ export function registerPages(router) {
 
     const list = assignments.listAssignments(userId, {
       courseId: courseId || undefined,
-      status: status === 'done' ? 'done' : (status === 'all' ? undefined : undefined),
+      // 「已逾期」是派生状态，走 overdue 那条路（见 listAssignments 的注释）。
+      // 其余情况：done 单独放行，all 靠 includeDone 放行，默认只看没做完的。
+      overdue: status === 'overdue',
+      status: status === 'done' ? 'done' : undefined,
       includeDone: status === 'all' || status === 'done',
     });
 

@@ -34,7 +34,7 @@ export { URGENCY_LABELS };
 
 /**
  * 作业列表。
- * @param {object} opts { courseId, status, keyword, includeDone, limit }
+ * @param {object} opts { courseId, status, keyword, includeDone, overdue, limit }
  */
 export function listAssignments(userId, opts = {}) {
   const where = ['a.user_id = ?'];
@@ -44,7 +44,14 @@ export function listAssignments(userId, opts = {}) {
     where.push('a.course_id = ?');
     params.push(Number(opts.courseId));
   }
-  if (opts.status) {
+  // 「已逾期」是一个**派生**状态，不是 status 列里的值（那一列只有
+  // todo / doing / done），所以不能用 status = 'overdue' 去查。
+  // 判定口径和页面上的「已过期」统计卡保持一致：没做完 + 有截止时间 + 时间已过。
+  // 两边口径要是不一样，会出现「卡片说 3 条、点进去只有 2 条」这种对不上的情况。
+  if (opts.overdue) {
+    where.push("a.status != 'done' AND a.due_at IS NOT NULL AND a.due_at < ?");
+    params.push(nowStr());
+  } else if (opts.status) {
     where.push('a.status = ?');
     params.push(opts.status);
   } else if (!opts.includeDone) {

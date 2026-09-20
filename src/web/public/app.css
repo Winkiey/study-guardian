@@ -697,6 +697,9 @@ hr { border: 0; border-top: 1px solid var(--c-border); margin: 18px 0; }
   margin-bottom: 32px;
 }
 .stat-grid--4 { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+/* 三个数字时的最小宽度可以放宽一点：格子少了，每个可以更宽敞，
+   数字也就更有分量 —— 「少而大」比「多而小」更像有重点。 */
+.stat-grid--3 { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
 
 .stat {
   position: relative;
@@ -1744,36 +1747,47 @@ button.filter-tab {
 /* ==========================================================================
    20 · 下一节课提醒条
    ========================================================================== */
+/* ⚠️ 这块原来是**实心主色 + 白字**，整页最扎眼的东西。
+   问题在于它只是「下一节课什么时候上」—— 一条信息，不是要用户做的决定。
+   一整块高饱和色压在最上面，把「今日待办」那些真正要动手的事全压下去了。
+   现在改成：柔和主色底 + 左侧课程色短条 + 深色文字。仍然一眼能看到
+   （它是唯一带底色的卡片），但不再抢走所有注意力。
+   课程色短条在这里是有用的：课表里认的是颜色，这里对得上号。 */
 .next-up {
   position: relative;
   display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
-  padding: 16px 20px;
-  color: #fff;
+  padding: 16px 20px 16px 23px;
+  color: var(--c-text);
+  border: 1px solid color-mix(in srgb, var(--c-primary) 22%, var(--c-border));
   border-radius: var(--radius-lg);
   margin-bottom: 22px;
   overflow: hidden;
-  /* 实心主色 + 内高光，比"彩色渐变块"更安静，也更像成品 */
-  background: var(--c-primary-solid);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.18),
-    0 6px 24px color-mix(in srgb, var(--c-primary-solid) 30%, transparent);
+  background: var(--c-primary-soft);
 }
-/* 右上角一团柔光，给渐变加一点空气感 */
+/* 左侧课程色短条：和课表里同一门课的颜色对应得上 */
+.next-up::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  background: var(--next-up-color, var(--c-primary));
+}
+/* 右上角一团柔光，给这块底色一点空气感（几乎看不见，拿掉会显得平） */
 .next-up::after {
   content: '';
   position: absolute;
   top: -60%; right: -8%;
   width: 260px; height: 260px;
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(255, 255, 255, 0.22), transparent 68%);
+  background: radial-gradient(circle, color-mix(in srgb, var(--c-primary) 12%, transparent), transparent 68%);
   pointer-events: none;
 }
 .next-up > * { position: relative; z-index: 1; }
-.next-up__label { display: flex; align-items: center; gap: 6px; font-size: 12.5px; opacity: 0.92; font-weight: 540; }
+.next-up__label { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--c-text-2); font-weight: 540; }
 .next-up__main { display: flex; align-items: baseline; gap: 12px; flex: 1 1 auto; flex-wrap: wrap; }
 .next-up__name { font-size: 17.5px; font-weight: 660; letter-spacing: -0.014em; }
-.next-up__meta { font-size: 13px; opacity: 0.9; }
-.next-up__when { font-size: 14px; font-weight: 620; font-variant-numeric: tabular-nums; }
+.next-up__meta { font-size: 13px; color: var(--c-text-2); }
+.next-up__when { font-size: 14px; font-weight: 620; color: var(--c-primary); font-variant-numeric: tabular-nums; }
 
 /* ==========================================================================
    21 · 资料库
@@ -2993,8 +3007,13 @@ button.filter-tab {
 /* ==========================================================================
    31 · 提示 toast
    ========================================================================== */
+/* 提示条放在**右上角**。
+   以前在右下角：桌面端那是「次要操作区」的位置，视线很少过去；
+   手机端更糟 —— 底部导航就贴在那儿，提示条只能挤在它上面，
+   而人看手机的习惯是自上往下，很容易整个错过。
+   提示条是「刚刚那件事的结果」，应该出现在视线**起点**附近。 */
 .toast-stack {
-  position: fixed; right: 20px; bottom: 20px;
+  position: fixed; right: 20px; top: 20px;
   display: flex; flex-direction: column; gap: 8px;
   z-index: 200;
   pointer-events: none;
@@ -3150,7 +3169,9 @@ button.filter-tab {
   .modal { max-height: 92vh; }
   .modal__body { padding: 17px; }
 
-  .toast-stack { left: 14px; right: 14px; bottom: calc(var(--tabbar-h) + 14px); }
+  /* 手机上放**顶部居中**：底部是导航栏的地盘，而且人看手机是从上往下看，
+     顶端才是视线的起点。左右各留 14px，所以宽度不超过「视口 − 28」。 */
+  .toast-stack { left: 14px; right: 14px; top: 14px; }
   .toast { max-width: none; }
   .toast-stack { align-items: stretch; }
 

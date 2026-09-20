@@ -858,6 +858,68 @@ async function run() {
     const allView = await req('GET', '/assignments?status=all');
     ok('★ 「全部」视图不标记 data-hides-done', !allView.text.includes('data-hides-done'));
 
+    // ---- 「已逾期」筛选 ----
+    // 逾期是**派生**状态（没做完 + 有截止时间 + 时间已过），不是 status 列里的值，
+    // 所以不能用 status='overdue' 去查库 —— 那样一条都查不出来，
+    // 而页面上照样渲染出一个空列表，看起来像「你没有逾期作业」。
+    //
+    // 先造两条时间点确定的作业（一条过去、一条未来），
+    // 否则这一页本来就是空的，下面几条断言全在空转 —— 这个坑踩过。
+    const padNum = (n) => String(n).padStart(2, '0');
+    const localStamp = (offsetDays) => {
+      const d = new Date(Date.now() + offsetDays * 86_400_000);
+      return `${d.getFullYear()}-${padNum(d.getMonth() + 1)}-${padNum(d.getDate())}`
+        + `T${padNum(d.getHours())}:${padNum(d.getMinutes())}`;
+    };
+    const OVERDUE_TITLE = 'E2E 已过期作业';
+    const FUTURE_TITLE = 'E2E 还没到期作业';
+    const pastNew = await req('POST', '/api/assignments', {
+      json: { title: OVERDUE_TITLE, dueAt: localStamp(-3), priority: 1 },
+    });
+    const futureNew = await req('POST', '/api/assignments', {
+      json: { title: FUTURE_TITLE, dueAt: localStamp(3), priority: 1 },
+    });
+    ok('（前提）造出一条已过期的作业',
+      pastNew.status === 200 || pastNew.status === 201, `状态码 ${pastNew.status}`);
+    ok('（前提）造出一条还没到期的作业',
+      futureNew.status === 200 || futureNew.status === 201, `状态码 ${futureNew.status}`);
+
+    const overdueView = await req('GET', '/assignments?status=overdue');
+    ok('★ 「已逾期」筛选页能打开', overdueView.status === 200, `状态码 ${overdueView.status}`);
+    ok('★ 逾期页里能看到已过期的作业（不是空列表）',
+      overdueView.text.includes(OVERDUE_TITLE));
+    ok('★ 逾期页里**看不到**还没到期的作业（筛选真的在起作用）',
+      !overdueView.text.includes(FUTURE_TITLE),
+      '★ 没到期的作业混进了逾期页 —— 逾期判定写错了');
+    ok('★ 逾期筛选被标成当前项（读屏也知道在哪个视图）',
+      /class="filter-tab is-active"[^>]*aria-current="page"[^>]*href="\/assignments\?status=overdue"/.test(overdueView.text));
+    // 副标题要跟着筛选走，不能还是「共 N 项待办」
+    ok('★ 逾期页的副标题说的是逾期，不是「共 N 项待办」',
+      /项已逾期/.test(overdueView.text) && !/共 \d+ 项待办/.test(overdueView.text));
+    // 统计卡上的「已过期」数字（走 SQL 聚合）和这一页的列表条数（走筛选）
+    // 是**分别算出来的**。两边口径不一致的话，会出现「卡片说 3 条、
+    // 点进去只有 2 条」，用户会觉得数据是错的。
+    const statOverdue = Number(
+      /已过期<\/span><span class="stat__value">(\d+)</.exec(overdueView.text)?.[1],
+    );
+    const overdueRows = (overdueView.text.match(/<article class="assignment[ "]/g) || []).length;
+    ok('★ 「已过期」统计卡的数字和列表条数对得上（两边口径一致）',
+      Number.isFinite(statOverdue) && overdueRows > 0 && statOverdue === overdueRows,
+      `卡片说 ${statOverdue} 条，列表里数到 ${overdueRows} 条`);
+
+    // ⚠️ 把自己造的两条删掉。
+    // 后面还有「清理后分组标题不再出现」那类测试，它们假定作业集合是已知的 ——
+    // 多留两条会让那边莫名其妙地红，而且报错信息完全指不到这里。
+    // 造了数据就要自己收干净。
+    for (const created of [pastNew, futureNew]) {
+      const id = created.json?.assignment?.id;
+      if (id) await req('DELETE', `/api/assignments/${id}`);
+    }
+    const afterOverdueCleanup = await req('GET', '/assignments?status=overdue');
+    ok('★ 造的两条测试数据已经清掉了（不影响后面的用例）',
+      !afterOverdueCleanup.text.includes(OVERDUE_TITLE)
+      && !afterOverdueCleanup.text.includes(FUTURE_TITLE));
+
     // 课程详情页也用了同一个勾选框组件。
     // 这里曾经有个真 bug：课程页的勾选框是个 <span role="button">，
     // 而绑事件的 initAssignments() 在没有作业表单模板的页面上会提前返回，

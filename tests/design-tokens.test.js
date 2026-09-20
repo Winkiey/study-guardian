@@ -165,6 +165,7 @@ describe('令牌引用不许写错名字', () => {
       'chip-color',   // timetable.js 的课程胶囊
       'block-color',  // timetable.js 的课程方块（整块的底色由它算出来）
       'card-color',   // courses.js 的课程卡顶部色条
+      'next-up-color', // dashboard.js「下一节课」卡片左侧那条课程色短条
       'color',        // 各处通用的"这个元素的颜色"占位
       'size', 'delay', 'tx', 'ty', 'rot', // 动画参数（入场位移、旋转、错峰延迟）
     ]);
