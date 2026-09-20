@@ -88,10 +88,17 @@ function encodePng(width, height, rgba) {
 // 画图标：渐变圆角方块 + 一本翻开的书
 // ------------------------------------------------------------
 
-// 跟 app.css 里的 --c-primary / --c-accent 保持一致，
-// 也跟 favicon.svg 的渐变一致。改一处就要三处一起改。
-const COLOR_A = [0x3a, 0x63, 0xe8]; // 主色
-const COLOR_B = [0x7c, 0x5c, 0xff]; // 渐变末端
+// ⚠️ 这三个地方必须一起改，否则手机主屏上的图标和站内颜色会对不上：
+//     1. 这里的 COLOR_A / COLOR_B
+//     2. src/web/public/favicon.svg
+//     3. app.css 里的 --c-primary-solid
+//
+// 以前是「亮蓝 → 紫色」两个色相的渐变，跟站内的主色渐变是同一套。
+// 现在全站只留一个靛蓝色相，图标也跟着改成**同一个色相的深浅两档** ——
+// 还是有立体感（图标太平会显得廉价），但不再是两种颜色打架。
+// 两个值压白字分别是 4.96:1 / 8.0:1，书本描边在任何一档上都看得清。
+const COLOR_A = [0x60, 0x62, 0xd8]; // 左上（浅一档的靛蓝）
+const COLOR_B = [0x4a, 0x4c, 0xb8]; // 右下（深一档的靛蓝）
 
 function lerp(a, b, t) {
   return a + (b - a) * t;

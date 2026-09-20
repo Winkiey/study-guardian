@@ -158,17 +158,38 @@ describe('★ 全屏态的样式', () => {
   const css = cssRaw.replace(/\/\*[\s\S]*?\*\//g, '');
 
   /** 取出某条规则的正文（从 selector 起到第一个右括号） */
+  const ruleAt = (at) => css.slice(at, css.indexOf('}', at));
   const ruleBody = (selector, { last = false } = {}) => {
     const at = last ? css.lastIndexOf(`${selector} {`) : css.indexOf(`${selector} {`);
     assert.ok(at > -1, `样式里应该有 ${selector}`);
-    return css.slice(at, css.indexOf('}', at));
+    return ruleAt(at);
   };
 
-  /** 读出某条规则里的 z-index */
-  const zIndexOf = (selector, opts) => {
-    const z = Number(/z-index:\s*(\d+)/.exec(ruleBody(selector, opts))?.[1]);
-    assert.ok(Number.isFinite(z), `${selector} 里应该写了 z-index`);
-    return z;
+  /**
+   * 读出某条规则里的 z-index。
+   *
+   * ⚠️ 这里必须**扫描同一个选择器的所有规则**，不能只取第一条或最后一条：
+   * 同一个选择器可以出现在多个地方（比如 .tabbar 在使用 @supports 做
+   * 半透明回退时就会有第二条，而那条只改背景、不写 z-index）。
+   * 只认「最后一条」的话，会读到一条根本没有 z-index 的规则上，
+   * 报出来的是「没写 z-index」，而不是真正的问题 —— 属于误报。
+   * 仍然严格：所有同名规则里一个 z-index 都没有，照样判失败。
+   */
+  const zIndexOf = (selector, { last = false } = {}) => {
+    const found = [];
+    let from = 0;
+    for (;;) {
+      const at = css.indexOf(`${selector} {`, from);
+      if (at === -1) break;
+      found.push(at);
+      from = at + 1;
+    }
+    assert.ok(found.length > 0, `样式里应该有 ${selector}`);
+    const withZ = found
+      .map((at) => Number(/z-index:\s*(\d+)/.exec(ruleAt(at))?.[1]))
+      .filter((n) => Number.isFinite(n));
+    assert.ok(withZ.length > 0, `${selector} 的所有规则里都没写 z-index`);
+    return last ? withZ[withZ.length - 1] : withZ[0];
   };
 
   test('★ 全屏态靠 fixed + inset:0 铺满，不依赖 Fullscreen API', () => {

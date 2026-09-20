@@ -160,7 +160,7 @@ ${card({
   ${card({
     title: '本周课程汇总',
     body: courses.length
-      ? `<table class="table">
+      ? `<div class="table-scroll"><table class="table">
       <thead><tr><th>课程</th><th>教师</th><th>学分</th><th>本周课时</th></tr></thead>
       <tbody>
         ${summarizeWeek(occurrences, courses).map((row) => `
@@ -171,7 +171,7 @@ ${card({
             <td>${row.count} 节</td>
           </tr>`).join('')}
       </tbody>
-    </table>`
+    </table></div>`
       : '<p class="muted">本周没有课。</p>',
   })}
 

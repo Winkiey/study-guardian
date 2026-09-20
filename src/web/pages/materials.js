@@ -79,7 +79,9 @@ ${pageHeader({
     const count = tab.value === ''
       ? stats.total
       : (stats.byCategory?.find((k) => k.category === tab.value)?.count || 0);
-    return `<a class="filter-tab${filters.category === tab.value ? ' is-active' : ''}" href="/materials${qs ? `?${qs}` : ''}">${escapeHtml(tab.label)}${count ? ` <span class="tab-count">${count}</span>` : ''}</a>`;
+    // is-active 管外观，aria-current 管读屏 —— 两者必须同源
+    const active = filters.category === tab.value;
+    return `<a class="filter-tab${active ? ' is-active' : ''}"${active ? ' aria-current="page"' : ''} href="/materials${qs ? `?${qs}` : ''}">${escapeHtml(tab.label)}${count ? ` <span class="tab-count">${count}</span>` : ''}</a>`;
   }).join('')}
 </div>
 

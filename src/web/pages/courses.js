@@ -146,7 +146,7 @@ ${pageHeader({
     title: '上课时间',
     actions: `<button type="button" class="link" data-edit-sessions="${course.id}">编辑上课时间</button>`,
     body: course.sessions.length
-      ? `<table class="table table--compact">
+      ? `<div class="table-scroll"><table class="table table--compact">
         <thead><tr><th>星期</th><th>时间</th><th>节次</th><th>周次</th><th>地点</th></tr></thead>
         <tbody>${course.sessions.map((s) => `
           <tr>
@@ -159,7 +159,7 @@ ${pageHeader({
             <td>${escapeHtml(s.location || course.classroom || '—')}</td>
           </tr>`).join('')}
         </tbody>
-      </table>
+      </table></div>
       <p class="field__help">
         「节次」一列是导入时教务系统原文里写的，用来交叉核对换算对不对。
         如果它和作息时间表对不上，去<a href="/settings#periods">设置 → 作息时间</a>调整。
@@ -184,7 +184,7 @@ ${pageHeader({
     actions: `<button type="button" class="link" data-edit-grades="${course.id}">编辑</button>`,
     body: grade.hasItems
       ? `
-      <table class="table table--compact">
+      <div class="table-scroll"><table class="table table--compact">
         <thead><tr><th>项目</th><th>占比</th><th>得分</th><th></th></tr></thead>
         <tbody>
           ${course.gradeItems.map((g) => {
@@ -198,7 +198,7 @@ ${pageHeader({
           </tr>`;
       }).join('')}
         </tbody>
-      </table>
+      </table></div>
       <div class="grade-summary">
         <div class="grade-summary__item">
           <span class="muted small">权重合计</span>

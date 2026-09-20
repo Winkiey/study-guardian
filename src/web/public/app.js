@@ -2590,15 +2590,51 @@ function initPeriodsForm() {
 
 function initSettingsTabs() {
   // 锚点导航：点击后平滑滚动（CSS 的 scroll-margin-top 已处理偏移）
-  for (const link of document.querySelectorAll('.anchor-nav a')) {
+  const links = [...document.querySelectorAll('.anchor-nav a')];
+
+  /**
+   * 标记「当前在哪一节」。
+   *
+   * 用 aria-current="location" 而不是 "page"：这是一页之内的目录，
+   * 不是在多个页面之间切换 —— 读屏对两者的播报不一样。
+   *
+   * ⚠️ 这里必须真的跟着滚动走。写死一个 aria-current 比不写更糟：
+   * 读屏会一本正经地念「当前位置：学期」，而用户其实滚到了「系统」。
+   */
+  const markCurrent = (hash) => {
+    for (const link of links) {
+      if (link.getAttribute('href') === hash) link.setAttribute('aria-current', 'location');
+      else link.removeAttribute('aria-current');
+    }
+  };
+
+  for (const link of links) {
     link.addEventListener('click', (e) => {
-      const target = document.querySelector(link.getAttribute('href'));
+      const hash = link.getAttribute('href');
+      const target = document.querySelector(hash);
       if (target) {
         e.preventDefault();
         target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        history.replaceState(null, '', link.getAttribute('href'));
+        history.replaceState(null, '', hash);
+        markCurrent(hash);
       }
     });
+  }
+
+  // 滚到哪一节就标到哪一节：取「最后一个已经越过页面顶部的分区」
+  const sections = links
+    .map((link) => document.querySelector(link.getAttribute('href')))
+    .filter(Boolean);
+  if (sections.length) {
+    const syncFromScroll = () => {
+      const line = window.scrollY + 140; // 140 ≈ 页头 + 锚点导航自身的高度
+      let current = sections[0];
+      for (const s of sections) if (s.offsetTop <= line) current = s;
+      markCurrent(`#${current.id}`);
+    };
+    markCurrent(window.location.hash || `#${sections[0].id}`);
+    window.addEventListener('scroll', syncFromScroll, { passive: true });
+    syncFromScroll();
   }
 }
 

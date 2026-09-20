@@ -13,6 +13,15 @@
         · .slide-viewer 必须是 z-index: 300
         · .guide-steps / .guide-details 必须存在
         · 整份文件的大括号必须配平（一段没闭合会静默吞掉后面所有规则）
+   4. 颜色有 tests/design-tokens.test.js 守着，别绕过它：
+        · 全站只有**一个**品牌色（靛蓝）。不要再引入第二个色相去做渐变 ——
+          按钮、头像、进度条各来一套渐变，是"通用后台模板"最明显的特征。
+        · --c-primary（文字/图标用）和 --c-primary-solid（按钮底、压白字用）
+          是两个令牌，不能合并：深色模式下前者必须够亮才看得清，
+          后者必须够深才压得住白字，一个值做不到两件事。
+        · 三级文字和状态色要按「它能落到的**最差**底色」算对比度，
+          不是按白底算。浅色模式最差是 --c-surface-3；深色模式最差的是
+          最亮的那层（也是 --c-surface-3）。改完色值跑一遍 npm test。
    ========================================================================== */
 
 /* ==========================================================================
@@ -21,62 +30,75 @@
 :root {
   color-scheme: light;
 
-  /* ---- 主色 ----
-     分两个令牌是有意的：
-       --c-primary        给文字、图标、边框用。深色模式下要更亮才看得清。
-       --c-primary-solid  给按钮背景用。它上面要压白字，所以不能太亮。
-     同一个值在浅色下够用，在深色下就会顾此失彼，所以拆开。 */
-  --c-primary: #3a63e8;
-  --c-primary-solid: #3a63e8;
-  --c-primary-solid-dark: #2b4ec9;
-  --c-primary-soft: rgba(58, 99, 232, 0.09);
-  --c-primary-ring: rgba(58, 99, 232, 0.24);
-  --c-accent: #7c5cff;
+  /* ---- 主色：靛蓝 ----
+     从亮蓝(#3a63e8)换成靛蓝。差别不在"好不好看"：亮蓝是浏览器默认链接色、
+     也是无数后台模板的默认色，大面积铺开后整站会显得像通用脚手架。
+     靛蓝偏紫一点、饱和度低一点，同一个页面上更"安静"，也更像有品牌的东西。
 
-  /* ---- 语义色 ---- */
-  --c-success: #0d9463;
-  --c-success-solid: #0d9463;
-  --c-success-soft: rgba(13, 148, 99, 0.11);
-  --c-warn: #b45309;
-  --c-warn-solid: #d97706;
-  --c-warn-soft: rgba(217, 119, 6, 0.12);
-  --c-danger: #d93b30;
-  --c-danger-solid: #d93b30;
-  --c-danger-soft: rgba(217, 59, 48, 0.10);
+     ⚠️ 分两个令牌是有意的，别合并：
+       --c-primary        给文字、图标、边框用。
+       --c-primary-solid  给按钮背景用 —— 它上面要压白字。
+     深色模式下这两个值必然分家：主色要**变亮**才看得清，而按钮底要**够深**
+     才压得住白字。实测深色 --c-primary(#9192ff) 当按钮底时白字只有 2.71:1，
+     远低于 4.5 —— 所以它只能当文字色，按钮底必须另给一个值。
+     （设计稿如果只给一个 primary 又要求它同时用于文字和按钮底，深色下一定翻车。） */
+  --c-primary: #5557c9;
+  --c-primary-solid: #5557c9;
+  --c-primary-solid-dark: #4547ae;
+  --c-primary-soft: rgba(85, 87, 201, 0.08);
+  --c-primary-ring: rgba(85, 87, 201, 0.26);
+
+  /* ---- 语义色 ----
+     ⚠️ 这一组值不是随便挑的，两条硬约束：
+     1. 它们会被当**文字**用（.badge--success、.text-danger、.stat--danger……），
+        压在白底、灰底、浅色底上都必须 ≥4.5:1。
+     2. 每个色还会以 10% 透明度铺成自己的浅底（徽标背景），那层浅底再叠在
+        **最深的那层灰面板**上 —— 这是最差的一种组合，也必须 ≥4.5:1。
+     按原来的值（success #0d9463 / danger #d93b30）第 2 条是过不去的：
+     success 只有 3.45:1、danger 4.06:1 —— 全是 12px 的小徽标在用。
+     现在这三个值在「自己浅底 + 最深灰面板」这种最差情况下分别是
+     4.65 / 4.66 / 4.52。改之前请重新算，别只对着白底算。 */
+  --c-success: #14704f;
+  --c-success-solid: #14704f;
+  --c-success-soft: rgba(20, 112, 79, 0.11);
+  --c-warn: #8e5305;
+  --c-warn-solid: #8e5305;
+  --c-warn-soft: rgba(142, 83, 5, 0.12);
+  --c-danger: #b23a46;
+  --c-danger-solid: #b23a46;
+  --c-danger-soft: rgba(178, 58, 70, 0.10);
 
   /* ---- 中性色 ----
-     刻意选偏中性的灰，不用冷蓝灰：大面积铺开时蓝灰会显脏。
-     底色比上一版再压深一点、文字再压黑一点 —— 目的是把
-     「卡片浮在背景上」的层次拉开，这是最省力也最明显的提升。 */
-  --c-bg: #f2f3f6;
+     底色偏中性偏冷一点点(#f5f7fa)，靠 1px 边框和极淡阴影把卡片托起来 ——
+     不再靠"把底色压深"来制造层次，那样整页会显得发闷。 */
+  --c-bg: #f5f7fa;
   --c-surface: #ffffff;
-  --c-surface-2: #fafbfc;
-  --c-surface-3: #f1f2f5;
-  --c-border: #e6e8ee;
-  --c-border-strong: #d2d6df;
-  --c-text: #0f1116;
-  --c-text-2: #565d68;
+  --c-surface-2: #fafbfd;
+  --c-surface-3: #eef2f7;
+  --c-border: #dfe5ee;
+  --c-border-strong: #c8d1de;
+  --c-text: #172033;
+  --c-text-2: #465268;
   /* 三级文字（日期、占位符、教室、底部导航标签……）。
-     原来是 #868d99，对白底只有 3.34:1 —— 低于普通文字要求的 4.5:1。
-     它偏偏又全用在**最小**的字上：手机底部导航 10.5px、课表里的教室 11px，
-     那几个位置在手机上本来就最难认。
-     现在这个值对白底 5.38:1、对最浅的那层灰底(--c-surface-3) 4.81:1，
-     两种情况都过线，而观感上仍然明显比正文浅（正文 ≈18:1、二级 ≈6.6:1）。
-     ⚠️ 改这个值之前请重新算一遍：**要按它能落到的「最深」的那层底色算**，
-        因为底色越深、差距越小、对比度越低。浅色模式下最深的是 --c-surface-3。 */
-  --c-text-3: #636b78;
+     ⚠️ 这个值必须按它**能落到的最深那层底色**算，不是按白底算。
+        浅色模式下最深的是 --c-surface-3，而且它还会被叠在语义色的浅底下面
+        （徽标 = 色 + 10% 透明，再叠在灰面板上）。
+     当前值 #5d6577 在最差组合下仍有 5.20:1，而观感上明显比正文浅
+     （正文 ≈14.5:1、二级 ≈7.0:1）。改之前请重算这一档。 */
+  --c-text-3: #5d6577;
 
   /* 叠加层（弹窗遮罩、图片角标） */
   --c-overlay: rgba(14, 17, 23, 0.48);
   --c-on-dark: #ffffff;
 
   /* ---- 圆角 ----
-     整体放松一档。上一版 10/14px 偏「紧凑工具」，
-     现在 14/20px 更接近「有质感的成品」。 */
-  --radius-xs: 6px;
-  --radius-sm: 10px;
-  --radius: 14px;
-  --radius-lg: 20px;
+     收一档回来。上一版最大到 28px，配上大阴影会有点"气泡感"；
+     现在卡片 16px、输入框和按钮 12px，再大的容器才用 22px。
+     圆角越小越"工具"、越大越"消费级"，这一档是两者中间。 */
+  --radius-xs: 8px;
+  --radius-sm: 12px;
+  --radius: 16px;
+  --radius-lg: 22px;
   --radius-xl: 28px;
   --radius-pill: 999px;
 
@@ -91,11 +113,11 @@
   --shadow-primary: 0 1px 2px rgba(43, 78, 201, 0.30), 0 6px 20px rgba(58, 99, 232, 0.30);
 
   /* ---- 尺寸 ----
-     侧边栏加宽、内容区收窄：一进一出，正文行长更舒服，也更像成品。 */
+     内容区放宽到 1280px：侧栏已经 264px，再窄的话桌面端两侧会空得发慌。 */
   --sidebar-w: 264px;
   --tabbar-h: 62px;
   --header-h: 58px;
-  --main-max: 1180px;
+  --main-max: 1280px;
 
   /* ---- 字体 ----
      系统字体栈：不引入网络字体，保证离线可用、首屏不闪。 */
@@ -106,13 +128,19 @@
     Consolas, 'Liberation Mono', monospace;
 
   /* ---- 动效 ----
-     两条缓动曲线分工明确：
-       --ease       通用，进出对称，适合颜色/边框这类小变化
-       --ease-out   起步快、收尾慢，适合位移和缩放（更有「物理感」） */
-  --ease: cubic-bezier(0.32, 0.72, 0, 1);
+     只用来"解释状态变化"，不用来做装饰。三档时长各有分工：
+       --fast    悬停、按下这类即时反馈，短到几乎感觉不到延迟
+       --normal  展开、切换、保存成功
+       --slow    弹窗进出这类幅度较大的位移
+     缓动统一成一条：起步快、收尾慢，看起来有"重量"。
+     ⚠️ 全局的 prefers-reduced-motion 兜底在下面「3 · 基础」那一段。 */
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
-  --transition: 160ms var(--ease);
-  --transition-slow: 280ms var(--ease-out);
+  --fast: 120ms;
+  --normal: 180ms;
+  --slow: 240ms;
+  --transition: var(--normal) var(--ease);
+  --transition-slow: var(--slow) var(--ease);
 }
 
 /* ==========================================================================
@@ -124,36 +152,33 @@
   :root:not([data-theme='light']) {
     color-scheme: dark;
 
-    --c-primary: #7a9bff;
-    --c-primary-solid: #3f63e0;
-    --c-primary-solid-dark: #5175ee;
-    --c-primary-soft: rgba(122, 155, 255, 0.14);
-    --c-primary-ring: rgba(122, 155, 255, 0.30);
+    --c-primary: #9192ff;
+    --c-primary-solid: #5153c9;
+    --c-primary-solid-dark: #6062d8;
+    --c-primary-soft: rgba(145, 146, 255, 0.14);
+    --c-primary-ring: rgba(145, 146, 255, 0.32);
 
-    --c-success: #35c98d;
-    --c-success-solid: #12a06c;
-    --c-success-soft: rgba(53, 201, 141, 0.14);
-    --c-warn: #f0ac48;
-    --c-warn-solid: #c47a10;
-    --c-warn-soft: rgba(240, 172, 72, 0.14);
-    --c-danger: #ff7a70;
-    --c-danger-solid: #d9433a;
-    --c-danger-soft: rgba(255, 122, 112, 0.14);
+    --c-success: #4bc798;
+    --c-success-solid: #1d7f5c;
+    --c-success-soft: rgba(75, 199, 152, 0.14);
+    --c-warn: #e0a34a;
+    --c-warn-solid: #8a5a12;
+    --c-warn-soft: rgba(224, 163, 74, 0.14);
+    --c-danger: #f07983;
+    --c-danger-solid: #a83b44;
+    --c-danger-soft: rgba(240, 121, 131, 0.14);
 
-    --c-bg: #0b0d11;
-    --c-surface: #14161b;
-    --c-surface-2: #1a1c22;
-    --c-surface-3: #23262d;
-    --c-border: #262931;
-    --c-border-strong: #3a3f49;
-    --c-text: #f0f2f6;
-    --c-text-2: #a2a9b5;
-    /* 深色模式下同样是「越小越难认」的那些字在用三级色。
-       原来的 #767d8a 在浅色面板(--c-surface)上 4.37:1，已经不够；
-       在更亮一点的 --c-surface-3 上只有 3.66:1。
-       现在这个值最差的一种组合（落在最亮的 surface-3 上）是 4.84:1。
-       ⚠️ 深色模式要按**最亮**的那层底色算，因为底色越亮、差距越小。 */
-    --c-text-3: #8b92a0;
+    --c-bg: #0e1219;
+    --c-surface: #151b25;
+    --c-surface-2: #1a2230;
+    --c-surface-3: #1c2431;
+    --c-border: #293343;
+    --c-border-strong: #3a4659;
+    --c-text: #f3f6fa;
+    --c-text-2: #bbc4d2;
+    /* 深色模式下这一档要按**最亮**的那层底色算（底色越亮、差距越小）。
+       最差组合（落在最亮的 --c-surface-3 上）是 5.75:1。 */
+    --c-text-3: #929eb0;
 
     --c-overlay: rgba(0, 0, 0, 0.66);
 
@@ -168,31 +193,31 @@
 :root[data-theme='dark'] {
   color-scheme: dark;
 
-  --c-primary: #7a9bff;
-  --c-primary-solid: #3f63e0;
-  --c-primary-solid-dark: #5175ee;
-  --c-primary-soft: rgba(122, 155, 255, 0.14);
-  --c-primary-ring: rgba(122, 155, 255, 0.30);
+  --c-primary: #9192ff;
+  --c-primary-solid: #5153c9;
+  --c-primary-solid-dark: #6062d8;
+  --c-primary-soft: rgba(145, 146, 255, 0.14);
+  --c-primary-ring: rgba(145, 146, 255, 0.32);
 
-  --c-success: #35c98d;
-  --c-success-solid: #12a06c;
-  --c-success-soft: rgba(53, 201, 141, 0.14);
-  --c-warn: #f0ac48;
-  --c-warn-solid: #c47a10;
-  --c-warn-soft: rgba(240, 172, 72, 0.14);
-  --c-danger: #ff7a70;
-  --c-danger-solid: #d9433a;
-  --c-danger-soft: rgba(255, 122, 112, 0.14);
+  --c-success: #4bc798;
+  --c-success-solid: #1d7f5c;
+  --c-success-soft: rgba(75, 199, 152, 0.14);
+  --c-warn: #e0a34a;
+  --c-warn-solid: #8a5a12;
+  --c-warn-soft: rgba(224, 163, 74, 0.14);
+  --c-danger: #f07983;
+  --c-danger-solid: #a83b44;
+  --c-danger-soft: rgba(240, 121, 131, 0.14);
 
-  --c-bg: #0b0d11;
-  --c-surface: #14161b;
-  --c-surface-2: #1a1c22;
-  --c-surface-3: #23262d;
-  --c-border: #262931;
-  --c-border-strong: #3a3f49;
-  --c-text: #f0f2f6;
-  --c-text-2: #a2a9b5;
-  --c-text-3: #8b92a0;
+  --c-bg: #0e1219;
+  --c-surface: #151b25;
+  --c-surface-2: #1a2230;
+  --c-surface-3: #1c2431;
+  --c-border: #293343;
+  --c-border-strong: #3a4659;
+  --c-text: #f3f6fa;
+  --c-text-2: #bbc4d2;
+  --c-text-3: #929eb0;
 
   --c-overlay: rgba(0, 0, 0, 0.66);
 
@@ -230,12 +255,16 @@ body {
   font-size: 15px;
   line-height: 1.7;
   color: var(--c-text);
-  /* 底色不再是死平的一块：极淡的两道径向光晕，
-     让页面有「空间」而不是「一张纸」。几乎察觉不到，但拿掉会觉得闷。 */
+  /* 底色不再是死平的一块：极淡的一道径向光晕，让页面有「空间」而不是
+     「一张纸」。几乎察觉不到，但拿掉会觉得闷。
+     ⚠️ 以前这里是**两道**光晕（主色 + 一个紫色 --c-accent）。
+        紫色已经从令牌里删掉了：全站只留一个品牌色，两种色相的背景渐变
+        加上各处「蓝→紫」的按钮渐变，会让整站看起来像通用后台模板。
+        现在背景只有一种色相，靠明度差制造纵深。 */
   background-color: var(--c-bg);
   background-image:
-    radial-gradient(1100px 520px at 12% -8%, color-mix(in srgb, var(--c-primary) 7%, transparent), transparent 70%),
-    radial-gradient(900px 460px at 96% 4%, color-mix(in srgb, var(--c-accent) 5%, transparent), transparent 72%);
+    radial-gradient(1100px 520px at 12% -8%,
+      color-mix(in srgb, var(--c-primary) 6%, transparent), transparent 70%);
   background-attachment: fixed;
   background-repeat: no-repeat;
   -webkit-font-smoothing: antialiased;
@@ -302,15 +331,34 @@ hr { border: 0; border-top: 1px solid var(--c-border); margin: 18px 0; }
   color: var(--c-text);
 }
 
-/* 焦点环：只在键盘导航时出现，且带一点柔光，不破坏布局 */
+/* 焦点环：只在键盘导航时出现，2px 实心主色 + 2px 偏移，不破坏布局。
+   主色对任何底色都 ≥5.2:1，远超「非文字对比度 3:1」的要求。 */
 :focus-visible {
   outline: 2px solid var(--c-primary);
   outline-offset: 2px;
   border-radius: var(--radius-xs);
 }
 
+/* ---- 减少动态效果：全局兜底 ----
+   ⚠️ 这一条是**兜底**，不是唯一一条。文件里原先有三处零散的
+   prefers-reduced-motion（滚动、幻灯片、预览弹窗），各管一小块；
+   但新加的动效很容易漏掉自己的那一块。所以这里再放一条全局的：
+   把所有动画和过渡压到近乎瞬时，并且只播一次。
+
+   为什么用 !important：组件里的 transition/animation 是写在各自规则里的，
+   优先级比这条高，不加 !important 就盖不住 —— 那就等于没写。
+   这和上面 [hidden] 是同一个套路：这种"兜底"性质的规则必须赢过组件。
+
+   注意保留 0.01ms 而不是 0：完全设成 0 会让一些依赖 transitionend
+   的代码永远收不到事件（0 时长的过渡在部分浏览器里不触发）。 */
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 .skip-link {
@@ -442,13 +490,13 @@ hr { border: 0; border-top: 1px solid var(--c-border); margin: 18px 0; }
   display: grid; place-items: center;
   width: 38px; height: 38px;
   border-radius: 12px;
-  background: linear-gradient(140deg, var(--c-primary) 0%, var(--c-accent) 100%);
+  background: var(--c-primary-solid);
   color: #fff;
   flex: 0 0 auto;
-  /* 内高光 + 彩色投影，让这个方块有体积感 */
+  /* 内高光 + 同色投影，让这个方块有体积感（不再用彩色渐变） */
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.28),
-    0 4px 14px color-mix(in srgb, var(--c-primary) 38%, transparent);
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    0 4px 14px color-mix(in srgb, var(--c-primary-solid) 34%, transparent);
 }
 .brand__text { letter-spacing: -0.01em; }
 
@@ -516,7 +564,7 @@ hr { border: 0; border-top: 1px solid var(--c-border); margin: 18px 0; }
   display: grid; place-items: center;
   width: 26px; height: 26px;
   border-radius: 50%;
-  background: linear-gradient(140deg, var(--c-primary) 0%, var(--c-accent) 100%);
+  background: var(--c-primary-solid);
   color: #fff;
   font-size: 12.5px; font-weight: 640;
   flex: 0 0 auto;
@@ -557,11 +605,19 @@ hr { border: 0; border-top: 1px solid var(--c-border); margin: 18px 0; }
 }
 .theme-toggle:hover { background: var(--c-surface-3); color: var(--c-text); }
 
+/* ⚠️ margin-inline: auto 不能省。
+   骨架是「侧栏 + 主区」两列网格，主区宽度 = 视口 − 264px。
+   只写 max-width 的话，内容会**紧贴侧栏**、右边剩一大片死白
+   （1920px 屏上大约 380px），看起来像页面没做完。
+   加上自动外边距，内容在大屏上居中，两侧留白基本对称。
+   .app-shell--wide（课表那类需要铺满的页面）max-width 是 none，
+   整块自适应，这条对它没有影响。 */
 .main {
   padding: 40px 44px 96px;
   max-width: var(--main-max);
   width: 100%;
   min-width: 0;
+  margin-inline: auto;
 }
 .app-shell--wide .main { max-width: none; }
 
@@ -675,7 +731,8 @@ a.stat:hover {
 .stat__value--text { font-size: 18px; font-weight: 640; letter-spacing: -0.018em; }
 .stat__hint { font-size: 12.5px; color: var(--c-text-3); }
 
-/* 用「左侧渐隐色条」代替原来的实心 3px 边框：有颜色提示但不割裂 */
+/* 用「左侧色条」代替原来的实心 3px 边框：有颜色提示但不割裂。
+   色条是纯色，不是渐变 —— 3px 宽的地方做渐变只会显脏。 */
 .stat::before {
   content: '';
   position: absolute;
@@ -683,9 +740,9 @@ a.stat:hover {
   width: 3px;
   background: var(--stat-accent, transparent);
 }
-.stat--primary { --stat-accent: linear-gradient(180deg, var(--c-primary), var(--c-accent)); }
-.stat--warn { --stat-accent: linear-gradient(180deg, var(--c-warn), color-mix(in srgb, var(--c-warn) 40%, transparent)); }
-.stat--danger { --stat-accent: linear-gradient(180deg, var(--c-danger), color-mix(in srgb, var(--c-danger) 40%, transparent)); }
+.stat--primary { --stat-accent: var(--c-primary); }
+.stat--warn { --stat-accent: var(--c-warn); }
+.stat--danger { --stat-accent: var(--c-danger); }
 .stat--danger .stat__value { color: var(--c-danger); }
 .stat--warn .stat__value { color: var(--c-warn); }
 
@@ -845,11 +902,17 @@ a.stat:hover {
   box-shadow: inset 0 1px 2px rgba(16, 19, 26, 0.03);
 }
 .input:hover:not(:focus) { border-color: var(--c-text-3); }
+/* ⚠️ 这里必须自己去掉 outline，然后**补一个等价的可见环**。
+   以前是 outline: none + 半透明柔光(box-shadow 0 0 0 3.5px --c-primary-ring)：
+   那层柔光对底色只有 1.46:1，远低于「非文字对比度 3:1」，等于把键盘焦点
+   指示器换成了一个几乎看不见的东西 —— 全靠 border-color 变主色勉强撑着。
+   现在改成两层：贴边 1px 实心主色（和 1px 边框合起来正好是 2px 主色环，
+   5.84:1），外面再留一层柔光做视觉缓冲。 */
 .input:focus {
   outline: none;
   border-color: var(--c-primary);
   background: var(--c-surface);
-  box-shadow: 0 0 0 3.5px var(--c-primary-ring);
+  box-shadow: 0 0 0 1px var(--c-primary), 0 0 0 4px var(--c-primary-ring);
 }
 .input::placeholder { color: var(--c-text-3); }
 .input--area { resize: vertical; min-height: 78px; line-height: 1.65; }
@@ -924,7 +987,8 @@ select.input { cursor: pointer; }
 .search__input:hover:not(:focus) { border-color: var(--c-text-3); }
 .search__input:focus {
   outline: none; border-color: var(--c-primary);
-  box-shadow: 0 0 0 3.5px var(--c-primary-ring);
+  /* 和 .input:focus 同一套两层环：贴边实心 + 外层柔光 */
+  box-shadow: 0 0 0 1px var(--c-primary), 0 0 0 4px var(--c-primary-ring);
 }
 .search__input::placeholder { color: var(--c-text-3); }
 
@@ -1061,7 +1125,7 @@ select.input { cursor: pointer; }
 .progress--sm { height: 5px; }
 .progress__bar {
   height: 100%;
-  background: linear-gradient(90deg, var(--c-primary-solid), var(--c-accent));
+  background: var(--c-primary-solid);
   border-radius: var(--radius-pill);
   transition: width 420ms var(--ease-out);
 }
@@ -1647,8 +1711,8 @@ select.input { cursor: pointer; }
   border-radius: var(--radius-lg);
   margin-bottom: 22px;
   overflow: hidden;
-  /* 深一点的渐变 + 内高光，比纯色块更有质感 */
-  background: linear-gradient(120deg, var(--c-primary-solid) 0%, var(--c-accent) 115%);
+  /* 实心主色 + 内高光，比"彩色渐变块"更安静，也更像成品 */
+  background: var(--c-primary-solid);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.18),
     0 6px 24px color-mix(in srgb, var(--c-primary-solid) 30%, transparent);
@@ -2333,7 +2397,7 @@ select.input { cursor: pointer; }
   left: 0; top: 10px;
   width: 23px; height: 23px;
   display: flex; align-items: center; justify-content: center;
-  background: linear-gradient(140deg, var(--c-primary-solid), var(--c-accent));
+  background: var(--c-primary-solid);
   color: #fff;
   border-radius: 50%;
   font-size: 11.5px;
@@ -2642,7 +2706,7 @@ select.input { cursor: pointer; }
   display: grid; place-items: center;
   width: 46px; height: 46px;
   border-radius: 14px;
-  background: linear-gradient(140deg, var(--c-primary-soft), color-mix(in srgb, var(--c-accent) 12%, transparent));
+  background: var(--c-primary-soft);
   color: var(--c-primary);
   flex: 0 0 auto;
   box-shadow: inset 0 1px 0 color-mix(in srgb, var(--c-surface) 60%, transparent);
@@ -2687,8 +2751,6 @@ select.input { cursor: pointer; }
   background:
     radial-gradient(ellipse 70% 55% at 50% -10%,
       color-mix(in srgb, var(--c-primary) 14%, transparent), transparent 70%),
-    radial-gradient(ellipse 50% 40% at 85% 100%,
-      color-mix(in srgb, var(--c-accent) 10%, transparent), transparent 70%),
     var(--c-bg);
 }
 .auth-card {
@@ -2996,10 +3058,21 @@ select.input { cursor: pointer; }
     position: fixed; bottom: 0; left: 0; right: 0;
     height: calc(var(--tabbar-h) + env(safe-area-inset-bottom));
     padding-bottom: env(safe-area-inset-bottom);
-    background: color-mix(in srgb, var(--c-surface) 88%, transparent);
-    backdrop-filter: blur(16px) saturate(1.6);
+    /* ⚠️ 先给**不透明**的底色，再用 @supports 换成半透明 + 毛玻璃。
+       顺序不能反：color-mix() 和 backdrop-filter 都比较新，
+       老浏览器遇到不认识的声明会**整条丢掉**，于是底栏变成全透明，
+       内容直接从它下面穿过去 —— 文字和按钮会糊成一片。
+       先写实色就等于自带回退：认识新语法的浏览器会覆盖它，
+       不认识的至少还有一块实心底板。 */
+    background: var(--c-surface);
     border-top: 1px solid var(--c-border);
     z-index: 50;
+  }
+  @supports (backdrop-filter: blur(1px)) and (background: color-mix(in srgb, red 50%, transparent)) {
+    .tabbar {
+      background: color-mix(in srgb, var(--c-surface) 88%, transparent);
+      backdrop-filter: blur(16px) saturate(1.6);
+    }
   }
   .tabbar .nav__item {
     flex-direction: column; justify-content: center; gap: 2px;

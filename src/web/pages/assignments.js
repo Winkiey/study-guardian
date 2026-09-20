@@ -68,9 +68,12 @@ ${pageHeader({
 
 <div class="toolbar">
   <div class="filter-tabs">
-    <a class="filter-tab${!filters.status ? ' is-active' : ''}" href="/assignments${filters.courseId ? `?courseId=${filters.courseId}` : ''}">待办</a>
-    <a class="filter-tab${filters.status === 'done' ? ' is-active' : ''}" href="/assignments?status=done">已完成</a>
-    <a class="filter-tab${filters.status === 'all' ? ' is-active' : ''}" href="/assignments?status=all">全部</a>
+    ${/* aria-current 和 is-active 一起给：
+         is-active 只管「看起来像选中」，读屏不知道哪个是当前项。
+         两者必须同源，否则会出现「看起来选中了、读屏说没选中」。 */ ''}
+    <a class="filter-tab${!filters.status ? ' is-active' : ''}"${!filters.status ? ' aria-current="page"' : ''} href="/assignments${filters.courseId ? `?courseId=${filters.courseId}` : ''}">待办</a>
+    <a class="filter-tab${filters.status === 'done' ? ' is-active' : ''}"${filters.status === 'done' ? ' aria-current="page"' : ''} href="/assignments?status=done">已完成</a>
+    <a class="filter-tab${filters.status === 'all' ? ' is-active' : ''}"${filters.status === 'all' ? ' aria-current="page"' : ''} href="/assignments?status=all">全部</a>
   </div>
   ${courses.length ? `
   <form class="inline-form" method="get" action="/assignments">
