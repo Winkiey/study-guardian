@@ -889,6 +889,33 @@ a.stat:hover {
 .field__help strong { color: var(--c-text-2); font-weight: 620; }
 .field__inline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
+/* ---- 字段级错误 ----
+   为什么要有它：以前表单填错了只有两条路 —— 浏览器自带的气泡（样式不可控、
+   点到别处就没了），或者页面右上角一个 toast。toast 的问题是**不说是哪个框**：
+   一个表单七八个字段，用户得自己一个个猜。这里的做法是把错误挂在
+   出错的那个字段正下方，同时给 input 打上 aria-invalid ——
+   读屏用户读到那个输入框时也会听到「无效」。
+
+   颜色用 --c-danger：它压在 --c-surface 和 --c-surface-3 上都要 ≥4.5:1
+   （见 tests/design-tokens.test.js 里那条状态色断言）。 */
+.field__error {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--c-danger);
+  margin: 0;
+}
+.field__error svg { flex: 0 0 auto; margin-top: 2px; }
+/* 有错误时边框和焦点环都换成危险色，让「是这一个」一眼可见。
+   ⚠️ 不靠颜色单独表达：文案 + 图标已经在上面了，颜色只是加速定位。 */
+.input[aria-invalid='true'] { border-color: var(--c-danger); }
+.input[aria-invalid='true']:focus {
+  border-color: var(--c-danger);
+  box-shadow: 0 0 0 1px var(--c-danger), 0 0 0 4px var(--c-danger-soft);
+}
+
 .input {
   width: 100%;
   padding: 11px 14px;

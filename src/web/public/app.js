@@ -1131,10 +1131,16 @@ function initAssignments() {
           await api('/api/assignments', { method: 'POST', body: payload });
           toast('作业已创建，提醒已排好', 'success');
         }
+        clearFieldErrors(form);
         closeModal();
         reloadPreservingScroll();
       } catch (err) {
-        toast(err.message, 'error');
+        // ⚠️ 服务端说「这个字段不对」时，要挂到那个字段上，不能只弹 toast。
+        // 这里做一层归属：能对上就把错误放在对应输入框下面，
+        // 实在对不上（比如「服务器内部错误」）才退回 toast —— 那种错误
+        // 本来就没有一个"该怪哪个框"的答案。
+        const placed = placeServerError(form, err.message);
+        if (!placed) toast(err.message, 'error');
         submitBtn.disabled = false;
         submitBtn.classList.remove('is-loading');
       }
@@ -1340,13 +1346,21 @@ function initCourses() {
       const credits = parseAmountInput(raw.credits, { max: 30 });
       const hours = parseAmountInput(raw.hours, { max: 2000 });
 
-      const problems = [
-        credits.error ? `学分${credits.error}` : '',
-        hours.error ? `学时${hours.error}` : '',
-      ].filter(Boolean);
-
-      if (problems.length) {
-        toast(`${problems.join('；')}。请只填数字，例如 3 或 3.5。`, 'error', 8000);
+      // 两个字段各自报各自的错 —— 以前是拼成一句话弹 toast，
+      // 用户看到「学分学时格式不对」还得自己找是哪一格。
+      let firstBad = null;
+      for (const [field, result] of [['credits', credits], ['hours', hours]]) {
+        const input = form.querySelector(`[name=${field}]`);
+        if (!input) continue;
+        if (result.error) {
+          setFieldError(input, `请只填数字，例如 3 或 3.5（当前${result.error}）`);
+          if (!firstBad) firstBad = input;
+        } else {
+          clearFieldError(input);
+        }
+      }
+      if (firstBad) {
+        focusFirstInvalid(firstBad);
         return;
       }
 
@@ -1384,7 +1398,8 @@ function initCourses() {
         closeModal();
         reloadPreservingScroll();
       } catch (err) {
-        toast(err.message, 'error');
+        // 「课程名不能为空」「学分超出范围」这类都能对上具体字段
+        if (!placeServerError(form, err.message)) toast(err.message, 'error');
         btn.disabled = false;
       }
     });
@@ -2394,6 +2409,7 @@ function initSettings() {
   initChannelForms();
   initSettingsForm();
   initPasswordForm();
+  initFieldErrors();
   initRevokeButtons();
   initDeleteAccount();
   initSchedulerButton();
@@ -2754,11 +2770,13 @@ function initTermForms() {
       }
       if (picked.getDay() !== 1) {
         const suggested = toDateInputValue(mondayOf(picked));
-        toast(
-          `「第一周周一」必须选星期一。你选的 ${startDate} 是星期${'日一二三四五六'[picked.getDay()]}，同一周的周一是 ${suggested}。`,
-          'error',
-          8000,
-        );
+        // 这条错误完全针对「开始日期」那一个框，挂在框下面比飘在右上角好得多：
+        // 用户看到提示的同时就看得见要改的那个日期，不用来回找。
+        const dateInput = form.querySelector('[name=startDate]');
+        setFieldError(dateInput,
+          `「第一周周一」要选星期一。你选的 ${startDate} 是星期${'日一二三四五六'[picked.getDay()]}，`
+          + `同一周的周一是 ${suggested}。`);
+        focusFirstInvalid(dateInput);
         return;
       }
 
@@ -2791,7 +2809,8 @@ function initTermForms() {
         closeModal();
         reloadPreservingScroll();
       } catch (err) {
-        toast(err.message, 'error');
+        // 学期名的重名、周数超范围这类错误都能对上具体字段
+        if (!placeServerError(form, err.message)) toast(err.message, 'error');
         btn.disabled = false;
       }
     });
@@ -3168,6 +3187,236 @@ function initSettingsForm() {
   });
 }
 
+// ============================================================
+// 字段级错误
+//
+// 以前表单填错了只有两条路：浏览器自带的气泡（样式不可控、点到别处就没了），
+// 或者页面右上角一个 toast。toast 的问题是**不说是哪个框** ——
+// 一个表单七八个字段，用户得自己一个个猜是哪里不对。
+//
+// 这里的做法：错误挂在出错的那个字段正下方，同时给 input 打上
+// aria-invalid（读屏会念「无效」）和 aria-describedby（读屏会念出错误内容）。
+// ============================================================
+
+/**
+ * 判断一个输入框为什么不合法，返回中文原因；没问题就返回空串。
+ *
+ * 刻意写成**纯函数**（只读传进来的对象，不碰 DOM、不写任何东西）：
+ * 这样测试能拿一个假对象直接跑，而不是只 grep 源码里有没有某个字符串。
+ * grep 那种写法挡不住「往函数开头插一句 return ''」—— 字符串都还在，断言照样绿。
+ *
+ * @param {object} input 形如 HTMLInputElement（只用 getAttribute / value / minLength）
+ * @param {string} label 这个字段叫什么（用于组装人话）
+ */
+function invalidReason(input, label = '这一项') {
+  const raw = String(input.value ?? '');
+  const value = raw.trim();
+  const attr = (n) => input.getAttribute(n);
+
+  // 必填：空着才报。不能因为「只有一个空格」就放过，所以先 trim。
+  if (attr('required') !== null && value === '') return `请填写${label}`;
+
+  // 没填又非必填的，后面都不该报错（不能对着一个空框喊「格式不对」）
+  if (value === '') return '';
+
+  const type = String(input.type || attr('type') || '').toLowerCase();
+
+  if (type === 'number') {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return `${label}要填数字`;
+    const min = attr('min');
+    const max = attr('max');
+    if (min !== null && num < Number(min)) return `${label}不能小于 ${min}`;
+    if (max !== null && num > Number(max)) return `${label}不能大于 ${max}`;
+  }
+
+  // minlength：值和属性都按「字符数」算，中文一个字算一个 ——
+  // 和 HTML 的 minlength 语义一致（它数的就是 UTF-16 码元，中文一字一个）
+  const minLen = attr('minlength');
+  if (minLen !== null && value.length < Number(minLen)) {
+    return `${label}至少 ${minLen} 位`;
+  }
+
+  const pattern = attr('pattern');
+  if (pattern) {
+    try {
+      if (!new RegExp(`^(?:${pattern})$`).test(value)) return `${label}格式不对`;
+    } catch {
+      /* 属性里的正则写错了不该让整个表单报错 */
+    }
+  }
+
+  return '';
+}
+
+/** 找到字段的显示名：优先 aria-label，其次这个 .field 里的 label 文字 */
+function labelOf(input) {
+  const aria = input.getAttribute('aria-label');
+  if (aria) return aria;
+  const field = input.closest('.field') || input.parentElement;
+  const label = field?.querySelector('label');
+  return label ? label.textContent.replace(/\*/g, '').trim() : '这一项';
+}
+
+/**
+ * 把一条错误挂到某个字段下方。
+ *
+ * 元素懒创建、可以重复调用（第二次只换文字），所以调用方不用管顺序。
+ * 错误文字用 createTextNode 塞进去、不用 innerHTML ——
+ * 里面可能夹着用户输入（比如课程名），拼字符串早晚会漏一个转义。
+ */
+function setFieldError(input, message) {
+  if (!input || !message) return;
+  const field = input.closest('.field') || input.parentElement;
+  if (!field) return;
+
+  let box = field.querySelector('.field__error');
+  if (!box) {
+    box = document.createElement('p');
+    box.className = 'field__error';
+    box.id = `fe_${Math.random().toString(36).slice(2, 9)}`;
+    // 图标来自服务端注入的可信路径表；文案走 textContent，两者分开更安全
+    box.innerHTML = icon('alert', 13);
+    field.appendChild(box);
+  }
+  // 只留图标那一个子节点，其余重建（重复调用时不会越堆越多）
+  while (box.childNodes.length > 1) box.removeChild(box.lastChild);
+  box.appendChild(document.createTextNode(message));
+
+  input.setAttribute('aria-invalid', 'true');
+  // 合并而不是覆盖：字段本身可能已经有一个 aria-describedby（比如密码规则说明）
+  const described = new Set((input.getAttribute('aria-describedby') || '').split(/\s+/).filter(Boolean));
+  described.add(box.id);
+  input.setAttribute('aria-describedby', [...described].join(' '));
+}
+
+/** 清掉一个字段的错误 */
+function clearFieldError(input) {
+  if (!input) return;
+  const field = input.closest('.field') || input.parentElement;
+  const box = field?.querySelector('.field__error');
+  if (box) box.remove();
+  input.removeAttribute('aria-invalid');
+  // 只摘掉自己加的那个 id，别把字段原有的说明一起摘了
+  const rest = (input.getAttribute('aria-describedby') || '')
+    .split(/\s+/).filter((id) => id && !id.startsWith('fe_'));
+  if (rest.length) input.setAttribute('aria-describedby', rest.join(' '));
+  else input.removeAttribute('aria-describedby');
+}
+
+/** 清掉一个容器里的所有字段错误（提交成功后调用） */
+function clearFieldErrors(scope = document) {
+  for (const box of scope.querySelectorAll('.field__error')) box.remove();
+  for (const input of scope.querySelectorAll('[aria-invalid]')) {
+    input.removeAttribute('aria-invalid');
+    const rest = (input.getAttribute('aria-describedby') || '')
+      .split(/\s+/).filter((id) => id && !id.startsWith('fe_'));
+    if (rest.length) input.setAttribute('aria-describedby', rest.join(' '));
+    else input.removeAttribute('aria-describedby');
+  }
+}
+
+/**
+ * 校验一个容器里所有该校验的字段，把错误挂上去。
+ * @returns {HTMLElement|null} 第一个出错的输入框（方便聚焦滚动过去）
+ */
+function validateFields(scope) {
+  const inputs = scope.querySelectorAll('input[required], input[minlength], input[min], input[max], input[pattern], select[required], textarea[required]');
+  let first = null;
+  for (const input of inputs) {
+    const reason = invalidReason(input, labelOf(input));
+    if (reason) {
+      setFieldError(input, reason);
+      if (!first) first = input;
+    } else {
+      clearFieldError(input);
+    }
+  }
+  return first;
+}
+
+/** 聚焦到第一个出错的字段（顺手把它滚进视野，手机上调出键盘后不至于看不见） */
+function focusFirstInvalid(input) {
+  if (!input) return false;
+  input.focus({ preventScroll: true });
+  if (typeof input.scrollIntoView === 'function') {
+    input.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
+  return true;
+}
+
+/** 用户一开始改某个字段，就把它的错误去掉 —— 不用等再次提交 */
+function initFieldErrors() {
+  const clearOne = (e) => {
+    const input = e.target.closest?.('input, select, textarea');
+    if (input && input.getAttribute('aria-invalid') === 'true') clearFieldError(input);
+  };
+  // 用捕获阶段：有些组件的 input 事件会在冒泡路上被 stopPropagation 吃掉
+  document.addEventListener('input', clearOne, true);
+  document.addEventListener('change', clearOne, true);
+}
+
+/**
+ * 「服务端这句话是在说哪个字段」的对照表。
+ *
+ * ⚠️ 关键词要写得**具体**。写宽了会指错字段，而指错比不指更糟 ——
+ * 用户会盯着一个没问题的框改半天。比如「课程」就不能单独作为关键词：
+ * 「截止时间不能早于课程开始」这句话里也有「课程」。
+ */
+const SERVER_ERROR_FIELDS = [
+  ['title', [/标题/]],
+  ['dueAt', [/截止时间/, /截止/]],
+  ['courseId', [/所属课程/, /课程不存在/, /课程不是你/]],
+  ['name', [/课程名/, /学期名/, /名称/]],
+  ['credits', [/学分/]],
+  ['hours', [/学时/]],
+  ['key', [/Key/i, /推送令牌/, /设备令牌/]],
+  ['server', [/服务器地址/]],
+  ['currentPassword', [/当前密码/]],
+  ['newPassword', [/新密码/]],
+  ['startDate', [/开始日期/]],
+  ['weekCount', [/周数/, /周次/]],
+  ['text', [/表格内容/, /粘贴/]],
+];
+
+/**
+ * 判断一条服务端错误该挂到哪个字段上。**纯函数**（好测）。
+ *
+ * 只在**恰好一个**规则命中、而且那个字段确实在这个表单里时才认。
+ * 命中多个说明这句话同时提到了好几个字段（比如「学分的格式和学时一样」），
+ * 那就没有唯一答案 —— 交给调用方退回 toast，别硬指一个。
+ *
+ * @param {string} message 服务端返回的错误文案
+ * @param {string[]} availableNames 这个表单里实际存在的字段名
+ * @returns {string|null}
+ */
+function pickErrorField(message, availableNames) {
+  const text = String(message || '');
+  if (!text) return null;
+
+  const hits = new Set();
+  for (const [field, patterns] of SERVER_ERROR_FIELDS) {
+    if (!availableNames.includes(field)) continue;
+    if (patterns.some((re) => re.test(text))) hits.add(field);
+  }
+  return hits.size === 1 ? [...hits][0] : null;
+}
+
+/**
+ * 把服务端错误挂到具体字段上。
+ * @returns {boolean} 挂上了没有；false 表示调用方该退回 toast
+ */
+function placeServerError(form, message) {
+  const names = [...form.querySelectorAll('[name]')].map((el) => el.name);
+  const field = pickErrorField(message, names);
+  if (!field) return false;
+  const input = form.querySelector(`[name="${field}"]`);
+  if (!input) return false;
+  setFieldError(input, message);
+  focusFirstInvalid(input);
+  return true;
+}
+
 function initPasswordForm() {
   const form = document.querySelector('[data-password-form]');
   if (!form) return;
@@ -3175,9 +3424,16 @@ function initPasswordForm() {
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const raw = formToObject(form);
+    clearFieldErrors(form);
 
+    // 这两条以前是 toast。改成挂在字段下面：
+    // 「两次不一致」这种错，用户需要**同时看到那两个框**才好改，
+    // 一个 3.6 秒就消失的浮动提示帮不上忙。
     if (raw.newPassword !== raw.confirmPassword) {
-      toast('两次输入的新密码不一致', 'error');
+      const confirm = form.querySelector('[name=confirmPassword]');
+      setFieldError(confirm, '两次输入的新密码不一样');
+      confirm.select?.();
+      focusFirstInvalid(confirm);
       return;
     }
     // 长度下限**从输入框自己身上读**（服务端渲染的 minlength），不要在客户端再写一个数字：
@@ -3187,7 +3443,8 @@ function initPasswordForm() {
     const pwInput = form.querySelector('[name=newPassword]');
     const minLen = Number(pwInput?.minLength) || 8;
     if (String(raw.newPassword).length < minLen) {
-      toast(`新密码至少 ${minLen} 位`, 'error');
+      setFieldError(pwInput, `新密码至少 ${minLen} 位`);
+      focusFirstInvalid(pwInput);
       return;
     }
 
@@ -3202,9 +3459,11 @@ function initPasswordForm() {
       // 不说明的话，用户过几天发现手机日历不更新了，会以为是自己弄坏的。
       toast('密码已修改。其他设备已退出登录，日历订阅链接也已作废（需要在设置里重新复制一条）',
         'success', 8000);
+      clearFieldErrors(form);
       form.reset();
     } catch (err) {
-      toast(err.message, 'error');
+      // 「当前密码不正确」这类错误就该显示在「当前密码」那个框下面
+      if (!placeServerError(form, err.message)) toast(err.message, 'error');
     } finally {
       btn.disabled = false;
     }
