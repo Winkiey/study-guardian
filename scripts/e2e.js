@@ -2053,6 +2053,68 @@ async function run() {
       emptyRes.status === 200 && /没有收到文件或表格内容/.test(emptyRes.text),
       `状态码 ${emptyRes.status}`);
 
+    // ---- 解析不出课程时，不能把用户粘的东西弄丢 ----
+    //
+    // 这里原本按审计的说法去测「catch 分支」，结果发现那条路基本走不到：
+    // 两个解析器都**不抛异常**，看不懂的内容只是记一条 warning 然后返回空结果。
+    // 真正会发生的是「0 门课程」那条 —— 而它原来会渲染一个
+    // 「解析成功，识别出 0 门课程」的预览页：既没指出哪里不对，
+    // 也没有回上一步的入口，用户只能重新打开 /import，粘的东西已经没了。
+    const PASTE_MARKER = '高等数学(上),张三,5,星期一,08:00-09:40,1-16,之远楼301';
+    const unreadableCsv = `甲,乙,丙\n${PASTE_MARKER}`;
+    const badCsv = multipart({ termId: '', onConflict: 'skip', text: unreadableCsv }, null);
+    const pasteFail = await req('POST', '/import', {
+      body: badCsv.body, headers: { 'Content-Type': badCsv.contentType },
+    });
+    // 断言要落在 textarea 的**内容区**里：全文搜一下的话，
+    // placeholder 或者页面别处的示例文本也能让它变绿。
+    const textareaBody = (/<textarea[^>]*name="text"[^>]*>([\s\S]*?)<\/textarea>/
+      .exec(pasteFail.text)?.[1]) || '';
+    ok('★ 没识别出课程时不再谎报「解析成功」',
+      pasteFail.status === 200 && !/解析成功/.test(pasteFail.text),
+      `状态码 ${pasteFail.status}，页面里${/解析成功/.test(pasteFail.text) ? '仍' : '没有'}出现「解析成功」`);
+    ok('★ 会说明失败原因（而不是只丢一个空表格给用户）',
+      /导入失败/.test(pasteFail.text)
+      && /表头/.test(pasteFail.text)
+      && /没能识别出表头/.test(pasteFail.text),
+      '没有失败标题，或者没说清是表头的问题');
+    ok('★ 并且告诉用户「你提交的内容还在」',
+      /还留在下面的框里/.test(pasteFail.text));
+    ok('★ 而且退回的是选择屏（不是那个 0 门课程的预览页）',
+      pasteFail.text.includes('data-import-text-form')
+      && !pasteFail.text.includes('preview-table-wrap'),
+      '没有回到可以重新提交的那一屏');
+    ok('★ 粘贴框里还留着上次的内容（这是关键，不能清空）',
+      textareaBody.includes(PASTE_MARKER),
+      `文本框里只有：${JSON.stringify(textareaBody.slice(0, 120))}`);
+
+    // 上传文件那种情况回填不了文件框（浏览器不允许给 file 输入框赋值），
+    // 但要告诉用户「你传的是哪个文件」；内容本身是文本就一并放进文本框。
+    const badFile = multipart({ termId: '', onConflict: 'skip' }, {
+      field: 'file', filename: '教务系统导出.csv', data: Buffer.from(unreadableCsv, 'utf8'),
+    });
+    const fileFail = await req('POST', '/import', {
+      body: badFile.body, headers: { 'Content-Type': badFile.contentType },
+    });
+    ok('★ 上传的文件读不出课程时，说明了是哪个文件',
+      fileFail.status === 200 && fileFail.text.includes('教务系统导出.csv'),
+      `状态码 ${fileFail.status}`);
+    ok('★ 文件内容回填进了文本框（可以直接改了再交，不用重新传）',
+      ((/<textarea[^>]*name="text"[^>]*>([\s\S]*?)<\/textarea>/.exec(fileFail.text)?.[1]) || '')
+        .includes(PASTE_MARKER),
+      '文本类的文件应该把内容放进文本框');
+
+    // 反过来：能识别的内容必须照常走到预览页（别为了修这个把正常流程堵了）
+    const goodCsv = multipart({ termId: '', onConflict: 'skip', text: TEST_CSV }, null);
+    const goodRes = await req('POST', '/import', {
+      body: goodCsv.body, headers: { 'Content-Type': goodCsv.contentType },
+    });
+    ok('★ 内容正常时照样进预览页（新加的拦截没有误伤）',
+      goodRes.status === 200
+      && goodRes.text.includes('preview-table-wrap')
+      && /解析成功/.test(goodRes.text),
+      `状态码 ${goodRes.status}`);
+
     // --------------------------------------------------------
     section('8. 设置与调度');
 

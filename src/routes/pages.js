@@ -633,9 +633,25 @@ export function registerPages(router) {
       source = text.includes('BEGIN:VCALENDAR') ? 'ics' : 'csv';
     }
 
+    // 解析失败时要把用户提交的东西**还回去**，不能让他重新粘一遍。
+    //
+    // 粘贴的内容可以原样回填；上传的文件不行 —— 浏览器出于安全不允许
+    // 给 file 输入框赋值，所以那种情况只把文件名带回去，明确告诉用户
+    // 「你传的是这个，需要重新选一次」。
+    //
+    // 文件内容要不要也塞进文本框？只在它确实是文本、而且不太大时才塞：
+    // 传错一个二进制文件的话，把乱码倒进文本框比不填还让人困惑，
+    // 而几 MB 的 .ics 塞进页面也会明显拖慢渲染。
+    const looksLikeText = text.length <= 100_000 && !text.includes('\u0000');
+    const draft = {
+      text: file ? (looksLikeText ? text : '') : String(fields.text || ''),
+      filename: file ? file.filename : '',
+    };
+
     if (!text.trim()) {
       return output(ctx.res, importPage(importPageData(userId, ctx, {
         error: '没有收到文件或表格内容。请选择文件，或把表格内容粘贴到文本框里。',
+        draft,
       })), { user: ctx.user, stats: navStats(userId) });
     }
 
@@ -648,6 +664,25 @@ export function registerPages(router) {
     } catch (err) {
       return output(ctx.res, importPage(importPageData(userId, ctx, {
         error: `解析失败：${err.message}`,
+        draft,
+      })), { user: ctx.user, stats: navStats(userId) });
+    }
+
+    // 一门课都没识别出来 —— 别把用户扔到一个「0 门课程」的预览页上。
+    //
+    // 这才是真正会丢东西的那条路（比审计里说的 catch 分支常见得多）：
+    // 两个解析器都**不抛异常**，遇到看不懂的内容只是记一条 warning 然后
+    // 返回空结果。于是用户看到的是「解析成功」的横幅 + 一个空表格，
+    // 既没人告诉他哪里不对，也没有回到上一步的入口 —— 想改的话只能
+    // 重新打开 /import，而刚才粘的那一大段已经没了，得回教务系统重新复制。
+    //
+    // 现在直接退回选择屏，并把原文回填进文本框，用户可以就地改。
+    if (parsedResult.courses.length === 0) {
+      const why = (parsedResult.warnings || []).join(' ')
+        || '没能从这段内容里识别出课程。';
+      return output(ctx.res, importPage(importPageData(userId, ctx, {
+        error: `${why}你提交的内容还留在下面的框里，可以直接改。`,
+        draft,
       })), { user: ctx.user, stats: navStats(userId) });
     }
 

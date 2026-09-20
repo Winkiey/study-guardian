@@ -18,7 +18,7 @@ export function importPage({
   terms,
   courses,
   preview,
-  mode = 'choose',
+  draft,
   error = '',
   periodSchedule,
   hasCustomPeriods = false,
@@ -41,7 +41,7 @@ ${error ? `<div class="notice notice--error">
   <div class="notice__body"><strong>导入失败</strong><p>${escapeHtml(error)}</p></div>
 </div>` : ''}
 
-${preview ? renderPreview(preview, courses, terms) : renderChooser()}
+${preview ? renderPreview(preview, courses, terms) : renderChooser(draft)}
 
 <div class="grid grid--2 mt-lg">
   ${card({
@@ -78,7 +78,19 @@ ${preview ? renderPreview(preview, courses, terms) : renderChooser()}
   return { title: '导入课表', active: 'courses', body };
 }
 
-function renderChooser() {
+/**
+ * 选择来源这一步。
+ *
+ * `draft` 是上一次提交失败时留下的内容 —— 解析失败会把用户退回这一屏，
+ * 不回填的话**用户粘贴的东西就没了**：教务系统那种页面要重新选一遍、
+ * 重新复制一遍。上传的文件是回填不了的（浏览器不允许给 file 输入框赋值），
+ * 所以那种情况至少要说清楚「你刚才传的是哪个文件，需要重新选一次」。
+ *
+ * @param {{text?: string, filename?: string} | undefined} draft
+ */
+function renderChooser(draft) {
+  const draftText = draft?.text || '';
+  const draftName = draft?.filename || '';
   return `<div class="import-options">
   <article class="import-option import-option--featured">
     <div class="import-option__head">
@@ -128,10 +140,18 @@ function renderChooser() {
       <a class="btn btn--outline btn--sm" href="/import?template=csv">${icon('download', 16)}<span>下载 CSV 模板</span></a>
     </div>
     <form class="form mt-sm" method="post" action="/import" enctype="multipart/form-data" data-import-text-form>
+      ${draftName ? `<div class="notice notice--warn">
+        <div class="notice__icon">${icon('alert', 18)}</div>
+        <div class="notice__body">
+          <p>你刚才上传的是 <strong>${escapeHtml(draftName)}</strong>。
+          浏览器不允许网页自动把文件放回选择框，所以<strong>需要你重新选一次这个文件</strong>。</p>
+        </div>
+      </div>` : ''}
       <div class="field">
         <label class="field__label" for="csv_text">粘贴表格内容（第一行是表头）</label>
         <textarea id="csv_text" class="input input--area input--mono" name="text" rows="6"
-          placeholder="课程名称,教师,学分,星期,上课时间,周次,上课地点&#10;高等数学(上),张三,5,星期一,08:00-09:40,1-16,之远楼301"></textarea>
+          placeholder="课程名称,教师,学分,星期,上课时间,周次,上课地点&#10;高等数学(上),张三,5,星期一,08:00-09:40,1-16,之远楼301">${escapeHtml(draftText)}</textarea>
+        ${draftText ? `<p class="field__help">这里保留着你上次提交的内容，改完可以直接再点一次「解析并预览」。</p>` : ''}
       </div>
       <div class="field">
         <label class="field__label" for="csv_file">或者选择 CSV / TXT 文件</label>
@@ -229,11 +249,17 @@ function renderPreview(preview, courses, terms) {
 
   const totalSessions = parsed.courses.reduce((sum, c) => sum + c.sessions.length, 0);
 
+  // ⚠️ 只有真识别出课程才能说「解析成功」。
+  // 路由那边已经会把「0 门课」退回选择屏了，这里是第二道防线 ——
+  // 万一哪天有人改了路由，也不该出现「解析成功：识别出 0 门课程」这种
+  // 自相矛盾的横幅（它比一句明确的失败更难排查）。
+  const nothingFound = parsed.courses.length === 0;
+
   return `
-<div class="notice notice--info">
-  <div class="notice__icon">${icon('check', 20)}</div>
+<div class="notice notice--${nothingFound ? 'error' : 'info'}">
+  <div class="notice__icon">${icon(nothingFound ? 'alert' : 'check', 20)}</div>
   <div class="notice__body">
-    <strong>解析成功，请核对下面的内容</strong>
+    <strong>${nothingFound ? '没能识别出任何课程' : '解析成功，请核对下面的内容'}</strong>
     <p>
       来源：${escapeHtml(source === 'ics' ? 'ICS 日历文件' : '表格文本')} ·
       识别出 <strong>${parsed.courses.length}</strong> 门课程、
