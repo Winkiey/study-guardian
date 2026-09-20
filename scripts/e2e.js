@@ -1222,7 +1222,17 @@ async function run() {
     // 资料库页
     const materialsPage = await req('GET', '/materials');
     ok('资料库页可访问', materialsPage.status === 200);
-    ok('资料库显示文件卡片', materialsPage.text.includes('material-card'));
+    // 资料库是**文件列表**，不是卡片墙 —— 卡片每份要占 210px 宽 + 130px 预览区，
+    // 一屏放不下几份；而翻课件真正要做的是「在一堆文件里找到那一份」。
+    ok('资料库显示文件列表（不是卡片墙）',
+      materialsPage.text.includes('material-list')
+      && materialsPage.text.includes('material-row')
+      && !materialsPage.text.includes('material-card'));
+    ok('★ 列表行里的操作按钮在 <a> 外面（交互元素不能嵌套）',
+      // 放在链接里面的话，点「删除」会同时触发「打开这份资料」
+      /<\/a>\s*<span class="material-row__actions">/.test(materialsPage.text));
+    ok('★ 手机上会被藏掉的元信息单独包了一层（不然窄屏会挤成两行）',
+      materialsPage.text.includes('material-row__meta-extra'));
     ok('资料库按类型统计', materialsPage.text.includes('演示文稿'));
     ok('上传表单模板已注入', materialsPage.text.includes('upload-form-template'));
 

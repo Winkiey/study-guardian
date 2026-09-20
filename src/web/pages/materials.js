@@ -96,7 +96,7 @@ ${materials.length === 0
           : '把老师发的课件传上来，之后不管在哪台设备上都能直接打开看，不用再翻微信/QQ 聊天记录。',
         action: `<button type="button" class="btn btn--primary" data-upload-material>${icon('upload', 17)}<span>上传资料</span></button>`,
       })
-      : `<div class="material-grid">${materials.map(materialCard).join('')}</div>`}
+      : `<ul class="material-list">${materials.map(materialRow).join('')}</ul>`}
 
 ${storage?.lowSpace ? `
 <div class="notice notice--warn mt-lg">
@@ -114,35 +114,46 @@ ${editFormTemplate}
   return { title: '资料库', active: 'materials', body };
 }
 
-function materialCard(m) {
-  return `<article class="material-card" data-material="${m.id}">
-  <a class="material-card__link" href="/materials/${m.id}">
-    <div class="material-card__preview">
-      ${m.kind === 'image'
-      ? `<img src="/materials/${m.id}/raw" alt="${escapeHtml(m.title)}" loading="lazy">`
-      : `<span class="material-card__icon">${m.kindIcon}</span>`}
-      ${m.hasPdf ? '<span class="material-card__flag">PDF</span>' : ''}
-    </div>
-    <div class="material-card__body">
-      <h3 class="material-card__title" title="${escapeHtml(m.original_name)}">${escapeHtml(m.title)}</h3>
-      <div class="material-card__meta">
+/**
+ * 一行资料。
+ *
+ * 为什么不用卡片：卡片墙每份占 210px 宽 + 130px 高的预览区，一屏放不下几份。
+ * 而翻课件时真正要做的是「在一堆文件里找到那一份」—— 靠文件名和课程，
+ * 不是缩略图。列表一行一份，信息还更全（课程、类型、大小、更新时间都在）。
+ *
+ * ⚠️ 操作按钮放在 `<a>` **外面**：交互元素不能嵌套。放里面的话点「删除」
+ * 会同时触发「打开这份资料」，键盘和读屏也会乱。
+ */
+function materialRow(m) {
+  // 分类（课件/作业/其他）和文件类型（演示文稿/PDF…）是**两回事**：
+  // 前者是筛选用的维度，后者是"这是什么文件"。两个都有用，都放上。
+  const metaParts = [m.categoryLabel, m.kindLabel, m.sizeLabel, m.updated_at?.slice(5, 10)]
+    .filter(Boolean)
+    .map((x) => escapeHtml(String(x)));
+
+  return `<li class="material-row" data-material="${m.id}">
+  <a class="material-row__link" href="/materials/${m.id}">
+    <span class="material-row__icon">${m.kindIcon}</span>
+    <span class="material-row__body">
+      <span class="material-row__title" title="${escapeHtml(m.original_name)}">${escapeHtml(m.title)}</span>
+      <span class="material-row__meta">
         ${m.course_name
       ? `<span class="dot" style="--dot-color:${escapeHtml(m.course_color || '#3a63e8')}"></span>${escapeHtml(m.course_name)}`
-      : '<span class="muted">未归类</span>'}
-      </div>
-      <div class="material-card__foot">
-        <span>${escapeHtml(m.kindLabel)} · ${escapeHtml(m.sizeLabel)}</span>
-        <span>${escapeHtml(m.created_at?.slice(5, 10) || '')}</span>
-      </div>
-    </div>
+      : '未归类'}
+        ${/* 这一段在手机上会被 CSS 藏掉（.material-row__meta-extra）：
+             屏幕太窄，硬挤成两行反而更难扫。详情页里都有。 */ ''}
+        <span class="material-row__meta-extra"> · ${metaParts.join(' · ')}</span>
+      </span>
+    </span>
+    ${m.hasPdf ? '<span class="badge badge--success">PDF</span>' : ''}
   </a>
-  <div class="material-card__actions">
+  <span class="material-row__actions">
     <button type="button" class="btn btn--ghost btn--sm" data-edit-material="${m.id}"
             aria-label="编辑「${escapeHtml(m.title)}」的课程归属等信息">${icon('edit', 15)}<span>编辑</span></button>
     <button type="button" class="btn btn--ghost btn--sm btn--icon" data-delete-material="${m.id}"
             data-title="${escapeHtml(m.title)}" title="删除" aria-label="删除「${escapeHtml(m.title)}」">${icon('trash', 15)}</button>
-  </div>
-</article>`;
+  </span>
+</li>`;
 }
 
 // ============================================================

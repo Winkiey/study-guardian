@@ -1792,85 +1792,28 @@ button.filter-tab {
 /* ==========================================================================
    21 · 资料库
    ========================================================================== */
-.material-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
-  gap: 18px;
+/* 资料库用**文件列表**，不用卡片墙。
+   卡片墙每份资料要占 210px 宽、还带 130px 高的预览区，一屏放不下几份。
+   而翻课件时真正要做的事是「在一堆文件里找到那一份」—— 靠的是文件名和
+   课程，不是缩略图；列表一行一份、能快速扫，信息也更全
+   （课程、类型、大小、更新时间都在一行里，不用点进去看）。
+   （原来的 .material-card 一族已经删掉了，不是留着不用。） */
+
+/* 列表行：左边是链接（整行可点），右边是操作按钮。
+   ⚠️ 按钮要放在 <a> **外面**：交互元素不能嵌套，否则点「删除」会同时
+   触发「打开这份资料」，而且键盘和读屏都会乱。 */
+.material-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
-.material-card {
-  position: relative;
-  background: var(--c-surface);
-  border: 1px solid var(--c-border);
-  border-radius: var(--radius-lg);
-  overflow: hidden;
-  box-shadow: var(--shadow-sm);
-  transition: transform var(--transition-slow), box-shadow var(--transition-slow), border-color var(--transition);
+.material-row__actions {
+  display: flex; gap: 4px;
+  flex: 0 0 auto;
 }
-.material-card:hover {
-  transform: translateY(-3px);
-  box-shadow: var(--shadow);
-  border-color: var(--c-border-strong);
-}
-.material-card__link { display: block; color: inherit; }
-.material-card__link:hover { text-decoration: none; }
-.material-card__preview {
-  position: relative;
-  height: 130px;
-  display: grid; place-items: center;
-  background:
-    radial-gradient(circle at 30% 20%,
-      color-mix(in srgb, var(--c-primary) 7%, transparent), transparent 62%),
-    var(--c-surface-3);
-  overflow: hidden;
-}
-.material-card__preview img { width: 100%; height: 100%; object-fit: cover; }
-.material-card__icon {
-  font-size: 40px; line-height: 1;
-  filter: saturate(1.05);
-  transition: transform var(--transition-slow);
-}
-.material-card:hover .material-card__icon { transform: scale(1.08) rotate(-3deg); }
-.material-card__flag {
-  position: absolute; top: 9px; right: 9px;
-  padding: 1.5px 7px;
-  background: var(--c-danger-solid); color: #fff;
-  border-radius: var(--radius-xs);
-  font-size: 10.5px; font-weight: 700;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
-}
-.material-card__body { padding: 11px 13px 13px; }
-.material-card__title {
-  font-size: 13.5px; font-weight: 600;
-  letter-spacing: -0.006em;
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
-  overflow: hidden;
-  min-height: 2.7em;
-}
-.material-card__meta { font-size: 12px; color: var(--c-text-2); margin-top: 5px; }
-.material-card__foot {
-  display: flex; justify-content: space-between; gap: 8px;
-  margin-top: 9px; padding-top: 9px;
-  border-top: 1px solid var(--c-border);
-  font-size: 11.5px; color: var(--c-text-3);
-  font-variant-numeric: tabular-nums;
-}
-/* 操作按钮：平时藏起来，悬停/聚焦时淡入。手机上永远显示（没有悬停）。 */
-.material-card__actions {
-  position: absolute; top: 7px; left: 7px;
-  display: flex; gap: 3px;
-  opacity: 0;
-  transform: translateY(-2px);
-  transition: opacity var(--transition), transform var(--transition);
-}
-.material-card:hover .material-card__actions,
-.material-card:focus-within .material-card__actions { opacity: 1; transform: none; }
-.material-card__actions .btn {
-  background: color-mix(in srgb, var(--c-surface) 92%, transparent);
-  color: var(--c-text);
-  backdrop-filter: blur(8px);
-  box-shadow: var(--shadow-sm);
-}
-:root[data-theme='dark'] .material-card__actions .btn { background: rgba(0, 0, 0, 0.68); color: #fff; }
+/* 手机上没有悬停，所以操作按钮**一直显示**（不搞 hover 才出现那一套）；
+   桌面端也一直显示，只是用 ghost 样式压得很轻，不抢文件名。 */
+.material-row__actions .btn { flex: 0 0 auto; }
 
 /* 资料列表行 */
 .material-list { list-style: none; margin: 0; padding: 0; }
@@ -1880,6 +1823,7 @@ button.filter-tab {
   display: flex; align-items: center; gap: 12px;
   padding: 11px 0;
   color: inherit;
+  min-width: 0;
 }
 .material-row__link:hover { text-decoration: none; }
 .material-row__link:hover .material-row__title { color: var(--c-primary); }
@@ -1891,6 +1835,10 @@ button.filter-tab {
   transition: color var(--transition);
 }
 .material-row__meta { font-size: 12.5px; color: var(--c-text-2); }
+/* 元信息里靠后的部分（类型、大小、更新时间）在手机上一律藏起来。
+   手机屏幕放不下，硬挤会变成两行小字、反而更难扫。
+   这些信息点进详情页就有，不会丢。 */
+.material-row__meta-extra { font-variant-numeric: tabular-nums; }
 
 /* 迷你资料卡 */
 .material-mini-grid {
@@ -3159,7 +3107,10 @@ button.filter-tab {
   .grid--2 { grid-template-columns: minmax(0, 1fr); }
 
   .course-grid { grid-template-columns: minmax(0, 1fr); }
-  .material-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+  /* 手机上把资料行里靠后的元信息藏掉（点进详情页就有），
+     顺手把「编辑」的文字也去掉，只留图标 —— 一行里塞不下。 */
+  .material-row__meta-extra { display: none; }
+  .material-row__actions .btn span { display: none; }
   .material-card__preview { height: 100px; }
   /* 手机上不可能有悬停，操作按钮必须常显 */
   .material-card__actions { opacity: 1; transform: none; }
