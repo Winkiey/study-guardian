@@ -2906,6 +2906,26 @@ async function run() {
     ok('设置页有自动推算下一节的按钮',
       settingsWithPeriods.text.includes('data-auto-fill-periods'));
 
+    // ---- 外观（深浅色）----
+    // 手机上侧栏是隐藏的，而唯一的深浅色开关就在侧栏里 ——
+    // 所以设置页这个入口是手机用户**唯一**能切主题的地方，不能没有。
+    // 而且「跟随系统」这一项也不能少：缺了它，用户点过侧栏那个按钮之后
+    // 就被永久固定在深或浅，回不到跟随系统。
+    const appearanceAt = settingsWithPeriods.text.indexOf('id="appearance"');
+    ok('★ 设置页有「外观」分组（手机切深浅色的唯一入口）',
+      appearanceAt > -1, '整页找不到 id="appearance"');
+    ok('★ 「外观」在设置页目录里有一项',
+      settingsWithPeriods.text.includes('href="#appearance"'));
+    for (const [label, value] of [['跟随系统', 'system'], ['浅色', 'light'], ['深色', 'dark']]) {
+      ok(`★ 外观里有「${label}」这个选项`,
+        settingsWithPeriods.text.includes(`data-theme-choice="${value}"`));
+    }
+    // 三个选项必须在 #appearance 这一节里，不能跑到别的分组去
+    ok('★ 三个选项长在「外观」这一节里（不是散落在别处）',
+      settingsWithPeriods.text.slice(appearanceAt, appearanceAt + 1400)
+        .includes('data-theme-choice="dark"'),
+      '外观分组里没有找到选项，可能被挪到别的 section 了');
+
     // ---- 窄屏放不下的表格要能横向滚 ----
     // 「学期」那张表有 6 列，手机上装不下；而 .card 是 overflow:hidden ——
     // 不套滚动容器的话右边的列会被**直接裁掉**：既看不见，也滚不动，

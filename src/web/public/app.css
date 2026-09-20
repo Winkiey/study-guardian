@@ -1013,6 +1013,20 @@ select.input { cursor: pointer; }
   font-size: 13px; font-weight: 540;
   transition: background var(--transition), color var(--transition), box-shadow var(--transition);
 }
+/* 这个分段控件原来只用在 `<a>` 上（筛选标签是链接）。
+   设置页的「外观」要的是**按钮** —— 选了立刻生效、不发请求。
+   button 自带边框、背景和另一套字体，不清掉的话会多一圈灰边、字也大一号。
+   ⚠️ `font: inherit` 会把字号也重置成继承值，而它的优先级比
+   `.filter-tab` 里那句高，所以下面必须把字号补回来，不然会比旁边大一号。
+   颜色不用在这里写：`.filter-tab` 和 `.filter-tab.is-active` 已经管了。 */
+button.filter-tab {
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 540;
+  cursor: pointer;
+}
 .filter-tab:hover { background: color-mix(in srgb, var(--c-surface) 70%, transparent); text-decoration: none; }
 .filter-tab.is-active {
   background: var(--c-surface);

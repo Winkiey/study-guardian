@@ -399,32 +399,95 @@ function syncThemeColor(theme) {
   if (meta) meta.setAttribute('content', theme === 'dark' ? '#0e1014' : '#f6f7f8');
 }
 
+/**
+ * 深浅色。
+ *
+ * 两种入口共用这一套逻辑：
+ *   [data-theme-toggle]  侧栏底部那个按钮（桌面）—— 点一下就换
+ *   [data-theme-choice]  设置 → 外观 里的三个选项 —— 明确选一种
+ *
+ * 为什么必须有第二套入口：
+ *   · 手机上侧栏是 display:none，藏在里面的开关**点不到** —— 也就是手机上
+ *     根本没有切换深浅色的地方，只能跟着手机系统走。
+ *   · 那个按钮是「切换」，不是「选择」：点过一次之后就固定在
+ *     localStorage 里了，**再也回不到「跟随系统」**。
+ *     （想回去只能清浏览器数据，没人会想到这么干。）
+ * 第二套入口同时解决这两件事。
+ *
+ * 存法的约定和页面顶部那段内联脚本一致：只存 'dark' / 'light'，
+ * 选「跟随系统」就把键**删掉** —— 内联脚本靠「值不是这两个」来判定跟随系统。
+ */
 function initTheme() {
-  const btn = document.querySelector('[data-theme-toggle]');
-  if (!btn) return;
-
-  const label = btn.querySelector('.theme-toggle__label');
   const root = document.documentElement;
+  const toggles = [...document.querySelectorAll('[data-theme-toggle]')];
+  const choices = [...document.querySelectorAll('[data-theme-choice]')];
+  if (!toggles.length && !choices.length) return;
 
-  const current = () => {
-    if (root.dataset.theme) return root.dataset.theme;
-    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  const systemQuery = window.matchMedia('(prefers-color-scheme: dark)');
+
+  /** 用户选的是什么（含『跟随系统』），不是"当前显示的是深还是浅" */
+  const preference = () => {
+    try {
+      const saved = localStorage.getItem('sg-theme');
+      if (saved === 'dark' || saved === 'light') return saved;
+    } catch { /* 隐私模式下 localStorage 可能不可用 */ }
+    return 'system';
+  };
+
+  /** 当前实际显示的是深还是浅 */
+  const actual = () => {
+    const pref = preference();
+    if (pref !== 'system') return pref;
+    return systemQuery.matches ? 'dark' : 'light';
   };
 
   const sync = () => {
-    if (label) label.textContent = current() === 'dark' ? '浅色模式' : '深色模式';
-    syncThemeColor(current());
-  };
-  sync();
+    const pref = preference();
+    const shown = actual();
 
-  btn.addEventListener('click', () => {
-    const next = current() === 'dark' ? 'light' : 'dark';
-    root.dataset.theme = next;
-    try {
-      localStorage.setItem('sg-theme', next);
-    } catch { /* 隐私模式下 localStorage 可能不可用 */ }
+    // 侧栏按钮的标签是**动作**（点了会变成什么），不是当前状态
+    for (const btn of toggles) {
+      const label = btn.querySelector('.theme-toggle__label');
+      if (label) label.textContent = shown === 'dark' ? '浅色模式' : '深色模式';
+    }
+
+    // 三个选项标记当前选中的那个
+    for (const btn of choices) {
+      const on = btn.dataset.themeChoice === pref;
+      btn.classList.toggle('is-active', on);
+      if (on) btn.setAttribute('aria-current', 'true');
+      else btn.removeAttribute('aria-current');
+    }
+
+    syncThemeColor(shown);
+  };
+
+  /** @param {'system'|'light'|'dark'} next */
+  const apply = (next) => {
+    if (next === 'system') {
+      root.removeAttribute('data-theme');
+      try { localStorage.removeItem('sg-theme'); } catch { /* 同上 */ }
+    } else {
+      root.dataset.theme = next;
+      try { localStorage.setItem('sg-theme', next); } catch { /* 同上 */ }
+    }
     sync();
-  });
+  };
+
+  for (const btn of toggles) {
+    btn.addEventListener('click', () => apply(actual() === 'dark' ? 'light' : 'dark'));
+  }
+  for (const btn of choices) {
+    btn.addEventListener('click', () => apply(btn.dataset.themeChoice));
+  }
+
+  // 选了「跟随系统」的时候，用户在系统里换了主题，网页要跟着变 ——
+  // 不监听的话得手动刷新页面才生效，看起来像"这个选项没作用"。
+  const onSystemChange = () => { if (preference() === 'system') sync(); };
+  if (systemQuery.addEventListener) systemQuery.addEventListener('change', onSystemChange);
+  else if (systemQuery.addListener) systemQuery.addListener(onSystemChange);
+
+  sync();
 }
 
 // ============================================================

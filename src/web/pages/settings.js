@@ -71,6 +71,7 @@ ${pageHeader({
   <a href="#notify">手机提醒</a>
   <a href="#schedule">发送情况</a>
   <a href="#calendar">课表导入导出</a>
+  <a href="#appearance">外观</a>
   <a href="#prefs">个人偏好</a>
   <a href="#system">系统</a>
 </nav>
@@ -330,6 +331,32 @@ ${card({
     </p>`,
   })}
 </div>
+</section>
+
+<!-- ============ 外观 ============ -->
+<section id="appearance" class="anchor-section">
+${card({
+    title: '外观',
+    body: `
+    ${/* 这个分组是补一个漏洞：深浅色开关原来只在侧栏底部，
+         而手机上侧栏是 display:none —— 也就是手机上**根本没地方切**，
+         只能跟着手机系统走。而且原来那个是「切换」不是「选择」，
+         点过一次就固定在深或浅，再也回不到「跟随系统」。
+         这里给三个明确选项，两个问题一起解决。 */ ''}
+    <div class="filter-tabs" role="group" aria-label="界面配色">
+      <button type="button" class="filter-tab" data-theme-choice="system">跟随系统</button>
+      <button type="button" class="filter-tab" data-theme-choice="light">浅色</button>
+      <button type="button" class="filter-tab" data-theme-choice="dark">深色</button>
+    </div>
+    <p class="field__help">
+      「跟随系统」就是跟着手机/电脑的深色模式走（手机上：设置 → 显示与亮度）。
+      选浅色或深色会固定下来，不随系统变。
+    </p>
+    <p class="field__help">
+      这个选择只存在<strong>当前这台设备</strong>的浏览器里，换台设备要重新选一次；
+      也不会同步到你的账号（所以它不占上面那个「保存设置」按钮）。
+    </p>`,
+  })}
 </section>
 
 <!-- ============ 个人偏好 ============ -->
