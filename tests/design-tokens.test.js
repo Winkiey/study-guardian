@@ -168,6 +168,7 @@ describe('令牌引用不许写错名字', () => {
       'next-up-color', // dashboard.js「下一节课」卡片左侧那条课程色短条
       'color',        // 各处通用的"这个元素的颜色"占位
       'size', 'delay', 'tx', 'ty', 'rot', // 动画参数（入场位移、旋转、错峰延迟）
+      'now-offset',   // 课表「当前时间线」的纵向位置，由 app.js 按实测行高算出来再 setProperty
     ]);
 
     const missing = new Set();

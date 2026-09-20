@@ -3356,6 +3356,90 @@ function initFieldErrors() {
   document.addEventListener('change', clearOne, true);
 }
 
+// ============================================================
+// 课表的「当前时间线」
+// ============================================================
+
+/** 'HH:MM' → 分钟数；格式不对返回 null */
+function hmToMinutes(hm) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(hm || '').trim());
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (h > 23 || min > 59) return null;
+  return h * 60 + min;
+}
+
+/**
+ * 算「当前时间线」在这一行里的纵向位置（像素）。**纯函数**，好测。
+ *
+ * 为什么不给个百分比就完事：行高是 minmax(42px, auto)，由内容决定 ——
+ * 一节 45 分钟的课和一段两小时的课格子一样高。所以「现在过了这一节的
+ * 百分之多少」在**视觉上**就是「这一行高度的百分之多少」，
+ * 这里要的就是这个比例，而不是真实时长比例。
+ *
+ * @param {{rowHeight:number, startHm:string, endHm:string, nowHm:string}} p
+ * @returns {{offset:number, fraction:number}|null} null = 现在不在这一行里，别画
+ */
+function nowLineOffset({ rowHeight, startHm, endHm, nowHm }) {
+  const start = hmToMinutes(startHm);
+  const end = hmToMinutes(endHm);
+  const now = hmToMinutes(nowHm);
+  if (start === null || end === null || now === null) return null;
+  // 起止时间一样（或者反了）是坏数据，画出来会是除以 0 或者一条位置随机线
+  if (end <= start) return null;
+  // 现在不在这一行的时间范围内 —— 说明页面开太久了，行已经过期，
+  // 这时候应该把线藏起来，而不是把它钉在边上装作还准
+  if (now < start || now > end) return null;
+
+  const fraction = (now - start) / (end - start);
+  const height = Number(rowHeight) > 0 ? Number(rowHeight) : 0;
+  // 这里**不需要**再夹一次边界：上面那两条 return 已经保证了
+  // start <= now <= end，所以 fraction 必落在 [0,1]、offset 必落在 [0,height]。
+  // 一开始写的是 Math.max(0, Math.min(height, …))，反向验证时发现它
+  // **永远不可能生效** —— 删掉它所有测试照样绿。一条永远不执行的"保险"
+  // 比没有更糟：它会让人以为这里挡着什么。真正在挡的是上面那两条判断，
+  // 测试里也有一条「逐分钟扫过去」的断言守着。
+  return { offset: Math.round(fraction * height), fraction };
+}
+
+/**
+ * 把课表上那条「当前时间线」摆到位，并且每分钟跟着走。
+ *
+ * 位置只能在浏览器里量：那一行到底多少像素，服务端不知道。
+ */
+function initNowLine() {
+  const el = document.querySelector('[data-now-line]');
+  if (!el) return;
+
+  const place = () => {
+    const now = new Date();
+    const nowHm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    const box = el.getBoundingClientRect();
+    const pos = nowLineOffset({
+      rowHeight: box.height,
+      startHm: el.dataset.start,
+      endHm: el.dataset.end,
+      nowHm,
+    });
+    if (!pos) {
+      // 时间已经走出这一行了：藏起来。宁可不显示，也不要给一个错的位置。
+      el.hidden = true;
+      return;
+    }
+    el.hidden = false;
+    el.style.setProperty('--now-offset', `${pos.offset}px`);
+  };
+
+  place();
+  // 每分钟挪一次。60 秒对一条 1.5px 的线足够了 ——
+  // 一秒一次只会白白唤醒主线程，而人眼也看不出差别。
+  setInterval(place, 60_000);
+  // 转到别的窗口再回来时补一次：定时器在后台标签页里会被浏览器降频
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) place(); });
+  window.addEventListener('resize', place);
+}
+
 /**
  * 「服务端这句话是在说哪个字段」的对照表。
  *
@@ -3668,6 +3752,7 @@ function boot() {
   initSettings();
   initImport();
   initTimetable();
+  initNowLine();
 
   // 全局错误兜底：漏网的失败（没被任何地方 catch 的）也要说出来，不能静默。
   //

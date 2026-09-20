@@ -129,6 +129,13 @@ ${usingPeriodRows
 
     <!-- 课程块。直接作为网格子元素，跨节次的课靠 grid-row 的 span 真正占多行 -->
     ${grid.blocks.map((b) => courseBlock(b, currentHm, today)).join('')}
+
+    ${/* 「当前时间线」：一条细线 + 一个小圆点，标出现在上到哪儿了。
+         只在**今天这一列**、而且现在确实落在某一行里时才渲染。
+         位置由前端按那一行的实际高度现算（见 app.js 的 nowLineOffset）——
+         因为 .week-grid 的行高是 minmax(42px, auto)，一节 45 分钟的课和
+         一段两小时的课格子一样高，服务端算不出准确位置。 */ ''}
+    ${nowLine(grid, days, today, currentHm)}
   </div>
 </section>
 
@@ -201,6 +208,35 @@ ${card({
  * 这样「第 5-7 节」这种跨三节的课能通过 grid-row 的 span 真正占三行高度，
  * 一眼就能看出它比其他课长。
  */
+/**
+ * 「当前时间线」。
+ *
+ * 只在今天这一列、而且现在正好落在某一行里时才有意义 ——
+ * 否则（今天不在这一周 / 现在是深夜，课表根本没排到那个点）
+ * 画一条线出来只会让人困惑"这条线为什么在这儿"。
+ *
+ * 行高不给死：服务端只标出"是哪一行、这一行的起止时间"，
+ * 具体位置由前端按那一行的**实际像素高度**现算（见 app.js 的 nowLineOffset）。
+ * 因为行高是 minmax(42px, auto)：一格的高度由内容决定，跟这一节有多长无关，
+ * 所以"算个百分比"在服务端是算不准的。
+ *
+ * @param {{rows: Array<{start:string,end:string}>}} grid
+ * @param {Array<{date:string}>} days
+ */
+function nowLine(grid, days, today, currentHm) {
+  const todayColumn = days.findIndex((d) => d.date === today);
+  if (todayColumn === -1) return '';
+
+  const rowIndex = grid.rows.findIndex((r) => r.start <= currentHm && currentHm < r.end);
+  if (rowIndex === -1) return '';
+
+  const row = grid.rows[rowIndex];
+  return `<div class="now-line" data-now-line
+     data-start="${escapeHtml(row.start)}" data-end="${escapeHtml(row.end)}"
+     style="grid-row:${rowIndex + 2};grid-column:${todayColumn + 2}"
+     role="presentation"></div>`;
+}
+
 function courseBlock(block, currentHm, today) {
   const o = block.occurrence;
   const isNow = o.date === today && o.startTime <= currentHm && currentHm <= o.endTime;

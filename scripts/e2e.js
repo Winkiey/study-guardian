@@ -784,6 +784,45 @@ async function run() {
     ok('课程表渲染了周次网格', timetable.text.includes('week-grid'));
     ok('课程表显示学分汇总', timetable.text.includes('5'));
 
+    // ---- 当前时间线 ----
+    // ⚠️ 这条线只在两种条件下才画：今天在显示的这一周里，而且**现在**正好落在
+    //    某一节课的时间范围内。凌晨跑测试就落在范围外 —— 所以这里不能写成
+    //    「必须有」，那样测试会在半夜莫名其妙地红。
+    //    改成：有就验它的契约，没有就明确说清"这次没到那个时间段"，
+    //    两个分支都验同一件事（页面确实是那份课表网格）。
+    {
+      const nowHm = `${String(new Date().getHours()).padStart(2, '0')}:${String(new Date().getMinutes()).padStart(2, '0')}`;
+      const nowLineHtml = /<div class="now-line"[^>]*data-now-line[\s\S]{0,200}?>/.exec(timetable.text)?.[0] || '';
+      const pageHasGrid = timetable.text.includes('week-grid__cell');
+      if (nowLineHtml) {
+        ok('★ 当前时间线带了所在那一行的起止时间（前端要拿它算位置）',
+          /data-start="\d{2}:\d{2}"/.test(nowLineHtml) && /data-end="\d{2}:\d{2}"/.test(nowLineHtml),
+          nowLineHtml);
+        ok('★ 当前时间线只画一列（今天那一列），不会七天都画一条',
+          (timetable.text.match(/data-now-line/g) || []).length === 1,
+          `画了 ${(timetable.text.match(/data-now-line/g) || []).length} 条`);
+        // 现在这个时刻应该确实落在这一行的范围内（不然就是行挑错了）
+        const start = /data-start="(\d{2}:\d{2})"/.exec(nowLineHtml)?.[1];
+        const end = /data-end="(\d{2}:\d{2})"/.exec(nowLineHtml)?.[1];
+        ok('★ 挑中的那一行确实包含"现在"',
+          Boolean(start && end) && start <= nowHm && nowHm < end,
+          `现在 ${nowHm}，那一行是 ${start}-${end}`);
+      } else {
+        ok(`（这次没画当前时间线：现在 ${nowHm} 不在任何一节的范围内，不是失败）`,
+          pageHasGrid, '连课表网格都没渲染出来，那就是真出问题了');
+      }
+      // 这两个是静态资源，跟当前时间无关，可以无条件断言
+      const appJsForLine = await req('GET', '/static/app.js');
+      const cssForLine = await req('GET', '/static/app.css');
+      ok('★ 时间线的定位逻辑在（纯函数 nowLineOffset）',
+        appJsForLine.text.includes('nowLineOffset'));
+      ok('★ 时间线在切回标签页时会补算一次（后台定时器会被降频）',
+        appJsForLine.text.includes('visibilitychange'));
+      ok('★ 时间线样式是细线 + 小圆点，不是大面积高亮',
+        /\.now-line\s*\{[^}]*pointer-events:\s*none/.test(cssForLine.text)
+        && cssForLine.text.includes('.now-line::after'));
+    }
+
     // --------------------------------------------------------
     section('3. 作业与提醒生成');
 

@@ -787,8 +787,8 @@ cp -r data ~/backup/study-guardian-$(date +%F)
 **带来的好处**：别人 `git clone` 之后一条命令就能跑起来。
 对非计算机专业的同学来说，"要装 Node、要 npm install、还编译失败" 是很高的门槛。
 
-**代价**：手写的东西测试必须做扎实。所以项目里有 **692 个单元测试**和
-**691 项端到端断言**（数字会随着功能变，以跑出来的为准）：
+**代价**：手写的东西测试必须做扎实。所以项目里有 **714 个单元测试**和
+**695 项端到端断言**（数字会随着功能变，以跑出来的为准）：
 
 ```bash
 npm test               # 单元测试：ICS 解析/生成、ZIP/ZIP64、Office 提取、SMTP、注销与多用户、设计令牌对比度
@@ -1145,7 +1145,7 @@ node scripts/diagnose-preview.mjs --retry
 │   ├── doctor.js             环境自检
 │   └── make-icons.js         生成 PWA 图标
 ├── docs/                     README 里用到的示意图
-└── tests/                    单元测试（31 个文件 / 692 项）
+└── tests/                    单元测试（32 个文件 / 714 项）
 ```
 
 ---

@@ -1620,6 +1620,37 @@ button.filter-tab {
 }
 .week-grid__cell.is-today { background: color-mix(in srgb, var(--c-primary) 4.5%, transparent); }
 
+/* ---- 当前时间线 ----
+   一条细线 + 左端一个小圆点，标出现在上到哪儿了。
+   刻意做得很细：它是**参照物**，不是提醒。整块高亮或一条粗红线会盖过课程本身，
+   而用户看课表是为了看课，不是为了看现在几点。
+
+   位置靠 --now-offset（前端按这一行的实际像素高度算，见 app.js 的 nowLineOffset）。
+   元素本身是网格子元素、占满那一行（align-self: stretch），
+   但里面没有内容，所以不会把行撑高。 */
+.now-line {
+  position: relative;
+  align-self: stretch;
+  pointer-events: none;   /* 别挡住下面课程的点击 */
+  z-index: 4;             /* 盖在课程块上面，但远低于弹窗那一档 */
+}
+.now-line::before {
+  content: '';
+  position: absolute;
+  left: 0; right: 0;
+  top: var(--now-offset, 0px);
+  border-top: 1.5px solid var(--c-danger);
+}
+.now-line::after {
+  content: '';
+  position: absolute;
+  left: -3.5px;
+  top: calc(var(--now-offset, 0px) - 3.5px);
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--c-danger);
+}
+
 .course-block {
   z-index: 1;
   margin: 2.5px;
