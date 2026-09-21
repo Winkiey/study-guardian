@@ -2,7 +2,8 @@
  * 多用户：注册、重名、数据隔离、注销账号。
  *
  * 这一组测试的重心不是「功能能跑」，而是**隔离和删干净**这两件事：
- *   1. 两个人不能重名（连只差大小写都不行）—— 否则没法判断该登进哪个账号
+ *   1. 用户名逐字节唯一，但**区分大小写**：`Alice` 和 `alice` 是两个账号（v9 起），
+ *      登录必须原样拼对 —— 唯一性口径和 findUserByUsername 永远是同一个
  *   2. 一个人的数据不能被另一个人看见、不能被另一个人删掉
  *   3. 注销要真的删干净，包括两张**没有外键**的表
  *      （notify_log / settings）和磁盘上的课件 —— 漏了不会报错，
@@ -138,21 +139,28 @@ describe('用户名不能重名', () => {
     );
   });
 
-  test('★ 只差大小写也算重名（登录本来就不区分大小写，重复了就无法判断该登进谁）', () => {
+  test('★ 只差大小写**不**算重名：Alice 和 alice 是两个账号（v9 起）', () => {
     const u = makeUser('case');
     const upper = u.username.toUpperCase();
 
-    assert.ok(auth.isUsernameTaken(upper), '大写形式必须被认成已被占用');
-    assert.throws(
+    // 用户名一律是小写字母 + 数字（见 makeUser），所以大写形式必然和原名不同
+    assert.notEqual(upper, u.username, '前提：这两个名字确实只差大小写');
+    assert.equal(auth.isUsernameTaken(upper), false, '大写形式应该是一个可用的新名字');
+    assert.doesNotThrow(
       () => auth.createUser({ username: upper, password: 'test123456' }),
-      /已经有人用了/,
+      'v9 之后只差大小写的用户名应该能注册成另一个账号',
     );
+    // 两个账号各自查得到自己，不会串
+    assert.equal(auth.findUserByUsername(u.username)?.id, u.id);
+    assert.notEqual(auth.findUserByUsername(upper)?.id, u.id);
   });
 
-  test('★ 查用户不区分大小写，首尾空格也不影响', () => {
+  test('★ 逐字节相同才算重名；大小写必须原样拼对', () => {
     const u = makeUser('find');
     assert.equal(auth.findUserByUsername(u.username)?.id, u.id);
-    assert.equal(auth.findUserByUsername(u.username.toUpperCase())?.id, u.id);
+    // 大小写不同 → 找不到（登录会因此失败，这正是这一版要的行为）
+    assert.equal(auth.findUserByUsername(u.username.toUpperCase()), undefined);
+    // 首尾空格仍然不影响（normalizeUsername 会 trim，和大小写是两件事）
     assert.equal(auth.findUserByUsername(`  ${u.username}  `)?.id, u.id);
     assert.equal(auth.findUserByUsername('肯定不存在这个名字xyz'), undefined);
     assert.equal(auth.findUserByUsername(''), undefined);

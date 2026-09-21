@@ -70,10 +70,13 @@ if (!username && everyone.length > 1) {
   process.exit(1);
 }
 
-// 查账号用 lower() 比对：登录本身就是不区分大小写的，
-// 重置密码如果区分大小写，就会出现「找得到却重置不了」这种自相矛盾的情况。
+// 查账号用**精确匹配**：登录是区分大小写的（v9 起），重置密码也必须一样。
+// ⚠️ 这里以前写的是 lower(username) = lower(?) —— 那个写法在 v9 之后不只是
+//    "口径不一致"，而是会**改错人**：Alice 和 alice 现在可以同时存在，
+//    lower() 比对会命中两行，.get() 只返回其中一行（不保证是哪一行），
+//    于是「重置 alice 的密码」可能把 Alice 的密码改掉。
 const user = username
-  ? db.prepare('SELECT id, username FROM users WHERE lower(username) = lower(?)').get(username.trim())
+  ? db.prepare('SELECT id, username FROM users WHERE username = ?').get(username.trim())
   : everyone[0];
 
 if (!user) {

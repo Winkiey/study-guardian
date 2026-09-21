@@ -196,32 +196,48 @@ describe('数据库迁移', () => {
     assert.ok(schema.SCHEMA_VERSION >= 3, `结构版本应该在 3 以上，实际 ${schema.SCHEMA_VERSION}`);
   });
 
-  test('★ v4：用户名只差大小写也算重名（否则没法判断该登进哪个账号）', () => {
+  test('★ v9：用户名改成区分大小写，Alice 和 alice 是两个账号', () => {
     const file = path.join(DATA_DIR, 'usernames.db');
     fs.rmSync(file, { force: true });
     const db = new DatabaseSync(file);
     db.exec("CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE)");
 
-    assert.ok(Array.isArray(schema.MIGRATIONS[4]), 'v4 应该有迁移步骤');
+    // 老库升级时会**依次经过** v4 和 v9，所以这里也按那个顺序走一遍 ——
+    // 直接摆一个"最终状态"来测，就测不出"v9 到底有没有把 v4 加的索引撤掉"。
+    assert.ok(Array.isArray(schema.MIGRATIONS[4]), 'v4 的迁移不能删（历史是追加的）');
     schema.MIGRATIONS[4][0](db);
+    assert.ok(
+      db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_users_username_lower'").get(),
+      '（前提）v4 确实建出了那个 lower() 索引，否则下面测的是空气',
+    );
+
+    assert.ok(Array.isArray(schema.MIGRATIONS[9]), 'v9 应该有迁移步骤');
+    schema.MIGRATIONS[9][0](db);
+
+    assert.equal(
+      db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_users_username_lower'").get(),
+      undefined,
+      '★ v9 之后那个 lower() 索引必须真的没了',
+    );
 
     db.prepare('INSERT INTO users (username) VALUES (?)').run('Alice');
 
-    // 逐字节相同 —— 原本的 UNIQUE 就该拦住
+    // 逐字节相同 —— UNIQUE 约束该拦住（这一条**没有**因为 v9 而放松）
     assert.throws(
       () => db.prepare('INSERT INTO users (username) VALUES (?)').run('Alice'),
       /UNIQUE constraint failed/,
     );
-    // 只是大小写不同 —— 必须同样被拦住，这是 v4 那个索引存在的唯一理由
-    assert.throws(
+    // 只差大小写 —— v9 之后必须放行。这一条正是 v9 存在的理由
+    assert.doesNotThrow(
       () => db.prepare('INSERT INTO users (username) VALUES (?)').run('alice'),
-      /UNIQUE constraint failed/,
-      '只差大小写的用户名必须也被拒绝',
+      '★ v9 之后只差大小写的用户名应该能共存（v4 曾经禁止，现在是两个账号）',
     );
     // 中文名不受影响，照样能建
     assert.doesNotThrow(
       () => db.prepare('INSERT INTO users (username) VALUES (?)').run('小王'),
     );
+    // v9 可以重跑（迁移中途失败重跑是常态）
+    assert.doesNotThrow(() => schema.MIGRATIONS[9][0](db), 'v9 重跑不该炸');
 
     db.close();
   });

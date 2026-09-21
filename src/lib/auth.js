@@ -277,21 +277,30 @@ export function passwordProblem(password) {
 /**
  * 根据用户名查用户（含密码哈希）。
  *
- * 不区分大小写，而且和 createUser 用的是同一套唯一性口径：
- * 库里不会有只差大小写的两个账号（v4 的唯一索引保证），
- * 所以这里 lower() 一定能命中唯一一行；反过来如果查询区分大小写，
- * 用户注册时填了 Alice、登录时敲 alice 就会「密码正确却登不上」。
+ * **区分大小写**：`Alice` 和 `alice` 是两个不同的账号，登录必须原样拼对。
  *
- * 注意：SQLite 的 lower() 只折叠 ASCII。中文和多数字符不受影响，
- * 所以这不是个问题 —— 只是别指望它能把 É 和 é 归一。
+ * 这里和 createUser 用的是同一套口径（精确相等），所以「能注册出来」
+ * 和「能登进去」永远是同一件事 —— 口径不一致的话会出现
+ * 「注册时说这个名字被占了，登录时又登不进任何账号」这种死结。
+ *
+ * 注意 SQLite 的 TEXT 比较默认就是区分大小写的（BINARY），所以这里
+ * 不需要 COLLATE，反而是**故意不要**加 NOCASE / lower()：
+ *   · users.username 上的 UNIQUE 也是这个口径，`WHERE username = ?`
+ *     正好能吃到它那个隐式索引，查询不会退化成全表扫。
  */
 export function findUserByUsername(username) {
   const name = normalizeUsername(username);
   if (!name) return undefined;
-  return get('SELECT * FROM users WHERE lower(username) = lower(?)', name);
+  return get('SELECT * FROM users WHERE username = ?', name);
 }
 
-/** 这个用户名是不是已经被占了（含只差大小写的情况） */
+/**
+ * 这个用户名是不是已经被占了。
+ *
+ * 同样是**精确相等**：`Winkie` 被占了不影响你注册 `winkie`，
+ * 两个名字是两个账号。（v4 曾经禁止这种情况，v9 又放开了 ——
+ * 见 schema.js 里 v4 / v9 两段注释。）
+ */
 export function isUsernameTaken(username) {
   return Boolean(findUserByUsername(username));
 }

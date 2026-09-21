@@ -827,7 +827,16 @@ export function loginPage({
           <div class="field">
             <label class="field__label" for="lg_user">用户名</label>
             <input id="lg_user" class="input" name="username" required
-                   value="${escapeHtml(username)}" autocomplete="username">
+                   value="${escapeHtml(username)}" autocomplete="username"
+                   aria-describedby="lg_user_help">
+            ${/* 这句是**常驻**的，不是出错才出现 —— 它必须能在用户敲之前就起作用。
+                 刻意不写成「你大小写敲错了」那种报错：登录这里用户名不存在和
+                 密码错是同一句提示（而且不存在时也跑一遍假哈希抹平耗时），
+                 就是为了不给「这个用户名存在吗」当探测接口。见 pages.js 的 /login。 */ ''}
+            <p class="field__help" id="lg_user_help">
+              区分大小写：<strong>Winkie</strong> 和 <strong>winkie</strong> 是两个不同的账号，
+              请按<strong>注册时的大小写</strong>输入。
+            </p>
           </div>
           <div class="field">
             <label class="field__label" for="lg_pass">密码</label>
@@ -850,7 +859,12 @@ export function loginPage({
             <label class="field__label" for="rg_user">用户名</label>
             <input id="rg_user" class="input" name="username" required maxlength="50"
                    value="${escapeHtml(mode === 'register' ? username : '')}"
-                   autocomplete="username" placeholder="登录时用，不能和别人重复">
+                   autocomplete="username" placeholder="登录时用，不能和别人重复"
+                   aria-describedby="rg_user_help">
+            <p class="field__help" id="rg_user_help">
+              区分大小写。<strong>登录时要按一模一样的大小写输入</strong>，
+              拼错一个字母就登不进去了 —— 想好再定。
+            </p>
           </div>
           <div class="field">
             <label class="field__label" for="rg_pass">密码</label>

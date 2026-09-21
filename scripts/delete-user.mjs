@@ -79,9 +79,11 @@ if (everyone.length === 0) {
   process.exit(1);
 }
 
-// 和 reset-password.mjs 一致：按 lower() 查，因为登录本身不区分大小写。
-// 大小写敏感会出现「名单上明明有、却删不掉」这种自相矛盾的情况。
-const user = db.prepare('SELECT id, username FROM users WHERE lower(username) = lower(?)')
+// 和 reset-password.mjs 一致：按**精确匹配**查，因为登录是区分大小写的（v9 起）。
+// ⚠️ 这里以前是 lower(username) = lower(?) —— v9 之后那个写法会**删错人**：
+//    Alice 和 alice 现在能同时存在，lower() 命中两行而 .get() 只返回一行
+//    （不保证哪一行），于是「删 alice」有可能把 Alice 连数据带文件删掉。
+const user = db.prepare('SELECT id, username FROM users WHERE username = ?')
   .get(String(username).trim());
 
 if (!user) {

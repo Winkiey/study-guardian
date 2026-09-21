@@ -113,8 +113,8 @@ if (usernameProblem(username)) {
 
 const db = getDb();
 
-// 先查一次给友好提示；真正的唯一性由 users.username 和
-// idx_users_username_lower 两个索引兜底（含「只差大小写」那种）
+// 先查一次给友好提示；真正的唯一性由 users.username 上的 UNIQUE 约束兜底。
+// 口径是**逐字节相等**（v9 起区分大小写）：Alice 和 alice 是两个可用的名字。
 if (isUsernameTaken(username)) {
   const existing = findUserByUsername(username);
   console.error(`\n✗ 用户名「${username}」已经被占用了（现有账号 #${existing.id} ${existing.username}）。`);

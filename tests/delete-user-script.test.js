@@ -175,11 +175,17 @@ describe('★ --yes 要真的删干净', () => {
       '★ 剩余账号列表必须是删完之后重新查的，不能是删除前的旧快照');
   });
 
-  test('大小写不同也能删（和登录一样不区分大小写）', async () => {
+  test('★ 大小写必须原样敲对（和登录一样区分大小写），敲错了不删任何东西', async () => {
     await makeAccountWithMaterial('MixedCaseName');
-    const { status, out } = runScript(['mixedcasename', '--yes']);
 
-    assert.equal(status, 0, `应该能找到并删除：\n${out}`);
+    // 敲错大小写：找不到这个账号，脚本应该报错退出
+    const wrong = runScript(['mixedcasename', '--yes']);
+    assert.notEqual(wrong.status, 0, `大小写不对应该报错退出，实际退出码 ${wrong.status}`);
+    assert.ok(accountExists('MixedCaseName'), '★ 没找到账号时不能顺手删掉任何东西');
+
+    // 原样敲对才删得掉
+    const right = runScript(['MixedCaseName', '--yes']);
+    assert.equal(right.status, 0, `应该能找到并删除：\n${right.out}`);
     assert.ok(!accountExists('MixedCaseName'));
   });
 

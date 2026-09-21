@@ -3982,7 +3982,8 @@ async function run() {
     //
     // 这一节钉住四件事：
     //   1. 打开网站同时能看到「登录」和「注册」两个入口
-    //   2. 用户名不能重名（连只差大小写都不行）
+    //   2. 用户名逐字节唯一、**区分大小写**：差一个字母的大小写就是另一个账号，
+    //      登录也必须原样拼对（v9 起；v4 曾经把大小写折叠掉）
     //   3. **数据互相不干扰** —— 这条最要紧，因为把 user_id 漏在某个查询里，
     //      界面上完全看不出来：每个人看到的都「像是自己的东西」
     //   4. 注销要真的删干净，包括磁盘上的课件
@@ -4095,7 +4096,7 @@ async function run() {
     ok('★ 新用户的首页是自己的（看到的是自己的名字，不是别人的）',
       otherHome.text.includes('第二个用户'));
 
-    // 再注册一个纯英文名的，用来验「只差大小写也算重名」
+    // 再注册一个纯英文名的，用来验「大小写区分、只差大小写是两个账号」
     const caseName = `E2ECaseUser${Math.floor(Math.random() * 10000)}`;
     const regCase = await newBrowser()('POST', '/register', {
       form: {
@@ -4105,20 +4106,54 @@ async function run() {
     });
     ok('英文用户名可以注册', regCase.status === 302, `状态码 ${regCase.status}`);
 
-    const dupCase = await newBrowser()('POST', '/register', {
+    // 只差大小写的是一个**新名字**，能注册成另一个账号（v9 起）
+    const lowerBrowser = newBrowser();
+    const dupCase = await lowerBrowser('POST', '/register', {
       form: {
         username: caseName.toLowerCase(), password: 'case123456', password2: 'case123456',
         inviteCode: E2E_INVITE_CODE,
       },
     });
-    ok('★ 只差大小写的用户名同样算重名（否则登录时不知道该进哪个账号）',
-      /已经有人用了/.test(dupCase.text), dupCase.text.slice(0, 150));
+    ok('★ 只差大小写的用户名能注册成另一个账号（不再算重名）',
+      dupCase.status === 302, `状态码 ${dupCase.status}`);
 
+    // 而逐字节完全相同的仍然要拦住（v9 只放开了大小写这一层）
+    const sameCase = await newBrowser()('POST', '/register', {
+      form: {
+        username: caseName, password: 'case123456', password2: 'case123456',
+        inviteCode: E2E_INVITE_CODE,
+      },
+    });
+    ok('★ 完全相同的用户名照样被拒（大小写放开不等于允许重名）',
+      /已经有人用了/.test(sameCase.text), sameCase.text.slice(0, 150));
+
+    // 大小写敲错 → 登不进（不能"用户名对了就行"）
     const upperLogin = await newBrowser()('POST', '/login', {
       form: { username: caseName.toUpperCase(), password: 'case123456' },
     });
-    ok('★ 登录不区分大小写（注册时怎么写的，登录时大小写敲错也能进）',
-      upperLogin.status === 302, `状态码 ${upperLogin.status}`);
+    ok('★ 登录区分大小写：大小写敲错进不去',
+      upperLogin.status !== 302 && /用户名或密码不正确/.test(upperLogin.text),
+      `状态码 ${upperLogin.status} —— 大小写敲错却登进去了`);
+
+    // 而且**原来那个账号也没被顶掉**：敲错大小写不该有副作用
+    const caseHome = await newBrowser()('POST', '/login', {
+      form: { username: caseName, password: 'case123456' },
+    });
+    ok('★ 原样拼对就能进（大小写不是随机放行，是精确匹配）',
+      caseHome.status === 302, `状态码 ${caseHome.status}`);
+
+    // 两个账号确实各是各的（后注册的那个是独立账号，不是登进了同一个）
+    const lowerHome = await lowerBrowser('GET', '/api/courses');
+    ok('★ 只差大小写的两个账号是两个人（各自的数据互不相干）',
+      lowerHome.status === 200 && (lowerHome.json?.courses || []).length === 0,
+      `新账号里不该有别人的课程，实际 ${(lowerHome.json?.courses || []).length} 门`);
+
+    // 登录页要**常驻**提醒这件事（不能靠出错才说 —— 那会变成用户名探测接口）
+    const caseLoginPage = await newBrowser()('GET', '/login');
+    ok('★ 登录页常驻写明「区分大小写」',
+      /区分大小写/.test(caseLoginPage.text), '登录页没提大小写，用户敲错了会以为是密码问题');
+    ok('★ 但登录页不提示「这个用户名存在吗」（探测口不能开回来）',
+      !/不存在这个用户|用户不存在|没有这个用户/.test(caseLoginPage.text));
 
     // 已登录的人不该能从注册接口再建号（否则会被悄悄切成新账号）
     const regWhileLoggedIn = await req('POST', '/register', {

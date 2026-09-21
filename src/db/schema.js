@@ -12,7 +12,7 @@
  */
 
 /** 当前结构版本号，配合 PRAGMA user_version 做迁移 */
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 9;
 
 /**
  * 课程标记色的默认值。
@@ -120,6 +120,23 @@ export const MIGRATIONS = {
   8: [
     (db) => addColumnIfMissing(db, 'materials', 'published', 'INTEGER NOT NULL DEFAULT 0'),
   ],
+  // v9：用户名改成**彻底区分大小写**，把 v4 那个 lower() 索引撤掉。
+  //
+  // v4 的推理是「登录不区分大小写，所以库里不能同时有 Alice 和 alice，
+  // 否则不知道该登进哪一个」。现在登录改成精确匹配了，那个前提不成立 ——
+  // 精确匹配下「Alice 和 alice 同时存在」不会产生任何歧义，两个名字
+  // 就是两个账号。留着那个索引反而矛盾：它禁止注册一个**能正常登录**的名字。
+  //
+  // 撤掉之后唯一性靠 users.username 上的 `TEXT NOT NULL UNIQUE` ——
+  // SQLite 的 TEXT 默认是 BINARY 比较，本身就不折叠大小写，正好是想要的
+  // 口径，所以这里**只删不加**，不需要再建一个新索引。
+  // （那个 UNIQUE 自带一个隐式索引，`WHERE username = ?` 照样走索引。）
+  //
+  // 已有数据一定安全：老索引保证了库里不可能出现只差大小写的两行，
+  // 所以删索引这一步不会撞上重复键。
+  9: [
+    (db) => db.exec('DROP INDEX IF EXISTS idx_users_username_lower'),
+  ],
 };
 
 /** 缺了才加，已经有了就跳过（让迁移可以安全重跑） */
@@ -134,11 +151,14 @@ export const SCHEMA_SQL = `
 -- ============================================================
 -- 用户。多用户：每个人的数据靠各表的 user_id 隔开。
 --
--- username 上的唯一性有两条：
---   users.username UNIQUE     —— 完全相同的不许重名
---   idx_users_username_lower  —— 只差大小写的也不许重名（v4 加的）
--- 第二条是必须的：登录本身不区分大小写，如果库里同时存在 Alice 和 alice，
--- 就没法判断该登进哪一个。
+-- username 上的唯一性只有一条：这个 UNIQUE 约束。
+-- SQLite 的 TEXT 默认按 BINARY 比较，所以它是**区分大小写**的：
+-- Alice 和 alice 是两个不同的账号，可以同时存在（v9 起就是这个口径；
+-- v4 曾经用 idx_users_username_lower 禁止过，v9 又把那个索引删了）。
+--
+-- ⚠️ 加 COLLATE NOCASE 或者改回 lower() 索引之前，先去看 v4 / v9 两段注释：
+--    唯一性口径必须和 auth.js 的 findUserByUsername 一致，不一致就会出现
+--    「注册时说这名字被占了、登录时又登不进任何账号」这种死结。
 -- ============================================================
 CREATE TABLE IF NOT EXISTS users (
   id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -160,7 +180,8 @@ CREATE TABLE IF NOT EXISTS users (
   -- 字符串，于是不存在路径穿越的余地，也不用再写一层过滤。
   avatar_ext       TEXT NOT NULL DEFAULT ''
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_lower ON users(lower(username));
+-- 用户名上**没有**额外的索引了：唯一致约束就是上面那个 UNIQUE
+-- （v9 删掉了 v4 加的 idx_users_username_lower，见那两段注释）。
 
 -- ============================================================
 -- 学期。课表的周次计算依赖「第 1 周周一」是哪一天。
