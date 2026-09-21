@@ -246,7 +246,9 @@ function materialRow(m, schoolVerified = true) {
 // 预览页
 // ============================================================
 
-export function materialPreviewPage({ user, material, siblings, textContent, officeData, editFormTemplate = '' }) {
+export function materialPreviewPage({
+  user, material, siblings, textContent, officeData, editFormTemplate = '', isOwner = true,
+}) {
   // 预览有缺憾时要如实告诉用户，并且给一个「重新转换」的入口。
   //
   // 三种情况：
@@ -278,11 +280,17 @@ export function materialPreviewPage({ user, material, siblings, textContent, off
 ${pageHeader({
     title: material.title,
     subtitle: `${escapeHtml(material.original_name)} · ${escapeHtml(material.kindLabel)} · ${escapeHtml(material.sizeLabel)}`,
-    breadcrumb: `<a href="/materials">资料库</a> ${icon('chevronRight', 12)} ${escapeHtml(material.title)}`,
+    // 看别人的资料时，面包屑的第一格应该是「校友社区」而不是「资料库」——
+    // 点「资料库」会回到自己那堆文件，和眼前这份毫无关系，等于把人带丢。
+    breadcrumb: isOwner
+      ? `<a href="/materials">资料库</a> ${icon('chevronRight', 12)} ${escapeHtml(material.title)}`
+      : `<a href="/community">校友社区</a> ${icon('chevronRight', 12)} ${escapeHtml(material.title)}`,
     actions: `
       <a class="btn btn--outline btn--sm" href="/materials/${material.id}/raw?download=1">${icon('download', 16)}<span>下载原件</span></a>
       ${material.pdf_name ? `<a class="btn btn--outline btn--sm" href="/materials/${material.id}/pdf?download=1">${icon('download', 16)}<span>下载 PDF</span></a>` : ''}
-      <button type="button" class="btn btn--outline btn--sm" data-edit-material="${material.id}">${icon('edit', 16)}<span>编辑</span></button>
+      ${/* 编辑只有本人能用 —— 后端所有改资料的接口都带 user_id 校验，
+           同校同学点了只会失败。摆在别人面前等于在骗人，所以直接不渲染。 */ ''}
+      ${isOwner ? `<button type="button" class="btn btn--outline btn--sm" data-edit-material="${material.id}">${icon('edit', 16)}<span>编辑</span></button>` : ''}
       ${material.canPreview
         // 默认 hidden：这个按钮要 JavaScript 才管用，没有 JS 时不该摆一个按不动的按钮。
         // app.js 的 initMaterialViewer() 会把它显示出来。
@@ -321,7 +329,7 @@ ${pageHeader({
         <div class="notice__body">
           <strong>${escapeHtml(rebuildNotice.title)}</strong>
           <p class="small">${escapeHtml(rebuildNotice.body)}</p>
-          <button type="button" class="btn btn--outline btn--sm" data-rebuild-preview="${material.id}">${icon('refresh', 14)}<span>重新转换</span></button>
+          ${isOwner ? `<button type="button" class="btn btn--outline btn--sm" data-rebuild-preview="${material.id}">${icon('refresh', 14)}<span>重新转换</span></button>` : ''}
         </div>
       </div>` : ''}
 

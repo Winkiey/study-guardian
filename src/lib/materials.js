@@ -159,6 +159,36 @@ export function decorateMaterial(row) {
   };
 }
 
+/**
+ * 按 id 取一份资料，**不带任何归属校验**。
+ *
+ * ⚠️ 这个函数自己**不判断**"这个人能不能看"。调用方必须先过一道
+ *    `community.canViewMaterial(viewerId, row.user_id, row)`，
+ *    否则就是把别人的资料（包括没公开的）直接端出去。
+ *
+ * 为什么需要它：校友社区里同校同学要能**打开**别人公开的资料，
+ * 所以「按 id 取」和「按 id + user_id 取」是两件事，不能混成一个函数。
+ * 自己的入口（列表、编辑、删除）一律用下面那个 getMaterial ——
+ * 它的 WHERE 里带着 user_id，是硬约束。
+ */
+export function getMaterialById(id) {
+  const row = get(
+    `SELECT m.*, c.name AS course_name, c.color AS course_color
+       FROM materials m
+       LEFT JOIN courses c ON c.id = m.course_id
+      WHERE m.id = ?`,
+    Number(id),
+  );
+  return decorateMaterial(row);
+}
+
+/**
+ * 取**自己的**一份资料。
+ *
+ * WHERE 里的 `m.user_id = ?` 是硬约束：所以「读别人的东西」在数据层就
+ * 命中不到，不用指望上层记得判断 —— 这也是它能安全地给编辑/删除用的原因。
+ * 要读别人公开的资料，用上面的 getMaterialById + canViewMaterial。
+ */
 export function getMaterial(userId, id) {
   const row = get(
     `SELECT m.*, c.name AS course_name, c.color AS course_color

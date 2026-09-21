@@ -60,7 +60,8 @@ import { settingsPage, loginPage } from '../web/pages/settings.js';
 import { importManualPage, importPage, importResultPage } from '../web/pages/import.js';
 import { alumniPage, communityPage } from '../web/pages/community.js';
 import {
-  alumniList, alumniMaterials, canViewCommunityUser, communityFeed, communityNewCount,
+  alumniList, alumniMaterials, canViewCommunityUser, canViewMaterial, communityFeed,
+  communityNewCount,
   countAlumni, countCommunityFeed, markCommunitySeen,
   myPublishedCount, myPublishedMaterials, publicProfile,
 } from '../lib/community.js';
@@ -599,8 +600,21 @@ export function registerPages(router) {
   router.get('/materials/:id', page(async (ctx) => {
     const userId = ctx.user.id;
     const id = Number.parseInt(ctx.params.id, 10);
-    const material = materials.getMaterial(userId, id);
-    if (!material) throw notFound('资料不存在');
+
+    // ⚠️ 这里**不能**用 getMaterial(userId, id)：它的 WHERE 带着 user_id，
+    //    于是同校同学在社区里点开别人公开的资料会直接 404 ——
+    //    而那正好是社区存在的意义（能看、能下载）。这个 bug 被用户撞出来过。
+    //
+    // 改成「按 id 取 + 走一遍授权」，和 src/routes/files.js 的 resolveMaterial
+    // 是同一套做法。授权判断本身只在 community.js 的 canViewMaterial 里有一处：
+    // 自己的随便看；别人的必须「已公开 + 同校 + 双方学校都已验证」。
+    const material = materials.getMaterialById(id);
+    if (!material || !canViewMaterial(userId, material.user_id, material)) {
+      // 看不到和不存在给**同一个** 404 —— 403 等于确认「这份资料存在」，
+      // 拿一串 id 试一遍就能数出同校公开了多少份。
+      throw notFound('资料不存在');
+    }
+    const isOwner = Number(material.user_id) === Number(userId);
 
     // 文本类资料读取正文；Office 类尝试读取抽取出来的结构
     let textContent = '';
@@ -625,16 +639,25 @@ export function registerPages(router) {
     output(ctx.res, materialPreviewPage({
       user: ctx.user,
       material,
-      siblings: materials.siblingMaterials(userId, id, material.course_id),
+      // 看别人的资料时不列「同课程资料」：那个查询是按 user_id 过滤的，
+      // 传**主人**的 id 会把主人**没公开**的资料一起列出来（泄露），
+      // 传**自己**的 id 又会列出一堆和这份资料无关的自有文件（误导）。
+      // 所以干脆不显示 —— 要浏览同校同学还有什么，走他的校友页。
+      siblings: isOwner ? materials.siblingMaterials(userId, id, material.course_id) : [],
       textContent,
       officeData,
+      // 是不是本人。不是本人的话，页面要收起「编辑 / 删除 / 重新转换」——
+      // 那些按钮对同校同学点了只会失败（后端都带 user_id 校验），
+      // 摆在别人面前等于在骗人。
+      isOwner,
       // 预览页也要能「编辑资料信息」，把表单模板一并渲染进页面
       // （schoolVerified 一起带上：这里也有那个公开开关，同样要说实话）
-      editFormTemplate: renderMaterialEditForm({
+      // 只有本人会用到它，所以看别人的资料时不注入。
+      editFormTemplate: isOwner ? renderMaterialEditForm({
         courses: courses.listCourses(userId),
         schoolVerified: schoolIsVerified(ctx.user.school),
         hasNickname: Boolean(String(ctx.user.display_name || '').trim()),
-      }),
+      }) : '',
     }), { user: ctx.user, stats: navStats(userId), wide: true });
   }));
 

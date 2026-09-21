@@ -2724,6 +2724,43 @@ async function run() {
         outMissing.status === outDenied.status,
         `不存在=${outMissing.status} 没权限=${outDenied.status}`);
 
+      // ⚠️⚠️ 「社区里看得见卡片，点开却 404」—— 用户撞出来的真 bug。
+      //    原因：预览页用的是 getMaterial(userId, id)，WHERE 里带着 user_id，
+      //    于是同校同学点开别人公开的资料直接 404。而**预览页正是社区卡片
+      //    的链接目标** —— 也就是说社区当时是"看得见、点不开"的。
+      //    以前这里只验了「能下载原文件」，从没验过「能打开预览页」，
+      //    整条主路径就这么漏掉了。
+      {
+        const matePreview = await schoolMate('GET', `/materials/${materialId}`);
+        ok('★★ 同校同学能打开预览页（社区卡片点进去的就是这一页）',
+          matePreview.status === 200,
+          `状态码 ${matePreview.status} —— 卡片看得见、点开 404，就是那个 bug`);
+        // 200 也可能是"错误页恰好回 200"，所以再确认页面上真有预览页的东西
+        ok('★ 而且这是个真的预览页（有下载入口），不是空壳或错误页',
+          matePreview.text.includes(`/materials/${materialId}/raw?download=1`));
+
+        // 看别人的资料时，本人那几个入口必须收起来：后端所有改资料的接口
+        // 都带 user_id 校验，同校同学点了只会失败，摆出来等于骗人。
+        ok('★ 同校同学看不到「编辑」按钮',
+          !/data-edit-material=/.test(matePreview.text),
+          '★ 别人的资料页上还摆着「编辑」按钮，点了只会失败');
+        ok('★ 也看不到「重新转换」和编辑表单模板',
+          !/data-rebuild-preview=/.test(matePreview.text)
+          && !/material-edit-template/.test(matePreview.text));
+        ok('★ 面包屑指向校友社区，而不是把人带去自己的资料库',
+          /href="\/community"/.test(matePreview.text));
+
+        // 对照：本人打开自己的资料页，那些东西必须都还在 ——
+        // 少了这一条，上一条会被"把编辑按钮整个删掉"满足。
+        const ownPreview = await req('GET', `/materials/${materialId}`);
+        ok('★ 对照：本人打开自己的资料页，编辑入口仍然都在',
+          /data-edit-material=/.test(ownPreview.text)
+          && /material-edit-template/.test(ownPreview.text),
+          '★ 为了不让别人编辑，把本人的编辑入口也一起删掉了');
+        ok('★ 对照：本人看到的仍是「资料库」面包屑',
+          /href="\/materials"/.test(ownPreview.text));
+      }
+
       // 取消公开之后，同校同学立刻拿不到
       const unpub = await req('PATCH', `/api/materials/${materialId}`, { json: { published: 0 } });
       ok('★ 能取消公开', unpub.status === 200, `状态码 ${unpub.status}`);
