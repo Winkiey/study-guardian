@@ -43,6 +43,29 @@ function periodLengthLabel(start, end) {
   return m ? `${h} 小时 ${m} 分` : `${h} 小时`;
 }
 
+/**
+ * 学校输入框（注册页和个人资料页共用）。
+ *
+ * 不用 `<datalist>`：那要把 3013 个校名塞进页面，光注册页就多约 120KB HTML，
+ * 和「登录页要更轻」的目标直接冲突；而且 datalist 的下拉框没法按站内样式收口。
+ * 这里用普通输入框 + 一个空的下拉容器，内容由 app.js 按输入内容去
+ * `/api/schools` 取（每次几百字节）。
+ *
+ * ⚠️ 它仍然是一个**普通文本框**：禁用 JS 时它就是「自己把校名写全」，
+ *    服务端照样按名单校验 —— 功能不丢，只是没有提示。
+ *
+ * @param {{id: string, value: string}} p
+ */
+export function schoolInput({ id, value }) {
+  return `<div class="combo" data-school-combo>
+    <input id="${escapeHtml(id)}" class="input" name="school" autocomplete="off"
+           value="${escapeHtml(value)}" placeholder="打几个字，例如：东北财经"
+           maxlength="60" role="combobox" aria-expanded="false" aria-autocomplete="list"
+           aria-controls="${escapeHtml(id)}_list">
+    <div class="combo__list" id="${escapeHtml(id)}_list" role="listbox" hidden></div>
+  </div>`;
+}
+
 export function settingsPage({
   user,
   settings,
@@ -58,6 +81,9 @@ export function settingsPage({
   periodSchedule = [],
   defaultPeriodSchedule = [],
   hasCustomPeriods = false,
+  // 学校是不是从名单里选的。默认 false：拿不到就按"未验证"处理 ——
+  // 这个标记只影响提示文案和能不能进社区，宁可少显示，也不要误报成已验证。
+  schoolVerified = false,
 }) {
   const body = `
 ${pageHeader({
@@ -437,15 +463,58 @@ ${card({
     title: '账号',
     body: `<dl class="kv mb-md">
       <dt>用户名</dt><dd><code>${escapeHtml(user?.username || '')}</code></dd>
-      ${user?.display_name ? `<dt>称呼</dt><dd>${escapeHtml(user.display_name)}</dd>` : ''}
-      ${user?.school ? `<dt>学校</dt><dd>${escapeHtml(user.school)}</dd>` : ''}
       ${user?.created_at ? `<dt>注册于</dt><dd>${escapeHtml(String(user.created_at).slice(0, 10))}</dd>` : ''}
     </dl>
     <p class="field__help mb-md">
       这里是你自己的账号。你的课表、作业、课件和提醒都只存在这个账号下，
       别人注册了账号也看不到 —— 同一个站点上每个人的数据是分开的。
       用户名不能和别人的重复（大写小写算同一个），所以别忘了它。
+      用户名<strong>永远不显示给校友社区里的其他人</strong>，那边只看得到昵称。
     </p>
+  <form class="form" data-profile-form>
+    <div class="form__row">
+      <div class="field field--grow">
+        <label class="field__label" for="pf_name">怎么称呼你</label>
+        <input id="pf_name" class="input" name="displayName" maxlength="24"
+               value="${escapeHtml(user?.display_name || '')}" placeholder="例如：小王">
+        <p class="field__help">首页问候语和校友社区里都显示这个。</p>
+      </div>
+    </div>
+    <div class="field">
+      <label class="field__label" for="pf_school">学校</label>
+      ${schoolInput({ id: 'pf_school', value: user?.school || '' })}
+      ${/* 老账号的学校是手填的（那时候还没有名单）。不能因为对不上名单就
+           把它删掉 —— 那是用户自己填的。所以这里只做标记 + 提示重选。 */ ''}
+      ${user?.school && !schoolVerified ? `<p class="field__help text-warn">
+        ⚠️ 现在填的「${escapeHtml(user.school)}」<strong>不在学校名单里</strong>，
+        所以你还进不了校友社区（社区按学校分，名字对不上就找不到同学）。
+        从下面的候选里挑一个保存一下就好。
+      </p>` : ''}
+      ${!user?.school ? `<p class="field__help">
+        还没填学校。填了才能进校友社区 —— 到时候能看到同校同学公开的资料。
+      </p>` : ''}
+    </div>
+    <div class="form__row">
+      <div class="field field--grow">
+        <label class="field__label" for="pf_college">学院</label>
+        <input id="pf_college" class="input" name="college" maxlength="40"
+               value="${escapeHtml(user?.college || '')}" placeholder="例如：金融科技学院">
+      </div>
+      <div class="field field--grow">
+        <label class="field__label" for="pf_major">专业</label>
+        <input id="pf_major" class="input" name="major" maxlength="40"
+               value="${escapeHtml(user?.major || '')}" placeholder="例如：金融科技">
+      </div>
+    </div>
+    <p class="field__help">
+      学院和专业<strong>只有同校同学能看到</strong>（在校友社区里）。
+      站外的人、别的学校的人都看不到。
+    </p>
+    <div class="form__actions">
+      <button type="submit" class="btn btn--primary">保存资料</button>
+    </div>
+  </form>
+
   <form class="form" data-password-form>
     <div class="form__row">
       <div class="field field--grow">
@@ -769,11 +838,27 @@ export function loginPage({
           </div>
           <div class="field">
             <label class="field__label" for="rg_name">怎么称呼你（选填）</label>
-            <input id="rg_name" class="input" name="displayName" placeholder="例如：小王">
+            <input id="rg_name" class="input" name="displayName" placeholder="例如：小王" maxlength="24">
           </div>
           <div class="field">
             <label class="field__label" for="rg_school">学校（选填）</label>
-            <input id="rg_school" class="input" name="school" placeholder="例如：东北财经大学">
+            ${schoolInput({ id: 'rg_school', value: '' })}
+            <p class="field__help">
+              打几个字会跳出候选，<strong>从里面挑一个</strong>。
+              以后「校友社区」是按学校分的 —— 校名写得不一致就找不到同学，
+              所以只认名单里的校名（手填的「北大」不算「北京大学」）。
+              留空也能注册，但那样不参与校友社区。
+            </p>
+          </div>
+          <div class="form__row">
+            <div class="field field--grow">
+              <label class="field__label" for="rg_college">学院（选填）</label>
+              <input id="rg_college" class="input" name="college" placeholder="例如：金融科技学院" maxlength="40">
+            </div>
+            <div class="field field--grow">
+              <label class="field__label" for="rg_major">专业（选填）</label>
+              <input id="rg_major" class="input" name="major" placeholder="例如：金融科技" maxlength="40">
+            </div>
           </div>
           ${inviteRequired ? `
           <div class="field">

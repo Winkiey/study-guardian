@@ -2410,6 +2410,8 @@ function initSettings() {
   initSettingsForm();
   initPasswordForm();
   initFieldErrors();
+  initSchoolPickers();
+  initProfileForm();
   initRevokeButtons();
   initDeleteAccount();
   initSchedulerButton();
@@ -3353,6 +3355,173 @@ function initFieldErrors() {
   // 用捕获阶段：有些组件的 input 事件会在冒泡路上被 stopPropagation 吃掉
   document.addEventListener('input', clearOne, true);
   document.addEventListener('change', clearOne, true);
+}
+
+// ============================================================
+// 学校选择 + 个人资料
+// ============================================================
+
+/**
+ * 学校输入框的候选下拉。
+ *
+ * 为什么不把 3013 个校名一次性写进页面：注册页是**首屏**，
+ * 那样要多传约 120KB 的 HTML。按输入内容去 `/api/schools` 取，
+ * 每次只有几百字节。
+ *
+ * 细节：
+ *   · 输入停顿 180ms 才发请求 —— 每敲一个字就发一次，打字快的人会打出一串请求；
+ *   · 用 AbortController 取消上一次请求：不然「东」的响应可能比「东北」晚回来，
+ *     把已经过时的候选盖上去（这个现象叫乱序响应，很难复现也很难查）；
+ *   · 键盘要能用：上下键选、回车确认、Esc 关掉 —— 只用鼠标的下拉等于没做；
+ *   · 但它只是一个**提示**：真正说了算的是服务端按名单校验，
+ *     所以即使 JS 挂了、用户手打了校名，也不会因此写进一个假学校。
+ */
+function initSchoolPickers() {
+  const combos = [...document.querySelectorAll('[data-school-combo]')];
+  if (!combos.length) return;
+
+  for (const combo of combos) {
+    const input = combo.querySelector('input');
+    const list = combo.querySelector('.combo__list');
+    if (!input || !list) continue;
+
+    let timer = null;
+    let controller = null;
+    let items = [];
+    let active = -1;
+
+    const close = () => {
+      list.hidden = true;
+      list.textContent = '';
+      items = [];
+      active = -1;
+      input.setAttribute('aria-expanded', 'false');
+    };
+
+    const highlight = (i) => {
+      active = i;
+      [...list.children].forEach((el, n) => {
+        el.classList.toggle('is-active', n === i);
+        el.setAttribute('aria-selected', n === i ? 'true' : 'false');
+        if (n === i) el.scrollIntoView({ block: 'nearest' });
+      });
+    };
+
+    const show = (schools) => {
+      items = schools;
+      list.textContent = '';
+      if (!schools.length) return close();
+      for (const [i, s] of schools.entries()) {
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'combo__item';
+        row.setAttribute('role', 'option');
+        row.setAttribute('aria-selected', 'false');
+        // 校名 + 所在地：校名相似的学校靠所在地区分
+        const nameEl = document.createElement('span');
+        nameEl.className = 'combo__name';
+        nameEl.textContent = s.name;
+        row.appendChild(nameEl);
+        if (s.place) {
+          const placeEl = document.createElement('span');
+          placeEl.className = 'combo__place';
+          placeEl.textContent = s.place;
+          row.appendChild(placeEl);
+        }
+        row.addEventListener('mousedown', (e) => {
+          // mousedown 而不是 click：click 之前 input 会先 blur，下拉已经关了
+          e.preventDefault();
+          input.value = s.name;
+          close();
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+        });
+        list.appendChild(row);
+      }
+      list.hidden = false;
+      input.setAttribute('aria-expanded', 'true');
+      highlight(0);
+    };
+
+    const search = async () => {
+      const q = input.value.trim();
+      if (q.length < 2) return close();
+      if (controller) controller.abort();
+      controller = new AbortController();
+      try {
+        const res = await fetch(`/api/schools?q=${encodeURIComponent(q)}`, {
+          signal: controller.signal, headers: { Accept: 'application/json' },
+        });
+        if (!res.ok) return close();
+        const data = await res.json();
+        show(data.schools || []);
+      } catch {
+        // 断网或被 abort 都只是"没有候选"，不该弹错误打断用户填表
+        close();
+      }
+    };
+
+    input.addEventListener('input', () => {
+      clearTimeout(timer);
+      timer = setTimeout(search, 180);
+    });
+    input.addEventListener('blur', () => setTimeout(close, 120));
+    input.addEventListener('keydown', (e) => {
+      if (list.hidden) return;
+      if (e.key === 'ArrowDown') { e.preventDefault(); highlight(Math.min(active + 1, items.length - 1)); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); highlight(Math.max(active - 1, 0)); }
+      else if (e.key === 'Enter' && active >= 0) {
+        e.preventDefault();
+        input.value = items[active].name;
+        close();
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+      } else if (e.key === 'Escape') close();
+    });
+  }
+}
+
+/**
+ * 个人资料表单。
+ *
+ * 学校不在名单里时，服务端会回 400 并说明原因 —— 那个错误要挂在
+ * 「学校」这个字段下面，而不是弹一个飘走的提示（用户得知道改哪一格）。
+ */
+function initProfileForm() {
+  const form = document.querySelector('[data-profile-form]');
+  if (!form) return;
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    clearFieldErrors(form);
+    const raw = formToObject(form);
+    const btn = form.querySelector('button[type=submit]');
+    btn.disabled = true;
+    btn.classList.add('is-loading');
+    try {
+      const result = await api('/api/profile', {
+        method: 'POST',
+        body: {
+          displayName: raw.displayName || '',
+          school: raw.school || '',
+          college: raw.college || '',
+          major: raw.major || '',
+        },
+      });
+      if (result?.schoolVerified) {
+        toast('资料已保存。校友社区里能看到你学校的人了', 'success');
+      } else if (String(raw.school || '').trim()) {
+        toast('资料已保存', 'success');
+      } else {
+        toast('资料已保存。填上学校才能进校友社区', 'success', 6000);
+      }
+      // 页面上的昵称、侧栏头像首字母都是从服务端渲染的，重载才能刷新
+      setTimeout(reloadPreservingScroll, 700);
+    } catch (err) {
+      if (!placeServerError(form, err.message)) toast(err.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.classList.remove('is-loading');
+    }
+  });
 }
 
 // ============================================================

@@ -2514,14 +2514,41 @@ async function run() {
       goodProfile.json?.schoolVerified === true);
 
     const profilePage = await req('GET', '/settings');
-    ok('★ 保存后设置页上能看到学校（数据真的落到了 users 表）',
-      profilePage.text.includes('东北财经大学'),
-      '页面上找不到刚保存的学校');
-    // ⚠️ 学院/专业目前只存下来了，页面上还没有编辑入口（下一批做）。
-    //    这里因此**不断言**它们出现在页面上 —— 写了就会红，
-    //    而"把它删掉当作没这回事"又会掩盖缺口。所以留一句说明在这里。
-    const savedRow = await req('GET', '/api/schools?q=' + encodeURIComponent('东北财经大学'));
-    ok('（说明）学院/专业已入库，编辑界面待做', savedRow.status === 200);
+    ok('★ 保存后设置页上能看到学校、学院和专业（数据真的落到了 users 表）',
+      profilePage.text.includes('东北财经大学')
+      && profilePage.text.includes('金融科技学院')
+      && profilePage.text.includes('金融科技'),
+      '页面上找不到刚保存的资料');
+    // 个人资料表单本身
+    ok('★ 设置页有个人资料表单（昵称/学校/学院/专业）',
+      /<form[^>]*data-profile-form/.test(profilePage.text)
+      && /name="displayName"/.test(profilePage.text)
+      && /name="college"/.test(profilePage.text)
+      && /name="major"/.test(profilePage.text));
+    ok('★ 学校输入框带候选容器（内容由 JS 按输入去接口取，不预塞 3013 条）',
+      profilePage.text.includes('data-school-combo')
+      && profilePage.text.includes('combo__list'));
+    ok('★ 页面里**没有**把全部校名预塞进来（注册页要多 120KB 的那种做法）',
+      !profilePage.text.includes('阿坝职业学院'),
+      '页面里出现了只有完整名单才有的学校 —— 说明列表被整份写进页面了');
+    ok('★ 表格里明确说了「学院专业只有同校同学能看到」',
+      /只有同校同学能看到/.test(profilePage.text));
+    ok('★ 账号卡片里说明了用户名不会展示给校友社区',
+      /用户名<strong>永远不显示给校友社区/.test(profilePage.text)
+      || /永远不显示给校友社区/.test(profilePage.text));
+
+    // 注册页也要有：学校候选 + 学院/专业
+    const regPage = createClient(baseUrl);
+    const regHtml = (await regPage('GET', '/login')).text;
+    ok('★ 注册页也有学校候选框和学院/专业',
+      /data-school-combo/.test(regHtml)
+      && /name="college"/.test(regHtml)
+      && /name="major"/.test(regHtml),
+      '注册页缺了学校候选或学院/专业');
+    ok('★ 注册页也没预塞整份名单',
+      !regHtml.includes('阿坝职业学院'));
+    ok('★ 注册页说清了「只认名单里的校名」',
+      /只认名单里的校名/.test(regHtml));
 
     // 空学校允许（注册时选填），但不参与社区
     const emptySchool = await req('POST', '/api/profile', {

@@ -30,6 +30,7 @@ import {
   clearSessionCookie,
   createUser,
   normalizeProfile,
+  schoolIsVerified,
   currentUser,
   findUserByUsername,
   hashPassword,
@@ -571,6 +572,8 @@ export function registerPages(router) {
       periodSchedule: getPeriodSchedule(userId),
       defaultPeriodSchedule: DEFAULT_PERIOD_SCHEDULE,
       hasCustomPeriods: hasCustomPeriodSchedule(userId),
+      // 学校是否来自名单。老账号手填的值对不上名单，页面上会把这件事说清楚
+      schoolVerified: schoolIsVerified(ctx.user.school),
     }), { user: ctx.user, stats: navStats(userId) });
   }));
 
