@@ -125,6 +125,9 @@ export const NAV_ITEMS = [
   { href: '/courses', label: '课程', icon: 'book', key: 'courses' },
   { href: '/assignments', label: '作业', icon: 'check', key: 'assignments' },
   { href: '/materials', label: '资料', icon: 'folder', key: 'materials' },
+  // 校友社区。放在「资料」后面：社区里就是同校同学公开出来的资料，
+  // 两个入口挨着，用户容易理解它们的关系。
+  { href: '/community', label: '社区', icon: 'users', key: 'community' },
   { href: '/settings', label: '设置', icon: 'settings', key: 'settings' },
 ];
 

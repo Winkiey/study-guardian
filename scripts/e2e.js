@@ -2766,6 +2766,100 @@ async function run() {
       await req('PATCH', `/api/materials/${materialId}`, { json: { published: 0 } });
     }
 
+    // ---- 校友社区 ----
+    {
+      // 先让同校同学公开一份资料（用他自己上传的，不能拿我的 ——
+      // 社区列表里**不该**出现我自己的东西）
+      const mateUp = multipart(
+        { title: '同校同学的笔记', category: 'courseware' },
+        { field: 'file', filename: '笔记.txt', type: 'text/plain', data: Buffer.from('同校共享的笔记') },
+      );
+      const mateUpload = await schoolMate('POST', '/api/materials', {
+        body: mateUp.body, headers: { 'Content-Type': mateUp.contentType },
+      });
+      const mateMaterialId = mateUpload.json?.material?.id
+        || mateUpload.json?.id;
+      ok('（前提）同校同学上传了一份资料', Boolean(mateMaterialId));
+      await schoolMate('PATCH', `/api/materials/${mateMaterialId}`, { json: { published: 1 } });
+
+      // 外校同学也公开一份，用来验它不会出现在我的社区里
+      const outUp = multipart(
+        { title: '外校同学的笔记', category: 'courseware' },
+        { field: 'file', filename: '外校.txt', type: 'text/plain', data: Buffer.from('外校的东西') },
+      );
+      const outUpload = await outsider('POST', '/api/materials', {
+        body: outUp.body, headers: { 'Content-Type': outUp.contentType },
+      });
+      const outMaterialId = outUpload.json?.material?.id || outUpload.json?.id;
+      if (outMaterialId) {
+        await outsider('PATCH', `/api/materials/${outMaterialId}`, { json: { published: 1 } });
+      }
+
+      const board = await req('GET', '/community');
+      ok('★ 社区页能打开', board.status === 200, `状态码 ${board.status}`);
+      ok('★ 能看到同校同学公开的资料',
+        board.text.includes('同校同学的笔记'),
+        '同校同学公开的资料没出现在社区里');
+      ok('★ 看不到外校同学公开的资料（跨校隔离）',
+        !board.text.includes('外校同学的笔记'),
+        '★ 外校的东西出现在我的社区里 —— 学校的边界没生效');
+      ok('★ 社区列表里没有出现自己的资料（只显示别人的）',
+        board.text.includes('同校同学的笔记'));
+      // ⚠️ 这一条是本批最要紧的隐私断言
+      ok('★ 社区页面上没有同校同学的登录用户名',
+        !board.text.includes(MATE.username),
+        '★ 同校陌生人的登录用户名泄露了 —— 那是登录凭据');
+      ok('★ 也没有外校同学的用户名', !board.text.includes(OUT.username));
+      ok('★ 显示了同校同学的昵称和学院专业',
+        board.text.includes('同校同学') && board.text.includes('统计学院'));
+      ok('★ 页面说明了「只显示主动公开的」和用户名不展示',
+        /主动公开/.test(board.text) && /登录用户名不会显示给任何人/.test(board.text));
+      ok('★ 校友名单里只有公开过资料的人',
+        board.text.includes('同校校友') && board.text.includes('同校同学'));
+
+      // 校友页
+      const mateId = /\/community\/(\d+)/.exec(board.text)?.[1];
+      ok('（前提）社区页上能找到同校同学的校友页链接', Boolean(mateId));
+      if (mateId) {
+        const alumniPage = await req('GET', `/community/${mateId}`);
+        ok('★ 能看同校同学的校友页', alumniPage.status === 200, `状态码 ${alumniPage.status}`);
+        ok('★ 校友页显示了昵称、学校、学院、专业',
+          alumniPage.text.includes('同校同学') && alumniPage.text.includes('东北财经大学')
+          && alumniPage.text.includes('统计学院') && alumniPage.text.includes('统计学'));
+        ok('★ 校友页明说了「登录用户名不会显示给任何人」',
+          /登录用户名不会显示给任何人/.test(alumniPage.text));
+        ok('★ 校友页列出了他公开的资料', alumniPage.text.includes('同校同学的笔记'));
+      }
+
+      // 跨校看校友页：必须 404
+      const outsiderBoard = await outsider('GET', '/community');
+      const myIdMatch = /\/community\/(\d+)/.exec(board.text)?.[1];
+      ok('★ 外校同学的社区页是空的（看不到我们的东西）',
+        !outsiderBoard.text.includes('同校同学的笔记'),
+        '★ 外校同学看到了我们学校的公开资料');
+      if (myIdMatch) {
+        const crossAlumni = await outsider('GET', `/community/${myIdMatch}`);
+        ok('★ 外校同学打不开别人的校友页（404，不确认这个人存不存在）',
+          crossAlumni.status === 404, `状态码 ${crossAlumni.status}`);
+      }
+
+      // 没填学校的人：看到的是"还进不了社区"的说明，而不是空白或报错
+      const noSchoolBoard = await noSchool('GET', '/community');
+      ok('★ 没填学校的人打开社区不会报错，而是看到一句解释',
+        noSchoolBoard.status === 200 && /还进不了校友社区/.test(noSchoolBoard.text),
+        `状态码 ${noSchoolBoard.status}`);
+      ok('★ 而且那句解释告诉了他去哪里改',
+        /个人资料/.test(noSchoolBoard.text));
+      ok('★ 他看不到任何别人的资料',
+        !noSchoolBoard.text.includes('同校同学的笔记'));
+
+      // 收尾：把自己造的两份资料**删掉**（不只是取消公开）。
+      // 后面的用例在数磁盘上的文件个数，多留两个会让那边莫名其妙地红，
+      // 而报错信息完全指不到这里。
+      if (mateMaterialId) await schoolMate('DELETE', `/api/materials/${mateMaterialId}`);
+      if (outMaterialId) await outsider('DELETE', `/api/materials/${outMaterialId}`);
+    }
+
     const anonProfile = createClient(baseUrl);
     const anonProfileRes = await anonProfile('POST', '/api/profile', {
       json: { displayName: '路人', school: '东北财经大学' },

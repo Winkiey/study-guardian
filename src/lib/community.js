@@ -14,7 +14,7 @@
  *    而漏掉的后果是别人能看到本不该看到的东西。
  */
 
-import { get } from '../db/index.js';
+import { get, all } from '../db/index.js';
 import { schoolIsVerified } from './auth.js';
 
 /**
@@ -87,4 +87,173 @@ export function canViewMaterial(viewerId, ownerId, material) {
   const owner = get('SELECT school FROM users WHERE id = ?', ownerId);
   if (!viewer || !owner) return false;
   return sameSchool(viewer.school, owner.school);
+}
+
+// ============================================================
+// 社区列表
+// ============================================================
+
+/**
+ * 我所在的那所学校（已验证才返回，否则空串）。社区相关的查询都从这里起步。
+ *
+ * 返回空串意味着「这个人不参与社区」—— 所有列表查询因此返回**空数组**而不是抛错。
+ * 理由：没填学校 / 手填了对不上名单的学校是很正常的状态（老账号就是这样），
+ * 不该让页面报错，只该让社区是空的，并在页面上说清原因。
+ */
+function myVerifiedSchool(viewerId) {
+  const me = get('SELECT school FROM users WHERE id = ?', viewerId);
+  const school = String(me?.school || '').trim();
+  return school && schoolIsVerified(school) ? school : '';
+}
+
+/**
+ * 能不能看某个人的社区页。
+ *
+ * 自己永远能看；别人要**同校**。回 404 还是 403 由调用方决定 ——
+ * 页面那边统一回 404（403 等于确认「这个人存在」）。
+ */
+export function canViewCommunityUser(viewerId, ownerId) {
+  if (Number(viewerId) === Number(ownerId)) return true;
+  const school = myVerifiedSchool(viewerId);
+  if (!school) return false;
+  const owner = get('SELECT school FROM users WHERE id = ?', ownerId);
+  return Boolean(owner) && String(owner.school || '').trim() === school;
+}
+
+/** 个人资料页用：我公开了多少份 */
+export function myPublishedCount(userId) {
+  const row = get(
+    'SELECT COUNT(*) AS c FROM materials WHERE user_id = ? AND published = 1',
+    userId,
+  );
+  return Number(row?.c) || 0;
+}
+
+/**
+ * 社区资料流：**同校同学**公开出来的资料。
+ *
+ * 三条硬约束全部写在 SQL 的 WHERE 里，不在 JS 侧再过滤一遍 ——
+ * 多一层过滤就多一处会漏的地方，而漏的方向是"看到了不该看的"。
+ *   1. 资料是公开的；
+ *   2. 主人和我同校（字符串精确相等）；
+ *   3. 而且我的校名**在名单里**（下面单独说明）。
+ *
+ * ⚠️ 第 3 条最容易漏：只比较 `u.school = ?` 的话，两个都把学校填成
+ *    「家里蹲大学」的人会互相看到 —— 而那个名字是他们自己挑的。
+ *    所以先把校名送去 isKnownSchool 卡一道，不过就整体返回空。
+ *
+ * 返回的字段**不含用户名**（见上面 publicProfile 的说明），
+ * 也不含别人的 stored_name（磁盘文件名）—— 那个只在文件服务里用。
+ */
+export function communityFeed(viewerId, opts = {}) {
+  const school = myVerifiedSchool(viewerId);
+  if (!school) return [];
+
+  const limit = Math.min(Math.max(Number(opts.limit) || 40, 1), 100);
+  const params = [school, viewerId];
+  let courseFilter = '';
+  if (opts.courseId) {
+    courseFilter = ' AND m.course_id = ?';
+    params.push(Number(opts.courseId));
+  }
+  params.push(limit);
+
+  return all(
+    `SELECT m.id, m.title, m.description, m.kind, m.category,
+            m.size, m.created_at, m.updated_at, m.pdf_name,
+            u.id AS owner_id, u.display_name, u.college, u.major, u.avatar_ext,
+            c.name AS course_name, c.color AS course_color
+       FROM materials m
+       JOIN users u ON u.id = m.user_id
+       LEFT JOIN courses c ON c.id = m.course_id
+      WHERE m.published = 1
+        AND u.school = ?
+        AND u.id <> ?
+        ${courseFilter}
+      ORDER BY m.updated_at DESC
+      LIMIT ?`,
+    ...params,
+  ).map((r) => ({
+    id: r.id,
+    title: r.title || '',
+    description: r.description || '',
+    kind: r.kind || '',
+    category: r.category || '',
+    size: r.size,
+    // ⚠️ materials 表里**没有** has_pdf 这一列，它是从 pdf_name 派生的。
+    //    写成 m.has_pdf 会让这条 SQL 直接报错、整页 500 ——
+    //    这是 E2E 抓到的（"社区页能打开 → 状态码 500"）。
+    hasPdf: Boolean(r.pdf_name),
+    updatedAt: r.updated_at || r.created_at || '',
+    course: r.course_name ? { name: r.course_name, color: r.course_color || '' } : null,
+    owner: {
+      id: r.owner_id,
+      displayName: r.display_name || '',
+      college: r.college || '',
+      major: r.major || '',
+      hasAvatar: Boolean(r.avatar_ext),
+    },
+  }));
+}
+
+/**
+ * 同校校友：至少公开过一份资料的人。
+ *
+ * 一份都没公开的人不出现在这里 —— 这是「有东西可看的人」的列表，
+ * 不是全校同学名册（那是另一件事，涉及隐私，不该顺手做）。
+ */
+export function alumniList(viewerId, opts = {}) {
+  const school = myVerifiedSchool(viewerId);
+  if (!school) return [];
+
+  const limit = Math.min(Math.max(Number(opts.limit) || 60, 1), 200);
+  return all(
+    `SELECT u.id, u.display_name, u.college, u.major, u.avatar_ext,
+            COUNT(m.id) AS shared_count
+       FROM users u
+       JOIN materials m ON m.user_id = u.id AND m.published = 1
+      WHERE u.school = ? AND u.id <> ?
+      GROUP BY u.id
+      ORDER BY shared_count DESC, u.id ASC
+      LIMIT ?`,
+    school, viewerId, limit,
+  ).map((r) => ({
+    id: r.id,
+    displayName: r.display_name || '',
+    college: r.college || '',
+    major: r.major || '',
+    hasAvatar: Boolean(r.avatar_ext),
+    sharedCount: Number(r.shared_count) || 0,
+  }));
+}
+
+/**
+ * 某个校友公开出来的资料（校友页用）。
+ *
+ * **不是同校就返回空数组**（而不是抛错）：调用方因此只需要判断"空不空"，
+ * 不用再判断"能不能看" —— 少一个地方会写错。
+ */
+export function alumniMaterials(viewerId, ownerId, opts = {}) {
+  const school = myVerifiedSchool(viewerId);
+  if (!school) return [];
+  const owner = get('SELECT school FROM users WHERE id = ?', ownerId);
+  if (!owner || String(owner.school || '').trim() !== school) return [];
+
+  const limit = Math.min(Math.max(Number(opts.limit) || 40, 1), 100);
+  return all(
+    `SELECT id, title, kind, category, size, pdf_name, updated_at, created_at
+       FROM materials
+      WHERE user_id = ? AND published = 1
+      ORDER BY updated_at DESC
+      LIMIT ?`,
+    ownerId, limit,
+  ).map((r) => ({
+    id: r.id,
+    title: r.title || '',
+    kind: r.kind || '',
+    category: r.category || '',
+    size: r.size,
+    hasPdf: Boolean(r.pdf_name),
+    updatedAt: r.updated_at || r.created_at || '',
+  }));
 }

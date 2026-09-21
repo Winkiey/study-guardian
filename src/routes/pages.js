@@ -58,6 +58,11 @@ import { coursesPage, courseDetailPage } from '../web/pages/courses.js';
 import { assignmentsPage } from '../web/pages/assignments.js';import { materialsPage, materialPreviewPage, renderUploadForm, renderMaterialEditForm } from '../web/pages/materials.js';
 import { settingsPage, loginPage } from '../web/pages/settings.js';
 import { importManualPage, importPage, importResultPage } from '../web/pages/import.js';
+import { alumniPage, communityPage } from '../web/pages/community.js';
+import {
+  alumniList, alumniMaterials, canViewCommunityUser, communityFeed,
+  myPublishedCount, publicProfile,
+} from '../lib/community.js';
 import { converterStatus } from '../lib/convert.js';
 import { schedulerStatus } from '../lib/scheduler.js';
 import { subscriptionUrl } from '../lib/export/ics-export.js';
@@ -432,6 +437,50 @@ export function registerPages(router) {
       materials: materials.listMaterials(userId, { courseId: id, limit: 12 }),
       assignments: assignments.listAssignments(userId, { courseId: id }).slice(0, 12),
       assignmentScore: assignments.assignmentScoreSummary(userId, id),
+    }), { user: ctx.user, stats: navStats(userId) });
+  }));
+
+  /**
+   * 校友社区。
+   *
+   * 这是唯一一个能看到别人数据的板块，所以两条纪律：
+   *   · 只显示**同校**同学**主动公开**的资料（筛选全在 community.js 的 SQL 里）；
+   *   · 不显示登录用户名 —— 认人靠昵称 + 头像 + 学院专业。
+   *     用户名是登录凭据，同校陌生人拿到就等于把「试密码」的起点送出去。
+   */
+  router.get('/community', page(async (ctx) => {
+    const userId = ctx.user.id;
+    const school = String(ctx.user.school || '').trim();
+
+    output(ctx.res, communityPage({
+      user: ctx.user,
+      school,
+      schoolVerified: schoolIsVerified(school),
+      mySchool: schoolIsVerified(school) ? school : '',
+      feed: communityFeed(userId, { limit: 40 }),
+      alumni: alumniList(userId, { limit: 60 }),
+      myPublished: myPublishedCount(userId),
+    }), { user: ctx.user, stats: navStats(userId) });
+  }));
+
+  router.get('/community/:id', page(async (ctx) => {
+    const userId = ctx.user.id;
+    const ownerId = Number.parseInt(ctx.params.id, 10);
+    if (!Number.isInteger(ownerId) || ownerId <= 0) throw notFound('没有这个校友');
+
+    // ⚠️ 不是同校不能看 —— 而且回 **404 不是 403**：
+    //    403 等于确认「这个人存在」，拿一串 id 试一遍就能数出同校有多少人。
+    //    这里用 publicProfile + 同校判断，判断本身在 community.js 里。
+    if (!canViewCommunityUser(userId, ownerId)) throw notFound('没有这个校友');
+
+    const person = publicProfile(ownerId);
+    if (!person) throw notFound('没有这个校友');
+
+    output(ctx.res, alumniPage({
+      user: ctx.user,
+      person,
+      materials: alumniMaterials(userId, ownerId),
+      isSelf: ownerId === userId,
     }), { user: ctx.user, stats: navStats(userId) });
   }));
 

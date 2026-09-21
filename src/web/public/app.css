@@ -952,6 +952,73 @@ a.stat:hover {
 }
 .avatar-edit__actions { flex: 1 1 220px; min-width: 0; }
 
+/* ---- 校友社区 ----
+   卡片网格：桌面两三列，窄屏一列。每张卡片顶部是"谁公开的"，
+   下面是资料本身 —— 顺序是有意的：先看清是谁，再看是什么。 */
+.community-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+  margin-bottom: 22px;
+}
+.community-card {
+  display: flex; flex-direction: column;
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius);
+  background: var(--c-surface);
+  overflow: hidden;
+}
+.community-card__head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 14px 10px;
+}
+.community-card__who { min-width: 0; display: flex; flex-direction: column; }
+.community-card__name {
+  font-size: 13.5px; font-weight: 600; color: var(--c-text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.community-card__name:hover { color: var(--c-primary); text-decoration: none; }
+.community-card__meta { font-size: 12px; color: var(--c-text-3); }
+.community-card__body {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 10px 14px 13px;
+  border-top: 1px solid var(--c-border);
+  color: inherit;
+}
+.community-card__body:hover { background: var(--c-surface-3); text-decoration: none; }
+.community-card__title { font-weight: 560; font-size: 14px; }
+.community-card__info { font-size: 12px; color: var(--c-text-3); }
+
+/* 圆形头像：有图显示图，没有就显示首字母 */
+.alumni-avatar {
+  flex: 0 0 auto;
+  display: grid; place-items: center;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--c-primary-soft);
+  color: var(--c-primary);
+  font-size: 14px; font-weight: 620;
+  overflow: hidden;
+}
+
+/* 校友横排 */
+.alumni-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.alumni-chip {
+  display: flex; align-items: center; gap: 9px;
+  padding: 7px 12px 7px 7px;
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-pill);
+  color: inherit;
+}
+.alumni-chip:hover { border-color: var(--c-border-strong); text-decoration: none; }
+.alumni-chip__body { display: flex; flex-direction: column; min-width: 0; }
+.alumni-chip__name { font-size: 13px; font-weight: 560; }
+.alumni-chip__meta { font-size: 11.5px; color: var(--c-text-3); }
+
+/* 校友页顶部 */
+.alumni-profile { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+.alumni-profile__name { font-size: 17px; font-weight: 640; margin-bottom: 6px; }
+
 /* ---- 字段级错误 ----
    为什么要有它：以前表单填错了只有两条路 —— 浏览器自带的气泡（样式不可控、
    点到别处就没了），或者页面右上角一个 toast。toast 的问题是**不说是哪个框**：
@@ -3212,9 +3279,14 @@ button.filter-tab {
   /* 底部导航：半透明 + 毛玻璃，内容是「从它下面滑过去」的 */
   .tabbar {
     display: grid;
-    /* 6 列对应 6 个导航项。手机上侧边栏是隐藏的，底部导航是唯一的入口，
-       少放一项就等于那个页面进不去 —— 别再改回 5 了。 */
-    grid-template-columns: repeat(6, 1fr);
+    /* 列数必须和 layout.js 的 NAV_ITEMS **一样多**。手机上侧边栏是隐藏的，
+       底部导航是唯一的入口 —— 少一列就等于那个页面进不去（别再改回 5 了，
+       那是真实踩过的 bug）。加了「社区」之后是 7 个。
+       ⚠️ 改列数时别忘了同时看这两处：
+         · layout.js 的 NAV_ITEMS（项的个数）
+         · 手机上的字号（.tabbar .nav__label）：7 列时每个格子只有约 53px 宽，
+           两字标签刚好，三个字会被挤到换行 */
+    grid-template-columns: repeat(7, 1fr);
     position: fixed; bottom: 0; left: 0; right: 0;
     height: calc(var(--tabbar-h) + env(safe-area-inset-bottom));
     padding-bottom: env(safe-area-inset-bottom);
