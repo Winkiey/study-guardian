@@ -3357,6 +3357,127 @@ function initFieldErrors() {
 }
 
 // ============================================================
+// 「照着课表录入」
+// ============================================================
+
+/**
+ * 录入表格生成的 CSV 表头。
+ *
+ * ⚠️ 这一行必须和服务端 `src/web/pages/import.js` 里的 `ENTRY_CSV_HEADER`
+ * 一模一样 —— 服务端靠表头文字认列名，对不上时它认不出任何一列，
+ * 于是**不报错**，只是"导入 0 门课程"。有一条测试专门盯着这两边相等。
+ */
+const ENTRY_CSV_HEADER = '课程名称,教师,学分,星期,上课时间,周次,上课地点';
+
+/**
+ * 把一个字段值转成 CSV 单元格。
+ *
+ * ⚠️ 这几条都不能省：课程名里出现逗号、地点里出现引号（`之远楼"东"301`）
+ * 都很常见。不转义的话整行列数就错位，而错位之后**不报错** ——
+ * 只是字段被塞到别的列里去，导入结果看着"有点怪"，很难查。
+ * 规则就是 RFC 4180 那套：含逗号/引号/换行就整体加引号，内部引号写两个。
+ */
+function csvCell(value) {
+  const s = String(value ?? '').trim();
+  if (s === '') return '';
+  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+/**
+ * 把录入的每一行拼成 CSV 文本。**纯函数**，好测。
+ *
+ * 列的顺序和表头必须和服务端期望的一致（服务端靠表头认列名）：
+ *   课程名称,教师,学分,星期,上课时间,周次,上课地点
+ *
+ * 学分一律留空：PDF 里没有这个信息，**不猜**比猜错好 —— 猜了会静默写进库里，
+ * 之后按学分算绩点就全错了。
+ * 节次（`5-7`）直接填进「上课时间」列：服务端会用**用户自己的作息表**换算，
+ * 所以这里一行时间计算都不做，也就不可能和服务端口径不一致。
+ *
+ * @param {Array<object>} rows
+ * @param {string} header
+ * @returns {string}
+ */
+function entryRowsToCsv(rows, header) {
+  const lines = [header];
+  for (const r of rows) {
+    // 课程名空着的行整行跳过 —— 表格默认给 4 行空行，
+    // 不跳过的话会往库里写一堆空课程
+    if (!String(r?.name || '').trim()) continue;
+    lines.push([
+      csvCell(r.name),
+      csvCell(r.teacher),
+      '',                    // 学分：留空，不猜
+      csvCell(r.weekday),
+      csvCell(r.periods),    // 节次，交给服务端换算
+      csvCell(r.weeks),
+      csvCell(r.place),
+    ].join(','));
+  }
+  return lines.join('\n');
+}
+
+/**
+ * 录入表格的交互：加行、删行、提交前把表格拼成 CSV 塞进隐藏字段。
+ *
+ * 为什么要「拼成 CSV 再交给老路」：这样一行新的写库代码都不用加 ——
+ * 解析、预览、冲突处理、写库全是现成的，表格只是更好用的输入方式。
+ */
+function initManualImport() {
+  const form = document.querySelector('[data-manual-import]');
+  if (!form) return;
+
+  const tbody = form.querySelector('[data-entry-rows]');
+  const tpl = document.getElementById(form.dataset.entryTemplate || 'entry-row-template');
+  if (!tbody) return;
+
+  const collect = () => [...tbody.querySelectorAll('[data-entry-row]')].map((row) => ({
+    name: row.querySelector('[name=e_name]')?.value || '',
+    teacher: row.querySelector('[name=e_teacher]')?.value || '',
+    weekday: row.querySelector('[name=e_weekday]')?.value || '',
+    periods: row.querySelector('[name=e_periods]')?.value || '',
+    weeks: row.querySelector('[name=e_weeks]')?.value || '',
+    place: row.querySelector('[name=e_place]')?.value || '',
+  }));
+
+  form.addEventListener('click', (e) => {
+    if (e.target.closest('[data-add-entry-row]')) {
+      if (!tpl) return;
+      const row = tpl.content.firstElementChild.cloneNode(true);
+      tbody.appendChild(row);
+      // 加完把光标送过去，省得再点一下
+      row.querySelector('input')?.focus();
+      return;
+    }
+    const del = e.target.closest('[data-remove-entry-row]');
+    if (!del) return;
+    const rows = tbody.querySelectorAll('[data-entry-row]');
+    // 至少留一行：全删光之后表格看着像坏了，也没有能输入的地方
+    if (rows.length <= 1) {
+      for (const input of rows[0].querySelectorAll('input')) input.value = '';
+      const sel = rows[0].querySelector('select');
+      if (sel) sel.value = '';
+      return;
+    }
+    del.closest('[data-entry-row]')?.remove();
+  });
+
+  form.addEventListener('submit', (e) => {
+    const rows = collect();
+    if (rows.every((r) => !r.name.trim())) {
+      e.preventDefault();
+      // 挂到第一行的「课程名」上，而不是弹一个会飘走的 toast
+      const first = tbody.querySelector('[name=e_name]');
+      setFieldError(first, '至少填一门课再提交');
+      focusFirstInvalid(first);
+      return;
+    }
+    form.querySelector('[name=text]').value = entryRowsToCsv(rows, ENTRY_CSV_HEADER);
+  });
+}
+
+// ============================================================
 // 课表的「当前时间线」
 // ============================================================
 
@@ -3751,6 +3872,7 @@ function boot() {
   initMaterials();
   initSettings();
   initImport();
+  initManualImport();
   initTimetable();
   initNowLine();
 

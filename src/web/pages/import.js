@@ -1,10 +1,11 @@
 /**
  * 课表导入向导页。
  *
- * 三种导入方式并排呈现，用户选一种即可：
+ * 导入方式并排呈现，用户选一种即可：
  *   1. 上传 .ics  —— 最省事，自动解析
- *   2. 粘贴/上传 CSV —— 从教务系统复制粘贴，或用模板填
- *   3. 手动添加   —— 直接跳到课程表单
+ *   2. 上传 PDF 课表 —— 图抽出来显示在左边，右边照着敲（看 ocr 的替代方案）
+ *   3. 粘贴/上传 CSV —— 从教务系统复制粘贴，或用模板填
+ *   4. 手动添加   —— 直接跳到课程表单
  */
 
 import { escapeHtml } from '../../lib/http.js';
@@ -12,6 +13,198 @@ import { icon, pageHeader, card, badge } from '../layout.js';
 import { describeSession } from '../../lib/import/ics-import.js';
 import { WEEKDAY_CN } from '../../lib/datetime.js';
 import { periodsToClock, periodLabel, DEFAULT_PERIOD_SCHEDULE } from '../../lib/periods.js';
+
+/** 录入手柄行的列定义：既用来渲染表头，也用来生成 CSV 的列顺序 */
+const ENTRY_COLUMNS = ['name', 'teacher', 'weekday', 'periods', 'weeks', 'place'];
+
+/** 录入表格的表头（CSV 第一行必须和它一致，服务端的列名匹配靠它） */
+export const ENTRY_CSV_HEADER = '课程名称,教师,学分,星期,上课时间,周次,上课地点';
+
+/**
+ * 「看原图 + 手动录入」页。
+ *
+ * 为什么要有这一页：教务系统导出的课表 PDF，课表主体常常是**一张位图**
+ * （我们学校那份就是 3366×1850），文字层里只有标题和学号姓名 ——
+ * 文字解析拿不到任何课程内容。剩下两条路：
+ *   · OCR：中文课程名错一个字，整学期课表就是错的，而且要往服务器上装
+ *     poppler + tesseract + 中文语言包；
+ *   · **把原图给用户自己看**：用户读自己的课表零误差，照着敲一遍。
+ * 这里走第二条 —— 不装任何东西，也不存在识别准确率问题，
+ * 而且换任何学校的课表都能用（不依赖版式识别）。
+ *
+ * ⚠️ 图是**内联成 data URL** 的，不落盘：
+ *   · 服务器上不留用户的课表图片（那上面有课程、教室、教师）
+ *   · 也就不需要新增「取图」路由和缓存清理
+ * 代价是刷新会丢（重新上传一次即可），以及页面大几百 KB。
+ * 对一次性导入来说这个取舍划算。
+ *
+ * 录入表格最后**生成 CSV 文本**，交给现有的 /import 走
+ * 「解析 → 预览 → 确认写库」那条老路 —— 一行新的写库代码都不加。
+ * 节次直接填「5-7」，服务端会用**用户自己的作息表**换算成时间。
+ *
+ * @param {object} p
+ * @param {{dataUrl: string, width: number, height: number}} p.scan
+ */
+export function importManualPage({
+  user,
+  terms,
+  courses,
+  scan,
+  periodSchedule,
+  hasCustomPeriods = false,
+  error = '',
+}) {
+  const schedule = Array.isArray(periodSchedule) && periodSchedule.length
+    ? periodSchedule
+    : DEFAULT_PERIOD_SCHEDULE;
+
+  const ok = !error && scan.width > 0 && scan.height > 0;
+
+  // ⚠️ 出错时**不渲染录入表格**。
+  // 一开始是无条件渲染的，结果解不出图时用户看到的是一张空白占位图 +
+  // 一张能填的表格 —— 他会以为"图没显示出来"而照着记忆填一遍，
+  // 或者干脆对着白板发呆。没有原图，这个页面就没有意义，
+  // 所以那种情况只给错误原因和"换一种方式"的出口。
+  const body = `
+${pageHeader({
+    title: '照着课表录入',
+    subtitle: '左边是你的课表原图，右边照着填。填完会先给你看一遍预览，确认后才写进去',
+    breadcrumb: `<a href="/import">导入课表</a> ${icon('chevronRight', 12)} 照着录入`,
+    actions: `<a class="btn btn--outline btn--sm" href="/import">${icon('chevronLeft', 15)}<span>换一种方式</span></a>`,
+  })}
+
+${error ? `<div class="notice notice--error">
+  <div class="notice__icon">${icon('alert', 18)}</div>
+  <div class="notice__body"><strong>没能读出课表图片</strong><p>${escapeHtml(error)}</p></div>
+</div>` : ''}
+
+${ok ? renderScanPanes(scan, schedule, hasCustomPeriods) : `
+${card({
+    title: '接下来可以怎么做',
+    body: `<ul class="hint-list">
+      <li>如果教务系统还能导出 <strong>.ics</strong> 或 <strong>Excel/CSV</strong>，回<a href="/import">导入页</a>用那两条路，能自动识别。</li>
+      <li>也可以直接<a href="/courses?new=1">手动添加课程</a>，一门一门填。</li>
+      <li>课表 PDF 如果是<strong>拍照或扫描</strong>出来的，这里读不出图（那类 PDF 里没有内嵌图片）。</li>
+    </ul>`,
+  })}`}
+`;
+
+  return { title: '照着课表录入', active: 'courses', body, bare: false };
+}
+
+/** 两栏：左边原图、右边录入表格 */
+function renderScanPanes(scan, schedule, hasCustomPeriods) {
+  return `<div class="scan-layout">
+  <section class="scan-pane">
+    <div class="scan-pane__head">
+      <h2 class="scan-pane__title">你的课表原图</h2>
+      <span class="muted small">${scan.width}×${scan.height}，可以放大看</span>
+    </div>
+    ${/* 手机上默认收起（CSS 里按屏宽控制不了 details 的 open，所以靠 JS 折，
+         见 initManualImport）：不折的话要滚好几屏才够到录入表格。 */ ''}
+    <details class="scan-zoom" open data-scan-zoom>
+      <summary class="scan-zoom__summary">展开 / 收起原图</summary>
+      <div class="scan-image-wrap">
+        <img class="scan-image" src="${scan.dataUrl}"
+             alt="你上传的课表，包含每门课的名称、教师、周次、节次和教室">
+      </div>
+    </details>
+  </section>
+
+  <section class="scan-pane">
+    <div class="scan-pane__head">
+      <h2 class="scan-pane__title">照着填</h2>
+      <span class="muted small">不用填满，空行会自动跳过</span>
+    </div>
+
+    <form class="form" method="post" action="/import" enctype="multipart/form-data"
+          data-manual-import data-entry-template="entry-row-template">
+      <input type="hidden" name="text" value="">
+      <input type="hidden" name="onConflict" value="skip">
+
+      <div class="entry-scroll">
+        <table class="entry-table">
+          <thead>
+            <tr>
+              <th>课程名<span class="field__req">*</span></th>
+              <th>教师</th>
+              <th>星期</th>
+              <th>节次</th>
+              <th>周次</th>
+              <th>地点</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody data-entry-rows>
+            ${Array.from({ length: 4 }, () => entryRow()).join('')}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="btn-row mt-sm">
+        <button type="button" class="btn btn--outline btn--sm" data-add-entry-row>
+          ${icon('plus', 15)}<span>再加一行</span>
+        </button>
+      </div>
+
+      <p class="field__help">
+        <strong>节次直接写数字</strong>，比如 <code>1-2</code> 或 <code>5-7</code>；
+        时间会按你<strong>自己的作息表</strong>换算
+        （现在第 1 节是 ${escapeHtml(schedule[0]?.start || '')}–${escapeHtml(schedule[0]?.end || '')}
+        ${hasCustomPeriods
+        ? '，这套是你自己设置过的'
+        : '，这是内置默认值 —— 如果和你们学校不一样，先去<a href="/settings#periods">设置 → 作息时间</a>改一遍再导入，否则换算出来的时间会是错的'}）。
+        同一门课有两段时间就填两行，课程名写一样即可。
+      </p>
+      <p class="field__help">
+        课表里没有学分和学时，这里也留空 —— 不猜比猜错好。要补的话导入完在课程页里改。
+      </p>
+
+      <div class="form__actions">
+        <button type="submit" class="btn btn--primary">${icon('upload', 16)}<span>解析并预览</span></button>
+      </div>
+    </form>
+
+    <details class="details mt-md">
+      <summary>没有 JavaScript 怎么办？</summary>
+      <p class="field__help mt-sm">
+        这个表格靠 JavaScript 收集内容，所以浏览器禁用 JS 时用不了。
+        那种情况下请回<a href="/import">导入页</a>用「粘贴表格内容」那个文本框 ——
+        它是纯表单提交，不需要 JS。第一行表头照抄：
+        <code>${escapeHtml(ENTRY_CSV_HEADER)}</code>
+      </p>
+    </details>
+  </section>
+</div>
+
+<template id="entry-row-template">
+  ${entryRow()}
+</template>`;
+}
+
+/**
+ * 一行录入。
+ *
+ * 星期用下拉、节次用文本框（不是下拉）：一节课就是 `3`，两节连上是 `3-4`，
+ * 下拉表达不了这种区间。文本框加一句提示反而更好用。
+ */
+function entryRow() {
+  const weekdayOptions = WEEKDAY_CN.slice(1).map((label, i) => (
+    `<option value="${escapeHtml(label)}">${escapeHtml(label)}</option>`
+  )).join('');
+  return `<tr class="entry-row" data-entry-row>
+    <td><input class="input input--sm" name="e_name" placeholder="例如：高等数学(上)" maxlength="120"></td>
+    <td><input class="input input--sm" name="e_teacher" placeholder="张三" maxlength="80"></td>
+    <td><select class="input input--sm" name="e_weekday">
+      <option value="">选…</option>${weekdayOptions}
+    </select></td>
+    <td><input class="input input--sm" name="e_periods" placeholder="1-2" maxlength="20"></td>
+    <td><input class="input input--sm input--mono" name="e_weeks" placeholder="1-18" maxlength="60"></td>
+    <td><input class="input input--sm" name="e_place" placeholder="之远楼301" maxlength="200"></td>
+    <td><button type="button" class="btn btn--ghost btn--icon btn--sm" data-remove-entry-row
+                title="删掉这一行" aria-label="删掉这一行">${icon('trash', 15)}</button></td>
+  </tr>`;
+}
 
 export function importPage({
   user,
@@ -92,6 +285,35 @@ function renderChooser(draft) {
   const draftText = draft?.text || '';
   const draftName = draft?.filename || '';
   return `<div class="import-options">
+  <article class="import-option">
+    <div class="import-option__head">
+      <span class="import-option__icon">${icon('upload', 22)}</span>
+      <div>
+        <h2>上传课表 PDF</h2>
+        ${badge('教务系统导出的那种', 'primary')}
+      </div>
+    </div>
+    <p>
+      上传教务系统导出的课表 PDF，平台会把<strong>课表原图</strong>显示出来，
+      你照着它填右边那张表就行 —— 填完照样先给你看预览，确认了才写进去。
+    </p>
+    <p class="field__help">
+      为什么不自动识别？教务系统导出的课表，表格部分往往<strong>是一张图片</strong>
+      而不是文字，自动识别（OCR）在中文课程名上很容易错一两个字，
+      而错一个字整学期的课表就是错的。看着原图自己填<strong>不会错</strong>，
+      也换任何学校的课表都能用。
+    </p>
+    <form class="form" method="post" action="/import/scan" enctype="multipart/form-data">
+      <div class="field">
+        <label class="field__label" for="scan_file">选择课表 PDF</label>
+        <input id="scan_file" class="input input--file" type="file" name="file"
+               accept=".pdf,application/pdf" required>
+        <p class="field__help">只处理课表那一页；10MB 以内。图只在你这次浏览里用，不会存在服务器上。</p>
+      </div>
+      <button type="submit" class="btn btn--primary">${icon('upload', 16)}<span>打开课表原图</span></button>
+    </form>
+  </article>
+
   <article class="import-option import-option--featured">
     <div class="import-option__head">
       <span class="import-option__icon">${icon('calendar', 22)}</span>

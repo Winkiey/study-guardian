@@ -2121,15 +2121,15 @@ async function run() {
     };
 
     const importForms = parseForms(importPageRes.text);
-    ok('导入页渲染出了 3 个表单（2 个导入 + 1 个退出登录）',
-      importForms.length === 3, `实际 ${importForms.length} 个`);
+    ok('导入页渲染出了 4 个表单（3 个导入 + 1 个退出登录）',
+      importForms.length === 4, `实际 ${importForms.length} 个`);
 
     // 排除侧边栏的退出登录表单，它指向 /logout，不属于导入流程
     const uploadForms = importForms.filter((f) => !/action\s*=\s*"\/logout"/i.test(f.attrs));
-    ok('页面主体里有 2 个导入表单', uploadForms.length === 2, `实际 ${uploadForms.length} 个`);
+    ok('页面主体里有 3 个导入表单', uploadForms.length === 3, `实际 ${uploadForms.length} 个`);
 
     const fileForms = uploadForms.filter((f) => /type="file"/.test(f.inner));
-    ok('两个导入表单都含文件上传框', fileForms.length === 2, `实际 ${fileForms.length} 个`);
+    ok('三个导入表单都含文件上传框', fileForms.length === 3, `实际 ${fileForms.length} 个`);
 
     for (let i = 0; i < fileForms.length; i += 1) {
       ok(`含文件上传的表单 #${i + 1} 用 POST 提交`,
@@ -2140,9 +2140,101 @@ async function run() {
     ok('导入页所有表单都是 POST（GET 会丢数据）',
       nonPostForms.length === 0,
       nonPostForms.map((f) => f.attrs.trim()).join(' | '));
-    ok('导入表单都指向 /import',
-      uploadForms.every((f) => /action\s*=\s*"\/import"/i.test(f.attrs)),
+    ok('导入表单分别指向 /import 和 /import/scan',
+      uploadForms.every((f) => /action\s*=\s*"\/(import|import\/scan)"/i.test(f.attrs)),
       uploadForms.map((f) => f.attrs.trim()).join(' | '));
+    ok('★ 上传 PDF 课表那一张卡的表单指向 /import/scan',
+      uploadForms.some((f) => /action\s*=\s*"\/import\/scan"/i.test(f.attrs))
+      && /accept="[^"]*\.pdf/i.test(uploadForms.find((f) => /import\/scan/.test(f.attrs))?.inner || ''),
+      'PDF 卡要么没渲染，要么 accept 没限制成 pdf');
+
+    // ---- 上传课表 PDF → 看原图 + 照着录入 ----
+    // 这条路不装 OCR：把 PDF 里的课表原图抽出来显示，用户照着填。
+    {
+      const zlib = await import('node:zlib');
+      /** 合成一份最小的「课表 PDF」：一张 Flate 压的 RGB 位图 + 一页 */
+      const makeFakeTimetablePdf = (w, h) => {
+        const pixels = Buffer.alloc(w * h * 3);
+        for (let i = 0; i < pixels.length; i += 1) pixels[i] = (i * 7) & 0xff;
+        const img = zlib.deflateSync(pixels);
+        return Buffer.concat([
+          Buffer.from('%PDF-1.3\n', 'latin1'),
+          Buffer.from(`3 0 obj\n<< /Type /XObject /Subtype /Image /Width ${w} /Height ${h}`
+            + ' /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode >>\nstream\n', 'latin1'),
+          img,
+          Buffer.from('\nendstream\nendobj\n', 'latin1'),
+          Buffer.from('5 0 obj\n<< /Type /Page /MediaBox [0 0 595 842] >>\nendobj\ntrailer\n<< /Size 6 >>\n%%EOF\n', 'latin1'),
+        ]);
+      };
+
+      const scanUpload = multipart({}, {
+        field: 'file', filename: '课表.pdf', type: 'application/pdf',
+        data: makeFakeTimetablePdf(24, 16),
+      });
+      const scanPage = await req('POST', '/import/scan', {
+        body: scanUpload.body, headers: { 'Content-Type': scanUpload.contentType },
+      });
+      ok('★ 上传 PDF 后能打开「照着录入」页', scanPage.status === 200, `状态码 ${scanPage.status}`);
+      ok('★ 原图被内联成 data URL（不落盘，服务器上不留课表图片）',
+        /<img class="scan-image" src="data:image\/png;base64,[A-Za-z0-9+/=]+"/.test(scanPage.text),
+        '页面上没有内联的图片');
+      ok('★ 没有新增取图路由（图不落盘就不需要）',
+        (await req('GET', '/import/scan/whatever.png')).status === 404);
+      ok('★ 页面给出了录入表格', scanPage.text.includes('data-entry-rows')
+        && scanPage.text.includes('name="e_name"') && scanPage.text.includes('name="e_periods"'));
+      ok('★ 录入表格提交到现有的 /import（复用解析→预览→写库那条路）',
+        /<form[^>]*data-manual-import[^>]*>/.test(scanPage.text)
+        && /<form[^>]*action="\/import"/.test(scanPage.text));
+      ok('★ 表格里有一个装 CSV 的隐藏字段', /name="text"/.test(scanPage.text));
+      ok('★ 页面提示节次按自己的作息表换算（学校之间这排时间不一样）',
+        /作息表/.test(scanPage.text));
+
+      // 不是 PDF 的东西要说清楚，而且**不能给一张空图**让用户对着白板填
+      const notPdf = multipart({}, {
+        field: 'file', filename: '伪装.pdf', type: 'application/pdf',
+        data: Buffer.from('PK\u0003\u0004 这其实是个 docx'),
+      });
+      const notPdfPage = await req('POST', '/import/scan', {
+        body: notPdf.body, headers: { 'Content-Type': notPdf.contentType },
+      });
+      ok('★ 内容不是 PDF 时明确报错（只看内容，不看扩展名）',
+        notPdfPage.status === 200 && /不是 PDF/.test(notPdfPage.text),
+        `状态码 ${notPdfPage.status}`);
+      ok('★ 报错时不给出可填的表格（避免对着空白图白填一遍）',
+        !notPdfPage.text.includes('data-entry-rows'));
+
+      // 什么都没有就提交
+      const noFile = multipart({}, { field: 'file', filename: '', data: Buffer.alloc(0) });
+      const noFilePage = await req('POST', '/import/scan', {
+        body: noFile.body, headers: { 'Content-Type': noFile.contentType },
+      });
+      ok('没选文件时给出中文提示', noFilePage.status === 200
+        && /没有收到文件/.test(noFilePage.text), `状态码 ${noFilePage.status}`);
+
+      // 没有图片的 PDF（纯文字排的课表）
+      const textOnlyPdf = Buffer.from(
+        '%PDF-1.3\n5 0 obj\n<< /Type /Page /MediaBox [0 0 595 842] >>\nendobj\n%%EOF\n', 'latin1',
+      );
+      const textOnly = multipart({}, {
+        field: 'file', filename: '文字版.pdf', type: 'application/pdf', data: textOnlyPdf,
+      });
+      const textOnlyPage = await req('POST', '/import/scan', {
+        body: textOnly.body, headers: { 'Content-Type': textOnly.contentType },
+      });
+      ok('★ 文字版 PDF 说明「没有内嵌图片」并指向别的路',
+        textOnlyPage.status === 200
+        && /没有内嵌图片/.test(textOnlyPage.text)
+        && /粘贴表格内容/.test(textOnlyPage.text),
+        `状态码 ${textOnlyPage.status}`);
+
+      // 未登录不能上传
+      const anonScan = createClient(baseUrl);
+      const anonRes = await anonScan('POST', '/import/scan', {
+        body: scanUpload.body, headers: { 'Content-Type': scanUpload.contentType },
+      });
+      ok('★ 未登录不能上传课表 PDF',
+        anonRes.status === 302 || anonRes.status === 401, `状态码 ${anonRes.status}`);
+    }
 
     // ---- 按浏览器的方式真实提交一遍 ICS 文件 ----
     const icsUpload = multipart({ termId: '', onConflict: 'skip' }, {

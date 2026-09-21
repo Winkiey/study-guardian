@@ -1821,6 +1821,67 @@ button.filter-tab {
 .next-up__when { font-size: 14px; font-weight: 620; color: var(--c-primary); font-variant-numeric: tabular-nums; }
 
 /* ==========================================================================
+   20.5 · 「照着课表录入」：左边原图 + 右边录入表格
+   ========================================================================== */
+/* 桌面两栏（原图占宽一点，因为课表本身是横向的），
+   手机上一栏、原图折叠起来 —— 不折叠的话要滚好几屏才够到录入表格。 */
+.scan-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+.scan-pane { min-width: 0; }
+.scan-pane__head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 10px; flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.scan-pane__title { font-size: 15px; font-weight: 620; letter-spacing: -0.01em; }
+
+/* ⚠️ 图和表格都要能横向滚：课表是 3366px 宽的，硬塞进一栏里会缩到看不清；
+   而录入表格有 7 列，手机上一定放不下。 */
+.scan-image-wrap {
+  overflow: auto;
+  max-height: 72vh;
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius);
+  background: var(--c-surface);
+  /* 双指缩放用得上，也避免滚动到边界时把整页带着滚 */
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+.scan-image { display: block; width: 100%; height: auto; }
+.entry-scroll { overflow-x: auto; overscroll-behavior-x: contain; }
+.entry-table {
+  border-collapse: collapse;
+  width: 100%;
+  min-width: 560px;   /* 7 列，低于这个宽度就横向滚 */
+}
+.entry-table th {
+  text-align: left;
+  font-size: 12.5px; font-weight: 560; color: var(--c-text-2);
+  padding: 0 6px 6px 0;
+  white-space: nowrap;
+}
+.entry-table td { padding: 0 6px 6px 0; vertical-align: middle; }
+.entry-table td:last-child, .entry-table th:last-child { padding-right: 0; width: 34px; }
+.entry-row .input { min-width: 0; }
+/* 节次/周次是数字，等宽更好对 */
+.entry-table .input--mono { font-variant-numeric: tabular-nums; }
+
+@media (max-width: 900px) {
+  .scan-layout { grid-template-columns: minmax(0, 1fr); }
+  /* 手机上默认收起原图：它占的竖向空间太大，而录入才是主线。 */
+  .scan-zoom:not([open]) .scan-zoom__summary { margin-bottom: 0; }
+}
+.scan-zoom__summary {
+  cursor: pointer;
+  font-size: 13px; color: var(--c-text-2);
+  margin-bottom: 6px;
+}
+
+/* ==========================================================================
    21 · 资料库
    ========================================================================== */
 /* 资料库用**文件列表**，不用卡片墙。

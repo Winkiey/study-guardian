@@ -53,14 +53,26 @@ import { renderPage } from '../web/layout.js';
 import { dashboardPage } from '../web/pages/dashboard.js';
 import { timetablePage } from '../web/pages/timetable.js';
 import { coursesPage, courseDetailPage } from '../web/pages/courses.js';
-import { assignmentsPage } from '../web/pages/assignments.js';
-import { materialsPage, materialPreviewPage, renderUploadForm, renderMaterialEditForm } from '../web/pages/materials.js';
+import { assignmentsPage } from '../web/pages/assignments.js';import { materialsPage, materialPreviewPage, renderUploadForm, renderMaterialEditForm } from '../web/pages/materials.js';
 import { settingsPage, loginPage } from '../web/pages/settings.js';
-import { importPage, importResultPage } from '../web/pages/import.js';
+import { importManualPage, importPage, importResultPage } from '../web/pages/import.js';
 import { converterStatus } from '../lib/convert.js';
 import { schedulerStatus } from '../lib/scheduler.js';
 import { subscriptionUrl } from '../lib/export/ics-export.js';
 import { parseIcsTimetable, importCourses } from '../lib/import/ics-import.js';
+import { extractTimetableImage } from '../lib/import/pdf-image.js';
+
+/**
+ * 没有图时占位用的 scan。
+ * 路由在「没收到文件」和「解不出图」两种情况下都要渲染同一个页面（带着错误提示），
+ * 而页面要求 scan 一定有 dataUrl/width/height —— 用一张 1×1 的透明 PNG 兜底，
+ * 免得为了错误分支在模板里到处写 if。
+ */
+const EMPTY_SCAN = {
+  dataUrl: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7',
+  width: 0,
+  height: 0,
+};
 import { parseCourseCsv, csvTemplate } from '../lib/import/csv.js';
 import { addDays, nowStr, startOfWeek, todayStr } from '../lib/datetime.js';
 import { weekOfDate } from '../lib/weeks.js';
@@ -571,6 +583,55 @@ export function registerPages(router) {
     output(ctx.res, importPage(importPageData(userId, ctx)), {
       user: ctx.user,
       stats: navStats(userId),
+    });
+  }));
+
+  /**
+   * 「上传课表 PDF → 看原图 + 手动录入」。
+   *
+   * 为什么不做 OCR：这份课表的**主体是一张位图**（实测 3366×1850），
+   * 文字层里只有标题和学号姓名，没有任何课程内容。OCR 中文课程名错一个字，
+   * 整学期课表就是错的，而且要往服务器上装 poppler + tesseract + 中文包。
+   * 所以换成「把原图给用户自己看」—— 用户读自己的课表零误差，
+   * 而且换任何学校的版式都能用。
+   *
+   * 图内联成 data URL 传给页面，**不落盘**：服务器上不留用户的课表图片，
+   * 也就不需要新增取图路由和缓存清理。
+   */
+  router.post('/import/scan', page(async (ctx) => {
+    const userId = ctx.user.id;
+    const parsed = await readBodyAuto(ctx.req);
+    const raw = parsed.data || {};
+    const file = parsed.type === 'multipart' ? raw.files?.[0] : null;
+
+    const renderManual = (extra) => output(ctx.res, importManualPage(importPageData(userId, ctx, extra)), {
+      user: ctx.user,
+      stats: navStats(userId),
+    });
+
+    if (!file?.data?.length) {
+      return renderManual({
+        error: '没有收到文件。请选择教务系统导出的课表 PDF。',
+        scan: EMPTY_SCAN,
+      });
+    }
+
+    let img;
+    try {
+      // 只处理**解析出来的图**，不看扩展名和 MIME —— 那两个都是用户能随便写的
+      img = extractTimetableImage(file.data);
+    } catch (err) {
+      // 解不出来时要说清楚原因，并指一条别的路。
+      // 尤其不能返回一张全黑的图 —— 那会让用户以为「导进来了，只是看不清」。
+      return renderManual({ error: err.message, scan: EMPTY_SCAN });
+    }
+
+    return renderManual({
+      scan: {
+        dataUrl: `data:${img.mime};base64,${img.data.toString('base64')}`,
+        width: img.width,
+        height: img.height,
+      },
     });
   }));
 
