@@ -12,7 +12,7 @@
  */
 
 /** 当前结构版本号，配合 PRAGMA user_version 做迁移 */
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 /**
  * 课程标记色的默认值。
@@ -106,6 +106,19 @@ export const MIGRATIONS = {
   // 空串 = 没有头像，前端就显示昵称首字母。默认空串，所以升级后谁都不受影响。
   7: [
     (db) => addColumnIfMissing(db, 'users', 'avatar_ext', "TEXT NOT NULL DEFAULT ''"),
+  ],
+  // v8：资料可以「公开给同校」。
+  //
+  // ⚠️ 默认 0（不公开），而且是**每份资料单独设**。这是用户拍板的：
+  //    有些课件不适合公开（老师的东西、带答案的、自己整理的笔记），
+  //    所以不能给一个"整个资料库一刀切"的开关 —— 那样要么全公开、
+  //    要么全不公开，两种都有人不满意。
+  //
+  // 加了这一列之后，文件服务的授权从「只有本人」变成
+  // 「本人 或（已公开 且 同校）」—— 见 src/routes/files.js 的 resolveMaterial。
+  // 那是这一批里风险最高的一处：改错了就是别人能看到你的文件。
+  8: [
+    (db) => addColumnIfMissing(db, 'materials', 'published', 'INTEGER NOT NULL DEFAULT 0'),
   ],
 };
 

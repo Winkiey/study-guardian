@@ -14,19 +14,44 @@ import { get } from '../db/index.js';
 import { forbidden, notFound, sendFile, unauthorized } from '../lib/http.js';
 import { currentUser } from '../lib/auth.js';
 import { derivedPath, uploadPath } from '../lib/files.js';
+import { canViewMaterial } from '../lib/community.js';
 
 export function registerFileRoutes(router) {
   /** 取资料并校验归属 */
+  /**
+   * 取一份资料，并判断**当前这个人能不能看**。
+   *
+   * 这是所有文件服务的唯一入口（raw / pdf / slide 都走它），
+   * 所以授权逻辑只写在这一处 —— 散在各路由里的话，早晚有一条会漏掉判断。
+   *
+   * 规则（用户拍板的）：
+   *   · 本人 —— 永远能看，不管有没有公开；
+   *   · 同校同学 —— 只有在这份资料**被主动公开**时才能看；
+   *   · 其他人 —— 看不到。
+   *
+   * 判断本身在 src/lib/community.js 的 canViewMaterial 里，"同校"的
+   * 定义（精确相等 + 双方都从名单里选过）也只在那一处。
+   *
+   * ⚠️ 看不到时统一抛 **404 而不是 403**。
+   *    403 等于告诉对方「这份资料存在，只是你无权看」——
+   *    拿一串 id 试一遍就能数出别人有多少份资料、哪些是真实存在的。
+   *    404 让「不存在」和「没权限」长得一模一样。
+   */
   function resolveMaterial(req, id) {
     const user = currentUser(req);
     if (!user) throw unauthorized('请先登录');
 
-    const material = get(
-      'SELECT * FROM materials WHERE id = ? AND user_id = ?',
-      id,
-      user.id,
-    );
+    // 先只按 id 取，再用可见性规则判断 —— 刻意**不**把 user_id 写进 SQL。
+    // 写进 SQL 的话就是"查自己的，查不到就当不存在"，那样加公开功能时
+    // 得再写一条平行的查询，两条查询的规则迟早会不一致。
+    const material = get('SELECT * FROM materials WHERE id = ?', id);
     if (!material) throw notFound('资料不存在或没有权限');
+
+    const allowed = canViewMaterial(user.id, material.user_id, {
+      published: material.published,
+    });
+    if (!allowed) throw notFound('资料不存在或没有权限');
+
     return material;
   }
 

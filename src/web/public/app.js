@@ -2331,6 +2331,16 @@ function initMaterials() {
       form.querySelector('[name=week]').value = material.week ?? '';
       form.querySelector('[name=tags]').value = material.tags || '';
       form.querySelector('[name=description]').value = material.description || '';
+      // 公开开关：checkbox 不能用 .value 赋值，要设 .checked。
+      // 漏了这一句的表现是**每次打开编辑框它都是没勾的** ——
+      // 用户以为资料没公开，其实是公开的；或者反过来"勾一下保存"，
+      // 结果把本来公开的关掉了。两种都是静默的。
+      //
+      // ⚠️ 这里给的是 **1/0**，和库里的存法一致（不是 true/false）。
+      //    表单提交时 formToObject 会把 checkbox 变成 '1' 或缺失，
+      //    服务端的 toBool01 认得这两种。
+      const pubBox = form.querySelector('[name=published]');
+      if (pubBox) pubBox.checked = Number(material.published) === 1;
 
       form.querySelector('[data-modal-close]').addEventListener('click', closeModal);
       form.addEventListener('submit', async (ev) => {
@@ -2338,7 +2348,12 @@ function initMaterials() {
         const btn = form.querySelector('button[type=submit]');
         btn.disabled = true;
         try {
-          await api(`/api/materials/${material.id}`, { method: 'PATCH', body: formToObject(form) });
+          const body = formToObject(form);
+          // checkbox 没勾时 formToObject 里根本没有这个键（表单不会提交未勾选的
+          // checkbox），那样 PATCH 会"不改这一项"，于是**取消公开点不动**。
+          // 所以这里显式补一个 0。
+          if (pubBox) body.published = pubBox.checked ? '1' : '0';
+          await api(`/api/materials/${material.id}`, { method: 'PATCH', body });
           toast('资料信息已更新', 'success');
           closeModal();
           reloadPreservingScroll();

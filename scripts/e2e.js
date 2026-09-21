@@ -2676,6 +2676,96 @@ async function run() {
     ok('★ 删掉之后取不到了',
       (await req('GET', `/avatar/${myUserId}`)).status === 404);
 
+    // ---- 资料的「公开给同校」开关 ----
+    // ⚠️ 这是整个功能里风险最高的一处：文件服务的授权从「只有本人」
+    //    变成了「本人 或（已公开 且 同校）」。改错了就是别人能看到你的文件。
+    //    下面每一条「不该发生什么」都是真的在挡泄露。
+    {
+      const MAT = `/materials/${materialId}/raw`;
+
+      // 默认必须是**不公开** —— 新传的资料不会莫名其妙对同校可见
+      const fresh = await req('GET', `/api/materials/${materialId}`);
+      ok('★ 新传的资料默认不公开',
+        !fresh.json?.material?.published,
+        `published=${fresh.json?.material?.published}`);
+      ok('★ 默认情况下同校同学拿不到（还没公开）',
+        (await schoolMate('GET', MAT)).status === 404);
+
+      // 勾上「公开给同校」
+      const pub = await req('PATCH', `/api/materials/${materialId}`, { json: { published: 1 } });
+      ok('★ 能把资料设为公开', pub.status === 200, `状态码 ${pub.status}`);
+
+      const mateOk = await schoolMate('GET', MAT);
+      ok('★ 公开之后同校同学能拿到原文件（可看也可下载）',
+        mateOk.status === 200, `状态码 ${mateOk.status}`);
+      ok('★ 同校同学拿到的是真文件（不是空响应）',
+        mateOk.status === 200 && (mateOk.text || '').length > 0,
+        `body ${(mateOk.text || '').length} 字符`);
+
+      // 跨校越权：外校同学拿着同一个 id，必须拿不到
+      const outDenied = await outsider('GET', MAT);
+      ok('★ 外校同学拿不到（404，不是 403 —— 403 会暴露"这份资料存在"）',
+        outDenied.status === 404, `状态码 ${outDenied.status}`);
+      const outPdf = await outsider('GET', `/materials/${materialId}/pdf`);
+      ok('★ 外校同学也拿不到转换后的 PDF', outPdf.status === 404, `状态码 ${outPdf.status}`);
+      const outSlide = await outsider('GET', `/materials/${materialId}/slide/1`);
+      ok('★ 外校同学也拿不到幻灯片图片', outSlide.status === 404, `状态码 ${outSlide.status}`);
+      // 没填学校的人同样不行
+      ok('★ 没填学校的人也拿不到', (await noSchool('GET', MAT)).status === 404);
+      // 未登录
+      const anonMat = createClient(baseUrl);
+      ok('★ 未登录拿不到公开资料',
+        (await anonMat('GET', MAT)).status !== 200,
+        '未登录居然能拿到文件');
+
+      // 外校同学连"这份资料存不存在"都问不出来：不存在的 id 和存在的 id 回得一样
+      const outMissing = await outsider('GET', '/materials/99999999/raw');
+      ok('★ 「不存在」和「没权限」的返回完全一样（问不出情报）',
+        outMissing.status === outDenied.status,
+        `不存在=${outMissing.status} 没权限=${outDenied.status}`);
+
+      // 取消公开之后，同校同学立刻拿不到
+      const unpub = await req('PATCH', `/api/materials/${materialId}`, { json: { published: 0 } });
+      ok('★ 能取消公开', unpub.status === 200, `状态码 ${unpub.status}`);
+      ok('★ 取消之后同校同学立刻拿不到（收回是即时生效的）',
+        (await schoolMate('GET', MAT)).status === 404,
+        '★ 取消了公开，同校同学还能拿到 —— 「收回」是假的');
+      ok('★ 但本人仍然能拿到自己的（不公开也不影响自己）',
+        (await req('GET', MAT)).status === 200);
+
+      // 字符串 '0' 必须被当成"取消公开"，不能被 JS 的非空字符串真值坑到
+      await req('PATCH', `/api/materials/${materialId}`, { json: { published: '1' } });
+      ok('（前提）字符串 "1" 能设为公开',
+        (await schoolMate('GET', MAT)).status === 200);
+      await req('PATCH', `/api/materials/${materialId}`, { json: { published: '0' } });
+      ok('★ 字符串 "0" 也算取消公开（不能被当成真值）',
+        (await schoolMate('GET', MAT)).status === 404,
+        '★ "0" 被当成非空字符串的真值了 —— 用户以为收回了，其实还开着');
+
+      // 列表上要能看出哪些是公开的
+      await req('PATCH', `/api/materials/${materialId}`, { json: { published: 1 } });
+      const listWithBadge = await req('GET', '/materials');
+      ok('★ 资料列表上标出「同校可见」',
+        /同校可见/.test(listWithBadge.text));
+      const form = await req('GET', `/materials/${materialId}`);
+      ok('★ 编辑表单里有公开开关',
+        /name="published"/.test(form.text) && /id="me_published"/.test(form.text));
+      ok('★ 开关旁边说明了可见范围（同校 + 可下载）',
+        /和你同一所学校/.test(form.text) && /也能下载原文件/.test(form.text));
+      // ⚠️ 勾选状态是**前端**在打开弹窗时设的（模板是静态 HTML），
+      //    所以不能断言服务端渲染出 checked。这里改为断言那段逻辑真的存在 ——
+      //    漏了它的表现是静默的：每次打开编辑框都没勾，
+      //    用户以为资料没公开（其实公开着），或者反手一勾把公开的关掉了。
+      const appJsForPub = await req('GET', '/static/app.js');
+      ok('★ 打开编辑框时会把勾选状态同步成资料的真实状态',
+        /pubBox\.checked = Number\(material\.published\) === 1/.test(appJsForPub.text));
+      ok('★ 没勾时显式提交 0（表单不提交未勾选的 checkbox，否则「取消公开」点不动）',
+        /body\.published = pubBox\.checked \? '1' : '0'/.test(appJsForPub.text));
+
+      // 收回去，别影响后面的用例
+      await req('PATCH', `/api/materials/${materialId}`, { json: { published: 0 } });
+    }
+
     const anonProfile = createClient(baseUrl);
     const anonProfileRes = await anonProfile('POST', '/api/profile', {
       json: { displayName: '路人', school: '东北财经大学' },

@@ -146,6 +146,7 @@ function materialRow(m) {
       </span>
     </span>
     ${m.hasPdf ? '<span class="badge badge--success">PDF</span>' : ''}
+    ${m.published ? `<span class="badge badge--primary" title="同校同学能看到并下载这份资料">${icon('users', 12)} 同校可见</span>` : ''}
   </a>
   <span class="material-row__actions">
     <button type="button" class="btn btn--ghost btn--sm" data-edit-material="${m.id}"
@@ -534,6 +535,22 @@ export function renderMaterialEditForm({ courses }) {
     <div class="field">
       <label class="field__label" for="me_desc">说明</label>
       <textarea id="me_desc" class="input input--area" name="description" rows="3"></textarea>
+    </div>
+    ${/* ⚠️ 默认**不勾**，而且是每份资料单独设。
+         用户在需求里就说清了：有些资料不适合公开（老师的东西、带答案的、
+         自己整理的笔记），所以不能给一个"整个资料库一刀切"的开关。 */ ''}
+    <div class="field">
+      <label class="checkbox-row">
+        <input type="checkbox" name="published" value="1" id="me_published">
+        <span>
+          <strong>公开给同校同学</strong>
+          <span class="field__help">
+            勾上之后，<strong>和你同一所学校</strong>的同学能在校友社区里看到这份资料，
+            也能下载原文件。别的学校的人看不到，没登录的人更看不到。
+            默认不公开，每份资料单独设。
+          </span>
+        </span>
+      </label>
     </div>
     <div class="form__actions">
       <button type="button" class="btn btn--ghost" data-modal-close>取消</button>

@@ -567,6 +567,7 @@ export function updateMaterial(userId, id, patch) {
   run(
     `UPDATE materials SET
        title = ?, description = ?, category = ?, course_id = ?, week = ?, tags = ?, source = ?,
+       published = ?,
        updated_at = datetime('now','localtime')
      WHERE id = ? AND user_id = ?`,
     patch.title ?? row.title,
@@ -576,9 +577,25 @@ export function updateMaterial(userId, id, patch) {
     patch.week === undefined ? row.week : (patch.week === '' || patch.week === null ? null : Number(patch.week)),
     patch.tags ?? row.tags,
     patch.source ?? row.source,
+    // 公开开关：只认真正的布尔输入，**不要**写成 `patch.published ?? row.published` ——
+    // 那样传字符串 '0' 会被当成真值（非空字符串在 JS 里是真的），
+    // 于是「取消公开」这个动作会静默失败，而用户以为已经收回了。
+    toBool01(patch.published, row.published),
     id,
     userId,
   );
+}
+
+/** 把各种写法（true / '1' / 'on' / 1 / 0 / '0' / ''）统一成 1 或 0 */
+function toBool01(value, fallback) {
+  if (value === undefined || value === null) return Number(fallback) ? 1 : 0;
+  if (value === true || value === 1) return 1;
+  if (value === false || value === 0 || value === '') return 0;
+  const s = String(value).trim().toLowerCase();
+  if (['1', 'true', 'on', 'yes'].includes(s)) return 1;
+  if (['0', 'false', 'off', 'no'].includes(s)) return 0;
+  // 认不出来就沿用原值，别猜 —— 猜错的方向可能是"本该收回却公开了"
+  return Number(fallback) ? 1 : 0;
 }
 
 export async function deleteMaterial(userId, id) {
