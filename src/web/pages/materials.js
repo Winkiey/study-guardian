@@ -42,7 +42,7 @@ function categoryOptions(selected) {
 
 export function materialsPage({
   user, materials, courses, stats, filters, storage,
-  uploadFormTemplate = '', editFormTemplate = '', schoolVerified = false,
+  uploadFormTemplate = '', editFormTemplate = '', schoolVerified = false, hasNickname = true,
 }) {
   // 「作用于哪些」的一句话说明。批量按钮最怕的是用户不知道自己会改到多少东西，
   // 所以把范围用文字摊开：是全部，还是某个分类 / 某门课。
@@ -159,6 +159,10 @@ ${/* 批量公开。作用范围是**当前筛选**（分类/课程），不是�
     ${!schoolVerified ? `<span class="field__help" data-bulk-school-warning>
       ⚠️ 你的学校还没从名单里选过，<strong>现在公开谁也看不到</strong> ——
       先去<a href="/settings#system">设置</a>里选一所学校。
+    </span>` : ''}
+    ${!hasNickname ? `<span class="field__help" data-bulk-nickname-warning>
+      ⚠️ 你还没起昵称，<strong>「全部公开」会被拒绝</strong> ——
+      社区里只显示昵称和头像。先去<a href="/settings#system">设置</a>里填一个。
     </span>` : ''}
   </div>
   <div class="btn-row">
@@ -582,7 +586,7 @@ export function renderUploadForm({ courses, maxUploadMB, currentCourseId }) {
 // 编辑资料表单
 // ============================================================
 
-export function renderMaterialEditForm({ courses, schoolVerified = true }) {
+export function renderMaterialEditForm({ courses, schoolVerified = true, hasNickname = true }) {
   return `<template id="material-edit-template">
   <form class="form" data-material-edit-form>
     <input type="hidden" name="id">
@@ -639,6 +643,16 @@ export function renderMaterialEditForm({ courses, schoolVerified = true }) {
             ⚠️ 你的学校还没<strong>从名单里选过</strong>，所以现在勾上<strong>谁也看不到</strong>。
             去<a href="/settings#system">设置 → 个人资料</a>里选一所学校，
             已经勾上的会立刻生效 —— 不用回来重勾。
+          </span>` : ''}
+          ${/* ⚠️ 没昵称时**直接不给公开**（服务端 publishBlocker 会拦）。
+               和上面学校那条不一样：学校那条只警告，这条是硬拦 ——
+               因为没昵称坏掉的是**别人**看到的东西（同学看到
+               「（没填昵称）」+ 问号头像，不知道是谁给的），
+               而学校没选只影响"你自己暂时没生效"。 */ ''}
+          ${!hasNickname ? `<span class="field__help field__help--warn" data-pub-nickname-warning>
+            ⚠️ 你还没起昵称，所以<strong>现在还不能公开</strong> ——
+            社区里只显示昵称和头像，没有昵称的话同学不知道这份东西是谁给的。
+            去<a href="/settings#system">设置 → 个人资料</a>里填一个（一个字段的事）。
           </span>` : ''}
         </span>
       </label>

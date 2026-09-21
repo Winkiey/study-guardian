@@ -25,7 +25,7 @@ import { SCHOOL_NAMES, isKnownSchool, schoolPlace } from '../data/schools.js';
 import {
   AVATAR_MAX_BYTES, avatarExtOf, avatarMime, avatarPath, removeAvatar, saveAvatar,
 } from '../lib/avatar.js';
-import { canViewAvatar } from '../lib/community.js';
+import { canViewAvatar, publishBlocker } from '../lib/community.js';
 import fs from 'node:fs';
 import { deleteAccount } from '../lib/account.js';
 import * as courses from '../lib/courses.js';
@@ -415,6 +415,14 @@ export function registerApi(router) {
     if (body && body.category !== undefined) {
       const category = normalizeCategory(body.category);
       body.category = category === undefined ? DEFAULT_MATERIAL_CATEGORY : category;
+    }
+
+    // ⚠️ 改成「公开」时要先有昵称 —— 社区里认人靠昵称+头像，没昵称的话
+    //    同学看到的是「（没填昵称）」+ 问号头像，不知道是谁给的。
+    //    收回（published=0）永远允许，不受这一条限制。
+    if (publishedWanted(body)) {
+      const blocked = publishBlocker(ctx.user.id);
+      if (blocked) throw badRequest(blocked);
     }
 
     materials.updateMaterial(ctx.user.id, id, body);
@@ -832,11 +840,28 @@ export function registerApi(router) {
    * 这个接口一次影响一片，漏了归属判断就等于任何登录用户都能
    * 公开/取消公开**别人**的资料。
    */
+  /**
+   * 请求里是不是在要求「设为公开」。
+   *
+   * 表单、JSON、checkbox 三处的写法都不一样：`1` / `'1'` / `'on'` / `true` /
+   * `'true'` / `'yes'`，所以只有一处判断标准 —— 单份编辑和批量公开都调它。
+   * 分开写的话，早晚会出现「单份编辑放行了、批量那边拦住了」这种对不上的
+   * 情况，而用户看到的是"有时候能公开有时候不能"。
+   */
+  const publishedWanted = (body) => ['1', 'true', 'on', 'yes', 1, true].includes(
+    typeof body?.published === 'string' ? body.published.trim().toLowerCase() : body?.published,
+  );
+
   router.post('/api/materials/publish', guard(async (ctx) => {
     const body = await readJson(ctx.req);
-    const published = ['1', 'true', 'on', 'yes', 1, true].includes(
-      typeof body?.published === 'string' ? body.published.trim().toLowerCase() : body?.published,
-    ) ? 1 : 0;
+    const published = publishedWanted(body) ? 1 : 0;
+
+    // 同一条前置条件：公开之前得先有昵称（收回不受限）。
+    // 规则本身在 community.js 的 publishBlocker 里，这里只负责拦。
+    if (published) {
+      const blocked = publishBlocker(ctx.user.id);
+      if (blocked) throw badRequest(blocked);
+    }
 
     const scope = {};
     if (body?.courseId) scope.courseId = Number(body.courseId);

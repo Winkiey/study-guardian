@@ -571,6 +571,8 @@ export function registerPages(router) {
       //    （community.js 的 sameSchool 对未验证校名直接 false）。
       //    页面据此在三处说实话：列表顶部横幅、行上的徽标、编辑表单的说明。
       schoolVerified: schoolIsVerified(ctx.user.school),
+      // 没昵称就**不能公开**（服务端 publishBlocker 会拦），页面先说清楚
+      hasNickname: Boolean(String(ctx.user.display_name || '').trim()),
       // 上传与编辑表单作为 <template> 渲染进页面，前端 JS 拿来开弹窗
       uploadFormTemplate: renderUploadForm({
         courses: courses.listCourses(userId),
@@ -580,6 +582,7 @@ export function registerPages(router) {
       editFormTemplate: renderMaterialEditForm({
         courses: courses.listCourses(userId),
         schoolVerified: schoolIsVerified(ctx.user.school),
+        hasNickname: Boolean(String(ctx.user.display_name || '').trim()),
       }),
     }), { user: ctx.user, stats: navStats(userId) });
   }));
@@ -630,6 +633,7 @@ export function registerPages(router) {
       editFormTemplate: renderMaterialEditForm({
         courses: courses.listCourses(userId),
         schoolVerified: schoolIsVerified(ctx.user.school),
+        hasNickname: Boolean(String(ctx.user.display_name || '').trim()),
       }),
     }), { user: ctx.user, stats: navStats(userId), wide: true });
   }));

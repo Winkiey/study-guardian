@@ -2973,6 +2973,70 @@ async function run() {
           !/换一所学校会让它们/.test(setPage2.text));
       }
 
+      // ---- 没昵称就不许公开 ----
+      // 社区里认人靠昵称+头像（用户名永远不显示，这是用户拍板的前提）。
+      // 没昵称的人公开出去的东西，在同学眼里是「（没填昵称）」+ 问号头像 ——
+      // 别人不知道是谁给的，也就不敢下载。所以这一条是**硬拦**，
+      // 和"学校没选过只警告"不同。
+      {
+        const noname = createClient(baseUrl);
+        const uNoname = `E2ENoName${Math.floor(Math.random() * 100000)}`;
+        // 注册时**不给** displayName
+        await noname('POST', '/register', {
+          form: {
+            username: uNoname, password: 'noname123456', password2: 'noname123456',
+            inviteCode: E2E_INVITE_CODE,
+          },
+        });
+        // ⚠️ multipart() 必须只调一次：它每次生成一个新的 boundary，
+        //    调两次会让 body 和 Content-Type 里的 boundary 对不上，
+        //    服务端解析不出文件 —— 而报错会指向"没有收到文件"，跟这里毫无关系。
+        const noNameUp = multipart(
+          { title: '没昵称的人的资料', category: 'courseware' },
+          { field: 'file', filename: 'n.txt', type: 'text/plain', data: Buffer.from('x') },
+        );
+        const upNo = await noname('POST', '/api/materials', {
+          body: noNameUp.body, headers: { 'Content-Type': noNameUp.contentType },
+        });
+        const noNameId = upNo.json?.material?.id || upNo.json?.id;
+        ok('（前提）没昵称的账号上传成功了一份资料', Boolean(noNameId));
+
+        const pubNo = await noname('PATCH', `/api/materials/${noNameId}`, { json: { published: 1 } });
+        ok('★ 没有昵称时，单份编辑不允许公开（400 + 说明去哪儿填）',
+          pubNo.status === 400 && /昵称/.test(pubNo.json?.error || ''),
+          `状态码 ${pubNo.status}，error=${pubNo.json?.error}`);
+
+        const bulkNo = await noname('POST', '/api/materials/publish', { json: { published: 1 } });
+        ok('★ 没有昵称时，批量公开同样被拦（两个入口一条规则）',
+          bulkNo.status === 400 && /昵称/.test(bulkNo.json?.error || ''),
+          `状态码 ${bulkNo.status}，error=${bulkNo.json?.error}`);
+
+        // 收回永远允许 —— 不能因为没昵称就把人锁死在"公开着"的状态里
+        const offNo = await noname('POST', '/api/materials/publish', { json: { published: 0 } });
+        ok('★ 但「取消公开」不受限制（否则没昵称的人会被锁死在公开状态）',
+          offNo.status === 200, `状态码 ${offNo.status}`);
+
+        // 页面在勾之前就要说
+        const libNo = await noname('GET', '/materials');
+        ok('★ 资料库页在勾之前就说明「还不能公开」',
+          libNo.text.includes('data-pub-nickname-warning')
+          && libNo.text.includes('data-bulk-nickname-warning'));
+
+        // 起个昵称之后立刻就能公开了
+        await noname('POST', '/api/profile', { json: { displayName: '刚起了昵称' } });
+        const pubOk = await noname('PATCH', `/api/materials/${noNameId}`, { json: { published: 1 } });
+        ok('★ 起了昵称之后马上就能公开（拦的是"没有昵称"，不是"这个人"）',
+          pubOk.status === 200, `状态码 ${pubOk.status}`);
+
+        // 对照：有昵称的人（我）不该有那两条警告
+        const myLibNo = await req('GET', '/materials');
+        ok('★ 对照：有昵称的人看不到那两条警告（否则它们是写死的）',
+          !myLibNo.text.includes('data-pub-nickname-warning')
+          && !myLibNo.text.includes('data-bulk-nickname-warning'));
+
+        if (noNameId) await noname('DELETE', `/api/materials/${noNameId}`);
+      }
+
       // 收尾：把自己造的两份资料**删掉**（不只是取消公开）。
       // 后面的用例在数磁盘上的文件个数，多留两个会让那边莫名其妙地红，
       // 而报错信息完全指不到这里。
