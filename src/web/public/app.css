@@ -1019,6 +1019,22 @@ a.stat:hover {
 .alumni-profile { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
 .alumni-profile__name { font-size: 17px; font-weight: 640; margin-bottom: 6px; }
 
+/* ---- 批量操作条 ----
+   放在列表**下面**而不是上面：先看完有哪些资料、再决定批量改什么，
+   顺序和人的动作一致。放上面的话，用户还没看到内容就先遇到一个
+   "一次改一片"的按钮，容易误点。 */
+.bulk-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap;
+  margin-top: 16px;
+  padding: 12px 14px;
+  border: 1px dashed var(--c-border-strong);
+  border-radius: var(--radius);
+  background: var(--c-surface-2);
+}
+.bulk-bar__text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.bulk-bar__text strong { font-size: 13.5px; }
+
 /* ---- 字段级错误 ----
    为什么要有它：以前表单填错了只有两条路 —— 浏览器自带的气泡（样式不可控、
    点到别处就没了），或者页面右上角一个 toast。toast 的问题是**不说是哪个框**：

@@ -557,6 +557,61 @@ export async function rebuildPreview(userId, materialId) {
   return buildPreview(materialId);
 }
 
+/**
+ * 批量设置「公开给同校」。按**当前的筛选条件**作用，不是无脑全库。
+ *
+ * 为什么按筛选而不是"全部公开"：资料库里往往混着老师发的东西、带答案的、
+ * 自己整理的笔记。一刀切全公开是这一批里最容易出事的一个按钮 ——
+ * 所以设计成「公开我正在看的这一类」：先筛到某个课程或某个分类，再批量。
+ * 想全公开也行，但那时用户至少是在「全部」这一屏上按的。
+ *
+ * ⚠️ `WHERE user_id = ?` 是第一条件，不是可选项。
+ *    漏了它就是**任何登录用户都能公开/取消公开别人的资料** ——
+ *    这个接口比单份的 PATCH 危险得多，因为它一次影响一片。
+ *
+ * @param {number} userId
+ * @param {{published: boolean|number|string, category?: string, courseId?: number, kind?: string}} opts
+ * @returns {number} 实际改动的行数
+ */
+export function setPublishedBulk(userId, opts = {}) {
+  const where = ['user_id = ?'];
+  const params = [Number(userId)];
+  if (opts.courseId) {
+    where.push('course_id = ?');
+    params.push(Number(opts.courseId));
+  }
+  if (opts.category) {
+    where.push('category = ?');
+    params.push(opts.category);
+  }
+  if (opts.kind) {
+    where.push('kind = ?');
+    params.push(opts.kind);
+  }
+
+  const value = toBool01(opts.published, 0);
+  const result = run(
+    `UPDATE materials SET published = ?, updated_at = datetime('now','localtime')
+      WHERE ${where.join(' AND ')}`,
+    value, ...params,
+  );
+  return Number(result?.changes) || 0;
+}
+
+/** 按同样的筛选条件数一下有多少份（给界面显示"这一类共 N 份"） */
+export function countMaterials(userId, opts = {}) {
+  const where = ['user_id = ?'];
+  const params = [Number(userId)];
+  if (opts.courseId) { where.push('course_id = ?'); params.push(Number(opts.courseId)); }
+  if (opts.category) { where.push('category = ?'); params.push(opts.category); }
+  if (opts.kind) { where.push('kind = ?'); params.push(opts.kind); }
+  const row = get(
+    `SELECT COUNT(*) AS c FROM materials WHERE ${where.join(' AND ')}`,
+    ...params,
+  );
+  return Number(row?.c) || 0;
+}
+
 /** 更新资料元信息（不改文件） */
 export function updateMaterial(userId, id, patch) {
   const row = get('SELECT * FROM materials WHERE id = ? AND user_id = ?', id, userId);

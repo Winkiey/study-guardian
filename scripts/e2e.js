@@ -2871,6 +2871,79 @@ async function run() {
       if (outMaterialId) await outsider('DELETE', `/api/materials/${outMaterialId}`);
     }
 
+    // ---- 批量公开 ----
+    // ⚠️ 这个接口一次影响一片，所以最要紧的断言不是"能不能批量改"，
+    //    而是「**只改自己的**」。下面第二条就是为这个写的。
+    {
+      await req('PATCH', `/api/materials/${materialId}`, { json: { published: 1 } });
+      ok('（前提）我自己有一份已公开的资料',
+        (await schoolMate('GET', `/materials/${materialId}/raw`)).status === 200);
+
+      const mateBulk = await schoolMate('POST', '/api/materials/publish', {
+        json: { published: 0 },
+      });
+      ok('★ 同校同学批量取消公开，改到的是他自己的（他 0 份）',
+        mateBulk.status === 200 && mateBulk.json?.changed === 0,
+        `状态码 ${mateBulk.status}，changed=${mateBulk.json?.changed}`);
+      ok('★ 他的批量操作**没有**动我的资料（这条是这一批的核心）',
+        (await schoolMate('GET', `/materials/${materialId}/raw`)).status === 200,
+        '★ 别人一次批量操作就把我的公开收回去了 —— 那条 SQL 漏了 user_id');
+
+      const myBulkOff = await req('POST', '/api/materials/publish', { json: { published: 0 } });
+      ok('★ 我自己的批量取消公开生效了',
+        myBulkOff.status === 200 && myBulkOff.json?.changed >= 1,
+        `changed=${myBulkOff.json?.changed}`);
+      ok('★ 取消之后同校同学拿不到了',
+        (await schoolMate('GET', `/materials/${materialId}/raw`)).status === 404);
+
+      // 按分类批量：只作用于那一类。用这份资料**真实的**分类，
+      // 不要假定它是 courseware（第一版就是这么写的，结果 changed=0 ——
+      // 那时候断言失败的原因和"批量越界"完全无关，纯粹是我猜错了分类）。
+      const mine = (await req('GET', `/api/materials/${materialId}`)).json?.material;
+      const myCategory = mine?.category || 'courseware';
+      ok('（前提）拿到了这份资料的真实分类', Boolean(mine?.category), `category=${mine?.category}`);
+
+      const byCat = await req('POST', '/api/materials/publish', {
+        json: { published: 1, category: myCategory },
+      });
+      ok('★ 能按分类批量公开', byCat.status === 200 && byCat.json?.changed >= 1,
+        `changed=${byCat.json?.changed}（分类 ${myCategory}）`);
+
+      // 换一个**不同**的分类批量，验证不会牵连到别的类
+      const otherCategory = myCategory === 'assignment' ? 'courseware' : 'assignment';
+      await req('POST', '/api/materials/publish', { json: { published: 0 } });
+      await req('POST', '/api/materials/publish', { json: { published: 1, category: otherCategory } });
+      const afterOther = (await req('GET', `/api/materials/${materialId}`)).json?.material;
+      ok('★ 按别的分类批量时，这份资料没被牵连',
+        !afterOther?.published,
+        `★ 按「${otherCategory}」批量却动到了「${myCategory}」的资料`);
+
+      // 非法分类：要报错，**不能**匹配不到行还回"改了 0 份"（那是静默失败）
+      const badCat = await req('POST', '/api/materials/publish', {
+        json: { published: 1, category: '不存在的分类' },
+      });
+      ok('★ 非法分类被明确拒绝（400 + 可选值列表），不是静默改 0 份',
+        badCat.status === 400 && /不存在/.test(badCat.json?.error || ''),
+        `状态码 ${badCat.status}，error=${badCat.json?.error}`);
+
+      const anonBulk = createClient(baseUrl);
+      const anonBulkRes = await anonBulk('POST', '/api/materials/publish', { json: { published: 1 } });
+      ok('★ 未登录不能批量公开',
+        anonBulkRes.status === 302 || anonBulkRes.status === 401,
+        `状态码 ${anonBulkRes.status}`);
+
+      // 收尾：全部收回，别影响后面的用例
+      await req('POST', '/api/materials/publish', { json: { published: 0 } });
+
+      const bulkPage = await req('GET', '/materials');
+      ok('★ 资料页有批量公开的操作条',
+        bulkPage.text.includes('data-bulk-publish')
+        && bulkPage.text.includes('data-bulk-set="1"')
+        && bulkPage.text.includes('data-bulk-set="0"'));
+      ok('★ 操作条写明了「作用于这一屏的 N 份」（不能让人不知道会改到多少）',
+        /这一屏的\s*\d+\s*份/.test(bulkPage.text));
+    }
+
     const anonProfile = createClient(baseUrl);
     const anonProfileRes = await anonProfile('POST', '/api/profile', {
       json: { displayName: '路人', school: '东北财经大学' },

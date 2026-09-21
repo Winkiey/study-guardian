@@ -2428,6 +2428,7 @@ function initSettings() {
   initSchoolPickers();
   initProfileForm();
   initAvatarForm();
+  initBulkPublish();
   initRevokeButtons();
   initDeleteAccount();
   initSchedulerButton();
@@ -3614,6 +3615,58 @@ function initAvatarForm() {
     img.alt = '待上传的头像预览';
     img.addEventListener('load', () => URL.revokeObjectURL(url), { once: true });
     preview.appendChild(img);
+  });
+}
+
+/**
+ * 批量设置资料的「公开给同校」。
+ *
+ * 作用范围是**当前筛选**（分类/课程），不是整个资料库。
+ * 点之前先用 confirm 把"要改多少份、改成什么"说清楚 ——
+ * 这个按钮一次影响一片，比单份危险；而且"取消公开"是收回动作，
+ * 用户最怕手滑点到它。
+ */
+function initBulkPublish() {
+  const bar = document.querySelector('[data-bulk-publish]');
+  if (!bar) return;
+
+  bar.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-bulk-set]');
+    if (!btn) return;
+    const published = btn.dataset.bulkSet === '1';
+    // 份数从页面上那句话里读 —— 那是服务端刚渲染的真实数字，
+    // 比在前端另算一遍可靠（前端的数字可能和筛选条件不同步）
+    const text = bar.querySelector('.bulk-bar__text')?.textContent || '';
+    const count = text.match(/这一屏的\s*(\d+)\s*份/)?.[1] || '';
+
+    const what = published
+      ? '公开给同校同学（他们能看到并下载原文件）'
+      : '取消公开（同校同学就看不到了）';
+    if (!window.confirm(`把这一屏的 ${count} 份资料${what}？\n\n一次改完，不能一步撤销。`)) {
+      return;
+    }
+
+    const body = { published: published ? 1 : 0 };
+    if (bar.dataset.category) body.category = bar.dataset.category;
+    if (bar.dataset.courseId) body.courseId = Number(bar.dataset.courseId);
+
+    btn.disabled = true;
+    btn.classList.add('is-loading');
+    try {
+      const res = await api('/api/materials/publish', { method: 'POST', body });
+      // 把"改了几份"说出来：一份没改（筛选条件已经不匹配了）和改了一批
+      // 看起来完全一样，不说清用户会以为成功了
+      if (res?.changed) {
+        toast(published ? `已公开 ${res.changed} 份资料` : `已取消公开 ${res.changed} 份资料`, 'success');
+      } else {
+        toast('这个范围内没有可改的资料', 'info');
+      }
+      reloadPreservingScroll();
+    } catch (err) {
+      toast(err.message, 'error');
+      btn.disabled = false;
+      btn.classList.remove('is-loading');
+    }
   });
 }
 

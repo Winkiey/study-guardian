@@ -41,6 +41,19 @@ function categoryOptions(selected) {
 }
 
 export function materialsPage({ user, materials, courses, stats, filters, storage, uploadFormTemplate = '', editFormTemplate = '' }) {
+  // 「作用于哪些」的一句话说明。批量按钮最怕的是用户不知道自己会改到多少东西，
+  // 所以把范围用文字摊开：是全部，还是某个分类 / 某门课。
+  const scopeParts = [];
+  if (filters.category) {
+    const def = MATERIAL_CATEGORIES.find((c) => c.key === filters.category);
+    scopeParts.push(`「${def ? def.label : filters.category}」分类`);
+  }
+  if (filters.courseId) {
+    const course = (courses || []).find((c) => String(c.id) === String(filters.courseId));
+    scopeParts.push(course ? `「${course.name}」这门课` : '当前课程');
+  }
+  const scopeLabel = scopeParts.length ? `（${scopeParts.join(' + ')}）` : '（全部）';
+
   const body = `
 ${pageHeader({
     title: '资料库',
@@ -96,7 +109,31 @@ ${materials.length === 0
           : '把老师发的课件传上来，之后不管在哪台设备上都能直接打开看，不用再翻微信/QQ 聊天记录。',
         action: `<button type="button" class="btn btn--primary" data-upload-material>${icon('upload', 17)}<span>上传资料</span></button>`,
       })
-      : `<ul class="material-list">${materials.map(materialRow).join('')}</ul>`}
+      : `<ul class="material-list">${materials.map(materialRow).join('')}</ul>
+
+${/* 批量公开。作用范围是**当前筛选**（分类/课程），不是整个资料库 ——
+     资料库里常混着老师发的东西、带答案的、自己整理的笔记，
+     一刀切全公开是这一屏里最容易出事的按钮。所以文案里明确写出
+     「这一屏的 N 份」，并在点下去时再确认一次。 */ ''}
+<div class="bulk-bar" data-bulk-publish
+     data-category="${escapeHtml(filters.category || '')}"
+     data-course-id="${escapeHtml(String(filters.courseId || ''))}">
+  <div class="bulk-bar__text">
+    <strong>批量设置公开</strong>
+    <span class="muted small">
+      作用于<strong>这一屏的 ${materials.length} 份</strong>${scopeLabel}
+      —— 想只公开某几份，先用上面的筛选缩到那一类。
+    </span>
+  </div>
+  <div class="btn-row">
+    <button type="button" class="btn btn--outline btn--sm" data-bulk-set="1">
+      ${icon('users', 15)}<span>全部公开</span>
+    </button>
+    <button type="button" class="btn btn--outline btn--sm" data-bulk-set="0">
+      <span>全部取消公开</span>
+    </button>
+  </div>
+</div>`}
 
 ${storage?.lowSpace ? `
 <div class="notice notice--warn mt-lg">

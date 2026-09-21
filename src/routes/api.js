@@ -821,6 +821,35 @@ export function registerApi(router) {
     ctx.res.end(fs.readFileSync(file));
   });
 
+  /**
+   * 批量设置「公开给同校」。
+   *
+   * 作用范围是**当前筛选条件**（分类 / 课程），不是整个资料库 ——
+   * 见 materials.js 里 setPublishedBulk 的说明：一刀切全公开是这一批里
+   * 最容易出事的按钮。
+   *
+   * 走的还是 materials 那一层，所以 `WHERE user_id = ?` 是硬约束：
+   * 这个接口一次影响一片，漏了归属判断就等于任何登录用户都能
+   * 公开/取消公开**别人**的资料。
+   */
+  router.post('/api/materials/publish', guard(async (ctx) => {
+    const body = await readJson(ctx.req);
+    const published = ['1', 'true', 'on', 'yes', 1, true].includes(
+      typeof body?.published === 'string' ? body.published.trim().toLowerCase() : body?.published,
+    ) ? 1 : 0;
+
+    const scope = {};
+    if (body?.courseId) scope.courseId = Number(body.courseId);
+    // 分类要过一遍白名单：直接调接口什么都能传。
+    // normalizeCategory 对不认识的值会**抛 400**（不是悄悄替换成默认分类）——
+    // 这里就是要它抛：传一个不存在的分类时，匹配不到任何行、返回"改了 0 份"，
+    // 用户会以为成功了，而实际上是"什么也没干"。宁可报错。
+    if (body?.category) scope.category = normalizeCategory(body.category);
+
+    const changed = materials.setPublishedBulk(ctx.user.id, { published, ...scope });
+    sendJson(ctx.res, { ok: true, changed, published });
+  }));
+
   router.post('/api/password', guard(async (ctx) => {
     const body = await readJson(ctx.req);
     const user = get('SELECT * FROM users WHERE id = ?', ctx.user.id);
