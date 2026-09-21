@@ -197,6 +197,46 @@ export function communityFeed(viewerId, opts = {}) {
 }
 
 /**
+ * 我自己公开出去的那几份 —— 社区页最上面「我公开的」那一栏。
+ *
+ * 为什么单独有这么一个查询：`communityFeed` 按设计**排除了自己**，
+ * 于是「公开」这个动作在社区页上没有任何回显 —— 你公开完一份，
+ * 这一页看起来和没公开时一模一样（用户就是这么反馈的：
+ * 「我自己上传后社区界面没什么变动」）。
+ *
+ * ⚠️ 这个查询**不做同校判断**，这是有意的，而且是对的：
+ *    看的是自己的东西，本来就该看到。学校还没从名单里选过的人
+ *    进不了社区，但没道理连「我自己公开了什么」都看不见。
+ *
+ *    所以它的边界只剩一条，也正是唯一要守的一条：`m.user_id = ?`。
+ *    少写这一条，同校同学**没公开**的资料会从这个口子整片漏出来 ——
+ *    这是整个社区里最贵的一个 bug（漏的是别人刻意没公开的东西）。
+ */
+export function myPublishedMaterials(userId, opts = {}) {
+  const limit = Math.min(Math.max(Number(opts.limit) || 20, 1), 100);
+  return all(
+    `SELECT m.id, m.title, m.category, m.kind, m.size, m.pdf_name,
+            m.updated_at, m.created_at,
+            c.name AS course_name, c.color AS course_color
+       FROM materials m
+       LEFT JOIN courses c ON c.id = m.course_id
+      WHERE m.user_id = ? AND m.published = 1
+      ORDER BY m.updated_at DESC
+      LIMIT ?`,
+    Number(userId), limit,
+  ).map((r) => ({
+    id: r.id,
+    title: r.title || '',
+    category: r.category || '',
+    kind: r.kind || '',
+    size: r.size,
+    hasPdf: Boolean(r.pdf_name),
+    updatedAt: r.updated_at || r.created_at || '',
+    course: r.course_name ? { name: r.course_name, color: r.course_color || '' } : null,
+  }));
+}
+
+/**
  * 同校校友：至少公开过一份资料的人。
  *
  * 一份都没公开的人不出现在这里 —— 这是「有东西可看的人」的列表，

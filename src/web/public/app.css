@@ -955,6 +955,16 @@ a.stat:hover {
 /* ---- 校友社区 ----
    卡片网格：桌面两三列，窄屏一列。每张卡片顶部是"谁公开的"，
    下面是资料本身 —— 顺序是有意的：先看清是谁，再看是什么。 */
+/* 「我公开的」那一段和「同校资料」那一段各自包了一层 section。
+   包这一层是为了让自测能点名定位"哪一段"（否则断言只能整页找字符串，
+   分不清一份资料是出现在自己的那一栏还是同学那一栏）。
+   代价是它插进了卡片堆里，会打断 `.card + .card` 这条相邻兄弟间距 ——
+   中间隔了一层 section，选不中了，所以这里把间距补回来。
+   ⚠️ 别删这条：删了页面照样能看，只是卡片会贴在一起。 */
+.community-section + .community-section,
+.community-section + .card,
+.card + .community-section { margin-top: 20px; }
+
 .community-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));

@@ -2795,8 +2795,13 @@ async function run() {
         await outsider('PATCH', `/api/materials/${outMaterialId}`, { json: { published: 1 } });
       }
 
-      // 先把我自己的一份资料也公开 —— 社区列表**不该**出现自己的东西
-      const minePub = await req('PATCH', `/api/materials/${materialId}`, { json: { published: 1 } });
+      // 我自己也公开一份。这一份**必须同时满足两件事**：
+      //   ① 不出现在「同校同学」那一栏（社区流按设计排除自己）；
+      //   ② 但要出现在「我公开的」那一栏 —— 否则公开这个动作
+      //      在社区页上没有任何回显（用户反馈的就是这个：
+      //      「我自己上传后社区界面没什么变动」）。
+      const myTitle = '我自己公开的资料';
+      await req('PATCH', `/api/materials/${materialId}`, { json: { title: myTitle, published: 1 } });
 
       const board = await req('GET', '/community');
       ok('★ 社区页能打开', board.status === 200, `状态码 ${board.status}`);
@@ -2806,16 +2811,59 @@ async function run() {
       ok('★ 看不到外校同学公开的资料（跨校隔离）',
         !board.text.includes('外校同学的笔记'),
         '★ 外校的东西出现在我的社区里 —— 学校的边界没生效');
-      // ⚠️ 第一版这里写的是"同校同学的笔记在页面上" —— 和上面一条**完全重复**，
-      //    等于没测。改成本来该测的：我自己公开的资料不该出现在我自己的社区流里。
-      const myTitle = '我自己公开的资料';
-      await req('PATCH', `/api/materials/${materialId}`, { json: { title: myTitle, published: 1 } });
-      const board2 = await req('GET', '/community');
-      ok('★ 社区列表里不出现自己的资料（只显示别人的）',
-        !board2.text.includes(myTitle),
-        '★ 自己的东西出现在自己的社区流里 —— 那条 SQL 忘了排除自己');
+
+      // ⚠️ 断言必须**分段做**，不能整页找字符串。社区页上现在有两段
+      //    都可能有资料标题（「同校同学」和「我公开的」），整页找的话
+      //    分不清一份资料出现在哪一栏 —— 而「自己的东西不该出现在
+      //    同学那一栏」和「自己的东西该出现在自己那一栏」是两条
+      //    方向相反的断言，整页做必然有一条恒为假。
+      const MY_MARK = 'data-my-published';
+      const SHARED_MARK = 'data-shared-feed';
+      const sliceBetween = (text, from, to) => {
+        const i = text.indexOf(from);
+        if (i < 0) return null;                       // null 表示"没找到"，不是空串
+        const j = to ? text.indexOf(to, i + from.length) : -1;
+        return text.slice(i, j < 0 ? text.length : j);
+      };
+      const sharedArea = sliceBetween(board.text, SHARED_MARK, MY_MARK);
+      const myArea = sliceBetween(board.text, MY_MARK);
+      ok('（前提）页面上确实有「同校资料」和「我公开的」两段（否则下面几条是空转的）',
+        sharedArea !== null && myArea !== null,
+        '两段的标记有一个没渲染出来 —— 下面那几条会变成永远为真');
+
+      if (sharedArea !== null && myArea !== null) {
+        ok('★ 同校同学那一栏里不出现我自己的资料（那条 SQL 仍然排除自己）',
+          !sharedArea.includes(myTitle),
+          '★ 自己的东西出现在"同校同学"那一栏里 —— 那条 SQL 忘了排除自己');
+        ok('★ 「我公开的」那一栏里能看到我刚公开的那份',
+          myArea.includes(myTitle),
+          '★ 公开完社区页毫无变化 —— 这正是用户反馈的那个问题');
+        ok('★ 「我公开的」那一栏里没有别人的资料',
+          !myArea.includes('同校同学的笔记'),
+          '★ 别人的资料漏进了「我公开的」—— myPublishedMaterials 少写了 user_id');
+        ok('★ 「我公开的」那一栏没有把没公开的东西也列出来',
+          !myArea.includes('外校同学的笔记'),
+          '★ 没公开/别人的资料出现在「我公开的」里');
+
+        // 标题上的数字和实际列出的条数要对得上（"说 3 份、列出 0 条"是最难发现的一种）
+        const myCount = Number(/我公开的（(\d+)）/.exec(myArea)?.[1] ?? -1);
+        const myRows = (myArea.match(/material-row__link/g) || []).length;
+        ok('★ 「我公开的」报的数字和实际列出的条数一致',
+          myCount >= 1 && myCount === myRows,
+          `标题说 ${myCount} 份，实际列了 ${myRows} 条`);
+      }
+
+      // 收回之后那一栏要跟着空掉（不能停在"我还公开着"的状态骗人）
       await req('PATCH', `/api/materials/${materialId}`, { json: { title: 'E2E 课件', published: 0 } });
-      void minePub;
+      const boardNoPub = await req('GET', '/community');
+      const myAreaEmpty = sliceBetween(boardNoPub.text, MY_MARK);
+      ok('★ 收回公开之后，「我公开的」那一栏立刻空掉',
+        myAreaEmpty !== null && !myAreaEmpty.includes('E2E 课件')
+        && /我公开的（0）/.test(myAreaEmpty),
+        '★ 资料已经收回公开了，社区页还列着它');
+      ok('★ 一份都没公开时，那一栏给的是提示而不是空白',
+        /你还没有公开任何资料/.test(myAreaEmpty || ''));
+
       // ⚠️ 这一条是本批最要紧的隐私断言
       ok('★ 社区页面上没有同校同学的登录用户名',
         !board.text.includes(MATE.username),

@@ -61,7 +61,7 @@ import { importManualPage, importPage, importResultPage } from '../web/pages/imp
 import { alumniPage, communityPage } from '../web/pages/community.js';
 import {
   alumniList, alumniMaterials, canViewCommunityUser, communityFeed,
-  myPublishedCount, publicProfile,
+  myPublishedCount, myPublishedMaterials, publicProfile,
 } from '../lib/community.js';
 import { converterStatus } from '../lib/convert.js';
 import { schedulerStatus } from '../lib/scheduler.js';
@@ -460,6 +460,9 @@ export function registerPages(router) {
       feed: communityFeed(userId, { limit: 40 }),
       alumni: alumniList(userId, { limit: 60 }),
       myPublished: myPublishedCount(userId),
+      // 「我公开的」那一栏。它**不做同校判断** —— 看的是自己的东西，
+      // 学校没从名单里选过的人也该看得见自己公开了什么。
+      myMaterials: myPublishedMaterials(userId, { limit: 20 }),
     }), { user: ctx.user, stats: navStats(userId) });
   }));
 

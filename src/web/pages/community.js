@@ -58,9 +58,61 @@ function needsSchoolCard({ school, schoolVerified }) {
   });
 }
 
+/**
+ * 「我公开的」那一栏。
+ *
+ * 公开放出去的资料对**自己**是有意义的：别人能不能看到、看到了什么，
+ * 你总得先能看见自己那份长什么样。而社区列表按设计只显示别人的东西，
+ * 所以公开完之后这一页看起来毫无变化 —— 这一栏就是把那个回显补上。
+ *
+ * 它和学校无关：学校还没从名单里选过的人也该看得见自己公开了什么，
+ * 所以它**不放在** `schoolVerified` 那个分支里。
+ */
+function myPublishedSection(materials, total) {
+  // 标题上的数字用**真实总数**，不是列表长度 —— 列表最多列 20 份，
+  // 只公开了 3 份的人看到的必须是 3，公开了 30 份的人也不该看到 "20"
+  // 却不知道还有 10 份没列出来。
+  const count = Number(total) || 0;
+  const truncated = materials.length < count;
+  return `<section class="community-section" data-my-published>
+${card({
+    title: `我公开的（${count}）`,
+    body: materials.length === 0
+      ? `<p class="small">你还没有公开任何资料。在<a href="/materials">我的资料</a>里编辑任意一份，
+           勾上「公开给同校同学」，它就会出现在这里；资料多的可以用列表底部那条
+           <strong>批量公开</strong>一次搞定。</p>
+         <p class="field__help">
+           公开出去的范围是<strong>同校同学</strong> —— 他们可以看，也可以下载。
+           没公开的东西只有你自己看得见，别人连「存在」都问不出来。
+         </p>`
+      : `<ul class="material-list">
+        ${materials.map((m) => `
+          <li class="material-row">
+            <a class="material-row__link" href="/materials/${Number(m.id)}">
+              <span class="material-row__icon">${icon(m.hasPdf ? 'fileText' : 'file', 20)}</span>
+              <span class="material-row__body">
+                <span class="material-row__title">${escapeHtml(m.title)}</span>
+                <span class="material-row__meta">
+                  ${escapeHtml(String(m.updatedAt || '').slice(0, 10))}
+                  <span class="material-row__meta-extra"> · ${escapeHtml(m.category || '')}</span>
+                </span>
+              </span>
+            </a>
+          </li>`).join('')}
+      </ul>
+      <p class="field__help">
+        ${truncated ? `这里只列了最近 ${materials.length} 份，全部在<a href="/materials">我的资料</a>里。` : ''}
+        同校同学现在能看到、也能下载这几份。想收回就在<a href="/materials">我的资料</a>里
+        取消勾选（或用底部的<strong>批量公开</strong>一次收回）。
+      </p>`,
+  })}
+</section>`;
+}
+
 /** 社区首页 */
 export function communityPage({
-  user, school, schoolVerified, feed = [], alumni = [], myPublished = 0, mySchool = '',
+  user, school, schoolVerified, feed = [], alumni = [],
+  myPublished = 0, mySchool = '', myMaterials = [],
 }) {
   const body = `
 ${pageHeader({
@@ -87,6 +139,7 @@ ${!schoolVerified ? needsSchoolCard({ school, schoolVerified }) : `
   </div>
 </div>
 
+<section class="community-section" data-shared-feed>
 ${feed.length === 0
       ? emptyState({
         level: 2,
@@ -95,12 +148,16 @@ ${feed.length === 0
         description: '等同学把课件公开出来，这里就会有了。你也可以先在「我的资料」里挑几份公开。',
         action: `<a class="btn btn--primary" href="/materials">${icon('folder', 16)}<span>去我的资料</span></a>`,
       })
-      : `<section class="community-grid">
+      : `<div class="community-grid">
         ${feed.map((item) => feedCard(item)).join('')}
-      </section>`}
+      </div>`}
+</section>
+`}
 
-${alumni.length ? `
-${card({
+${/* 放在学校判断**外面**：自己公开了什么，和有没有从名单选过学校无关 */ ''}
+${myPublishedSection(myMaterials, myPublished)}
+
+${schoolVerified && alumni.length ? card({
       title: '同校校友',
       body: `<div class="alumni-row">
         ${alumni.map((a) => `
@@ -116,8 +173,7 @@ ${card({
       <p class="field__help">
         只有<strong>公开过资料</strong>的同学会出现在这里 —— 这份名单不是全校名册。
       </p>`,
-    })}` : ''}
-`}
+    }) : ''}
 `;
 
   return { title: '校友社区', active: 'community', body };
