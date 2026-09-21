@@ -974,6 +974,14 @@ a.stat:hover {
 .community-section + .card,
 .card + .community-section { margin-top: 20px; }
 
+/* 列表底部那行「共 N 份，这里显示最近 M 个」+「再看更多」。
+   它存在的理由是查询带 LIMIT 却没有 offset —— 不写这一行，用户会以为
+   看到的就是全部（更早的那批其实永远翻不到了）。 */
+.more-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap; margin-top: 14px;
+}
+
 .community-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));

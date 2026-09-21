@@ -612,6 +612,82 @@ export function countMaterials(userId, opts = {}) {
   return Number(row?.c) || 0;
 }
 
+// ============================================================
+// 管理员用途（只有命令行脚本调，网页那边一律走上面那些带 userId 的）
+// ============================================================
+
+/**
+ * 【管理用途】列出**所有人**公开出来的资料（含用户名）。
+ *
+ * ⚠️ 这个函数故意**不带 userId**，也故意把 username 带出来 ——
+ *    它是给站点管理员在自己终端上看的（`node scripts/unpublish.mjs`），
+ *    用来回答"现在社区里到底有什么、是谁放的"。
+ *    任何**网页**入口都不许调用它：网页那边看到别人数据的地方只有社区，
+ *    而社区永远不显示用户名（有一条自测专门钉这一点）。
+ *
+ * 名字里的 admin 前缀不是装饰：以后如果有人想"顺手"在页面上加一个
+ * 「管理」视图，grep 一下 admin 就能看到这段注释和这条界线。
+ */
+export function adminListPublished({ limit = 500 } = {}) {
+  return all(
+    `SELECT m.id, m.title, m.category, m.kind, m.size, m.published,
+            m.updated_at, m.created_at,
+            u.id AS owner_id, u.username, u.display_name,
+            c.name AS course_name
+       FROM materials m
+       JOIN users u ON u.id = m.user_id
+       LEFT JOIN courses c ON c.id = m.course_id
+      WHERE m.published = 1
+      ORDER BY m.updated_at DESC
+      LIMIT ?`,
+    Math.min(Math.max(Number(limit) || 500, 1), 5000),
+  ).map((r) => ({
+    id: r.id,
+    title: r.title || '',
+    category: r.category || '',
+    size: r.size,
+    updatedAt: r.updated_at || r.created_at || '',
+    ownerId: r.owner_id,
+    username: r.username || '',
+    displayName: r.display_name || '',
+    courseName: r.course_name || '',
+  }));
+}
+
+/**
+ * 【管理用途】收回公开 —— 按**资料 id**（单份）或按**用户 id**（某人全部）。
+ *
+ * ⚠️ 这里**没有 user_id 归属校验**，这是这个函数存在的唯一理由：
+ *    网页那边的公开/收回必须是"只能动自己的"（setPublishedBulk 的第一条
+ *    WHERE 就是 user_id），而管理员要能下架**别人**的东西 ——
+ *    否则遇到"有人公开了不该公开的"就只能删掉整个账号。
+ *    所以：**只有命令行脚本调它**，永远不要从路由里调。
+ *
+ * @param {{id?: number, userId?: number, published?: boolean|number}} opts
+ * @returns {number} 实际**改变**的行数
+ */
+export function adminSetPublished(opts = {}) {
+  const value = toBool01(opts.published, 0);
+  const sql = `UPDATE materials SET published = ?, updated_at = datetime('now','localtime')
+                WHERE `;
+  // ⚠️ 末尾的 `AND published <> ?` 不是多余的：不加的话，`changes` 会把
+  //    **本来就是这个状态**的行也算进去。按 userId 下架时，那个人可能只有
+  //    1 份是公开的、另外 20 份早就没公开，脚本就会打印「已下架 21 份」——
+  //    管理员据此以为下掉了 21 份东西，实际上只动了 1 份。
+  //    顺带也避免了给没变化的行白写一次 updated_at。
+  if (opts.id) {
+    const result = run(`${sql}id = ? AND published <> ?`, value, Number(opts.id), value);
+    return Number(result?.changes) || 0;
+  }
+  if (opts.userId) {
+    const result = run(`${sql}user_id = ? AND published <> ?`, value, Number(opts.userId), value);
+    return Number(result?.changes) || 0;
+  }
+  // 两个都没给：什么都不做，而不是"匹配全部行"。
+  // （没有 WHERE 的 UPDATE 会把整站资料一次改掉，这种默认值不能有。）
+  return 0;
+}
+
 /** 更新资料元信息（不改文件） */
 export function updateMaterial(userId, id, patch) {
   const row = get('SELECT * FROM materials WHERE id = ? AND user_id = ?', id, userId);

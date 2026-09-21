@@ -19,6 +19,34 @@
 import { escapeHtml } from '../../lib/http.js';
 import { icon, pageHeader, card, emptyState } from '../layout.js';
 
+/**
+ * 列表底部那行「共 N 份，这里显示最近 M 份 + 再看更多」。
+ *
+ * 为什么必须有：查询是 `ORDER BY updated_at DESC LIMIT 40`，**没有 offset**。
+ * 换成大白话就是「同校公开的资料攒到 40 份以上之后，更早的那批就永远看不见了」——
+ * 而页面上原本没有任何迹象表明"还有更多"。用户会以为看到的就是全部。
+ *
+ * 「再看更多」做成**链接**（`?show=80`）而不是 JS 按钮：服务端渲染的页面
+ * 没有 JS 也能用，而且能直接分享/收藏某一个深度，不用维护前端状态。
+ *
+ * @param {number} shown  这一屏显示了几条
+ * @param {number} total  一共有多少条（和列表用同一组可见性条件算出来的）
+ */
+function moreRow(shown, total, unit, show, base) {
+  if (!(total > shown)) return '';
+  const next = Math.min(show + 40, 200);
+  // 已经加到上限了就不再给链接 —— 给一个点了没变化的按钮比不给更糟
+  const more = next > show
+    ? `<a class="btn btn--outline btn--sm" href="${base}?show=${next}">
+        ${icon('chevronDown', 15)}<span>再看 ${next - show} ${unit}</span>
+      </a>`
+    : '';
+  return `<div class="more-row" data-more-row>
+    <span class="muted small">共 ${total} ${unit}，这里显示最近 ${shown} 个。</span>
+    ${more}
+  </div>`;
+}
+
 /** 头像：有图显示图，没有就显示昵称首字母 —— 和侧栏那个圆圈一套逻辑 */
 function avatarHtml(person, size = 40) {
   const letter = escapeHtml((person.displayName || '?').slice(0, 1));
@@ -135,8 +163,9 @@ ${card({
 
 /** 社区首页 */
 export function communityPage({
-  user, school, schoolVerified, feed = [], alumni = [],
-  myPublished = 0, mySchool = '', myMaterials = [],
+  user, school, schoolVerified, feed = [], feedTotal = 0,
+  alumni = [], alumniTotal = 0,
+  myPublished = 0, mySchool = '', myMaterials = [], show = 40,
 }) {
   const body = `
 ${pageHeader({
@@ -174,7 +203,8 @@ ${feed.length === 0
       })
       : `<div class="community-grid">
         ${feed.map((item) => feedCard(item)).join('')}
-      </div>`}
+      </div>
+      ${moreRow(feed.length, feedTotal, '份公开的资料', show, '/community')}`}
 </section>
 `}
 
@@ -194,6 +224,7 @@ ${schoolVerified && alumni.length ? card({
             </span>
           </a>`).join('')}
       </div>
+      ${moreRow(alumni.length, alumniTotal, '位校友', show, '/community')}
       <p class="field__help">
         只有<strong>公开过资料</strong>的同学会出现在这里 —— 这份名单不是全校名册。
       </p>`,

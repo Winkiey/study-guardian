@@ -16,6 +16,7 @@
 
 import { get, all } from '../db/index.js';
 import { schoolIsVerified } from './auth.js';
+import { getSetting, setSetting } from './settings.js';
 
 /**
  * 两个人的学校是不是同一所、而且都来自名单。
@@ -130,34 +131,47 @@ export function myPublishedCount(userId) {
 }
 
 /**
+ * 社区流的可见性条件 —— **只写一处**，下面三个查询共用：
+ * 列表（communityFeed）、总数（countCommunityFeed）、未读数（communityNewCount）。
+ *
+ * 为什么非要抽出来：这三个数字都是给用户看的，分开写就会出现
+ * 「列表里 3 份、底部写共 2 份」或者「角标说有 1 份新的、点进去什么都没有」。
+ * 这种错**不会报错**，只会让人不再相信那个数字 —— 而"信不信社区里的东西"
+ * 恰好是这个功能唯一的价值。
+ *
+ * ⚠️ 调用方必须 `JOIN users u ON u.id = m.user_id`（条件里用到了 u.school）。
+ * ⚠️ 只比较 `u.school = ?` 还不够：校名必须来自名单，否则两个都把学校填成
+ *    「家里蹲大学」的人会互相看到 —— 而那个名字是他们自己挑的。
+ *    名单那一道由 myVerifiedSchool 卡住，不过就整体返回 null。
+ *
+ * @returns {{where: string, params: Array}|null} null = 这个人不参与社区
+ */
+function feedScope(viewerId, opts = {}) {
+  const school = myVerifiedSchool(viewerId);
+  if (!school) return null;
+  const where = ['m.published = 1', 'u.school = ?', 'u.id <> ?'];
+  const params = [school, Number(viewerId)];
+  if (opts.courseId) {
+    where.push('m.course_id = ?');
+    params.push(Number(opts.courseId));
+  }
+  return { where: where.join(' AND '), params };
+}
+
+/**
  * 社区资料流：**同校同学**公开出来的资料。
  *
- * 三条硬约束全部写在 SQL 的 WHERE 里，不在 JS 侧再过滤一遍 ——
+ * 三条硬约束全在 feedScope 的 WHERE 里，不在 JS 侧再过滤一遍 ——
  * 多一层过滤就多一处会漏的地方，而漏的方向是"看到了不该看的"。
- *   1. 资料是公开的；
- *   2. 主人和我同校（字符串精确相等）；
- *   3. 而且我的校名**在名单里**（下面单独说明）。
- *
- * ⚠️ 第 3 条最容易漏：只比较 `u.school = ?` 的话，两个都把学校填成
- *    「家里蹲大学」的人会互相看到 —— 而那个名字是他们自己挑的。
- *    所以先把校名送去 isKnownSchool 卡一道，不过就整体返回空。
  *
  * 返回的字段**不含用户名**（见上面 publicProfile 的说明），
  * 也不含别人的 stored_name（磁盘文件名）—— 那个只在文件服务里用。
  */
 export function communityFeed(viewerId, opts = {}) {
-  const school = myVerifiedSchool(viewerId);
-  if (!school) return [];
+  const scope = feedScope(viewerId, opts);
+  if (!scope) return [];
 
-  const limit = Math.min(Math.max(Number(opts.limit) || 40, 1), 100);
-  const params = [school, viewerId];
-  let courseFilter = '';
-  if (opts.courseId) {
-    courseFilter = ' AND m.course_id = ?';
-    params.push(Number(opts.courseId));
-  }
-  params.push(limit);
-
+  const limit = Math.min(Math.max(Number(opts.limit) || 40, 1), 500);
   return all(
     `SELECT m.id, m.title, m.description, m.kind, m.category,
             m.size, m.created_at, m.updated_at, m.pdf_name,
@@ -166,13 +180,10 @@ export function communityFeed(viewerId, opts = {}) {
        FROM materials m
        JOIN users u ON u.id = m.user_id
        LEFT JOIN courses c ON c.id = m.course_id
-      WHERE m.published = 1
-        AND u.school = ?
-        AND u.id <> ?
-        ${courseFilter}
+      WHERE ${scope.where}
       ORDER BY m.updated_at DESC
       LIMIT ?`,
-    ...params,
+    ...scope.params, limit,
   ).map((r) => ({
     id: r.id,
     title: r.title || '',
@@ -194,6 +205,62 @@ export function communityFeed(viewerId, opts = {}) {
       hasAvatar: Boolean(r.avatar_ext),
     },
   }));
+}
+
+/** 社区流一共有多少份（列表只显示最近 N 份，底部要如实写清"还有多少没显示"） */
+export function countCommunityFeed(viewerId, opts = {}) {
+  const scope = feedScope(viewerId, opts);
+  if (!scope) return 0;
+  const row = get(
+    `SELECT COUNT(*) AS c
+       FROM materials m
+       JOIN users u ON u.id = m.user_id
+      WHERE ${scope.where}`,
+    ...scope.params,
+  );
+  return Number(row?.c) || 0;
+}
+
+// ============================================================
+// 「有没有新东西」—— 社区导航上的那个角标
+// ============================================================
+
+/** 上次看社区的时间，存在 settings 里 */
+const COMMUNITY_SEEN_KEY = 'community_seen_at';
+
+/**
+ * 同校同学公开出来的资料里，**我上次看过社区之后**更新的有几份。
+ *
+ * 为什么是"看过就清"而不是"最近 7 天"：时间窗是拍脑袋定的 ——
+ * 有人一周没来，回来照样漏掉；天天来的人则永远看见一个差不多的数字。
+ * 聊天软件的未读就是这个模型，用户不用学。
+ *
+ * 条件是 feedScope 那一组**再加一条时间**，所以角标和列表不可能对不上。
+ */
+export function communityNewCount(viewerId) {
+  const scope = feedScope(viewerId);
+  if (!scope) return 0;
+  const seen = String(getSetting(viewerId, COMMUNITY_SEEN_KEY, '') || '');
+  const row = get(
+    `SELECT COUNT(*) AS c
+       FROM materials m
+       JOIN users u ON u.id = m.user_id
+      WHERE ${scope.where}
+        AND COALESCE(m.updated_at, m.created_at, '') > ?`,
+    ...scope.params, seen,
+  );
+  return Number(row?.c) || 0;
+}
+
+/**
+ * 进社区页时调一次，把"这一刻我看过了"记下来。
+ *
+ * 刻意记**服务端的当前时间**，不接受客户端传上来的值 ——
+ * 让客户端说自己"什么时候看的"，等于让它自己决定角标清不清零。
+ */
+export function markCommunitySeen(userId) {
+  const row = get("SELECT datetime('now','localtime') AS t");
+  if (row?.t) setSetting(userId, COMMUNITY_SEEN_KEY, row.t);
 }
 
 /**
@@ -265,6 +332,28 @@ export function alumniList(viewerId, opts = {}) {
     hasAvatar: Boolean(r.avatar_ext),
     sharedCount: Number(r.shared_count) || 0,
   }));
+}
+
+/**
+ * 同校校友一共几个人（名单只显示前 N 个，底部要如实写清"还有多少没显示"）。
+ *
+ * ⚠️ 条件必须和 alumniList 完全一致（同校 + 公开过至少一份 + 排除自己），
+ *    否则会出现「名单里 5 个人、底部写共 8 位」这种对不上的情况。
+ *    这里不能像 feedScope 那样共用一段 SQL —— 因为 alumniList 是 GROUP BY
+ *    的聚合，count 不聚合，结构不同；所以靠这段注释和自测里的
+ *    "总数 >= 已显示数量" 来兜住两边不跑偏。
+ */
+export function countAlumni(viewerId) {
+  const school = myVerifiedSchool(viewerId);
+  if (!school) return 0;
+  const row = get(
+    `SELECT COUNT(DISTINCT u.id) AS c
+       FROM users u
+       JOIN materials m ON m.user_id = u.id AND m.published = 1
+      WHERE u.school = ? AND u.id <> ?`,
+    school, Number(viewerId),
+  );
+  return Number(row?.c) || 0;
 }
 
 /**

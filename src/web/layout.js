@@ -91,6 +91,7 @@ const ICON_PATHS = {
   edit: '<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4z"/>',
   chevronLeft: '<path d="M15 18l-6-6 6-6"/>',
   chevronRight: '<path d="M9 18l6-6-6-6"/>',
+  chevronDown: '<path d="M6 9l6 6 6-6"/>',
   external: '<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6M10 14L21 3"/>',
   user: '<circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1"/>',
   logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5M21 12H9"/>',
@@ -275,6 +276,10 @@ function navLink(item, active, stats, compact = false) {
 function navBadge(key, stats) {
   if (key === 'assignments' && stats.pendingAssignments > 0) return String(stats.pendingAssignments);
   if (key === 'materials' && stats.materialCount > 0) return String(stats.materialCount);
+  // 社区：同校同学**上次我看过之后**又公开/更新了几份。
+  // 看过就清零（进社区页时记一次时间），所以它不是个永远挂着的数字 ——
+  // 永远挂着的角标等于没有角标，用户两天就学会无视它。
+  if (key === 'community' && stats.communityNew > 0) return String(stats.communityNew);
   return '';
 }
 

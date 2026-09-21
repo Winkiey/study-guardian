@@ -84,6 +84,8 @@ export function settingsPage({
   // 学校是不是从名单里选的。默认 false：拿不到就按"未验证"处理 ——
   // 这个标记只影响提示文案和能不能进社区，宁可少显示，也不要误报成已验证。
   schoolVerified = false,
+  // 我公开出去几份。用来在「学校」那一栏提醒：换学校会让这些资料**换边**。
+  myPublishedCount = 0,
 }) {
   const body = `
 ${pageHeader({
@@ -523,6 +525,15 @@ ${card({
       </p>` : ''}
       ${!user?.school ? `<p class="field__help">
         还没填学校。填了才能进校友社区 —— 到时候能看到同校同学公开的资料。
+      </p>` : ''}
+      ${/* ⚠️ 改学校会**静默**改变已公开资料的可见范围：原来同校的人立刻看不到，
+           新学校的人突然能看到了，而两边都不会有任何提示。
+           这是个不该让人事后才反应过来的后果，所以常驻写在这里。
+           （只有真的公开过东西的人才会看到这一句 —— 没公开过就不吓唬人。） */ ''}
+      ${schoolVerified && myPublishedCount > 0 ? `<p class="field__help field__help--warn">
+        ⚠️ 你有 <strong>${Number(myPublishedCount)} 份</strong>资料正公开给同校同学。
+        换一所学校会让它们<strong>立刻换边</strong> —— 现在这所学校的同学看不到了，
+        新学校的人则马上能看到、能下载。换之前想清楚。
       </p>` : ''}
     </div>
     <div class="form__row">

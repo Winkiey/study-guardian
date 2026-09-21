@@ -60,7 +60,8 @@ import { settingsPage, loginPage } from '../web/pages/settings.js';
 import { importManualPage, importPage, importResultPage } from '../web/pages/import.js';
 import { alumniPage, communityPage } from '../web/pages/community.js';
 import {
-  alumniList, alumniMaterials, canViewCommunityUser, communityFeed,
+  alumniList, alumniMaterials, canViewCommunityUser, communityFeed, communityNewCount,
+  countAlumni, countCommunityFeed, markCommunitySeen,
   myPublishedCount, myPublishedMaterials, publicProfile,
 } from '../lib/community.js';
 import { converterStatus } from '../lib/convert.js';
@@ -111,6 +112,8 @@ function navStats(userId) {
   return {
     pendingAssignments: assignments.assignmentStats(userId).pending,
     materialCount: Number(get('SELECT COUNT(*) AS c FROM materials WHERE user_id = ?', userId)?.c || 0),
+    // 社区角标：同校同学上次我看过之后又公开/更新了几份（看过即清零）
+    communityNew: communityNewCount(userId),
   };
 }
 
@@ -452,17 +455,35 @@ export function registerPages(router) {
     const userId = ctx.user.id;
     const school = String(ctx.user.school || '').trim();
 
+    // 「这一屏显示多少」由 ?show= 决定，让「再看更多」不需要 JS。
+    // 上限 200：再多也没人翻，而每多一屏就是一次全表扫。
+    // ⚠️ 用 ctx.url.searchParams，这个项目里没有 ctx.query（写成 ctx.query 会
+    //    静默拿到 undefined → 永远 40 →「再看更多」点了没反应，而且不报错）。
+    const show = Math.min(
+      Math.max(Number.parseInt(ctx.url.searchParams.get('show') || '', 10) || 40, 40),
+      200,
+    );
+    const alumniShow = Math.min(Math.max(show, 60), 300);
+
+    // ⚠️ **先记「看过了」再算角标**：markCommunitySeen 写的是服务端当前时间，
+    //    所以这一页自己渲染出来的角标一定是 0（你正在看它）。
+    //    顺序反过来的话，你打开社区页、角标还挂着"3 份新的"，得刷新一次才消失。
+    markCommunitySeen(userId);
+
     output(ctx.res, communityPage({
       user: ctx.user,
       school,
       schoolVerified: schoolIsVerified(school),
       mySchool: schoolIsVerified(school) ? school : '',
-      feed: communityFeed(userId, { limit: 40 }),
-      alumni: alumniList(userId, { limit: 60 }),
+      feed: communityFeed(userId, { limit: show }),
+      feedTotal: countCommunityFeed(userId),
+      alumni: alumniList(userId, { limit: alumniShow }),
+      alumniTotal: countAlumni(userId),
       myPublished: myPublishedCount(userId),
       // 「我公开的」那一栏。它**不做同校判断** —— 看的是自己的东西，
       // 学校没从名单里选过的人也该看得见自己公开了什么。
       myMaterials: myPublishedMaterials(userId, { limit: 20 }),
+      show,
     }), { user: ctx.user, stats: navStats(userId) });
   }));
 
@@ -637,6 +658,8 @@ export function registerPages(router) {
       hasCustomPeriods: hasCustomPeriodSchedule(userId),
       // 学校是否来自名单。老账号手填的值对不上名单，页面上会把这件事说清楚
       schoolVerified: schoolIsVerified(ctx.user.school),
+      // 用来提醒「换学校会让已公开的资料换边」—— 见 settings.js 里那一句
+      myPublishedCount: myPublishedCount(userId),
     }), { user: ctx.user, stats: navStats(userId) });
   }));
 

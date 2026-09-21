@@ -2912,6 +2912,67 @@ async function run() {
       ok('★ 他看不到任何别人的资料',
         !noSchoolBoard.text.includes('同校同学的笔记'));
 
+      // ---- 社区角标：同学公开了新东西，你应当看得到 ----
+      // 这一条的动机和「我公开完没反应」是同一件事的反面：别人公开了，
+      // 你这边也毫无提示 —— 社区于是变成一个纯被动页面。
+      {
+        // 先看一次社区，把"看过了"记下来。此后新增的才算未读。
+        await req('GET', '/community');
+
+        // 角标数字要从**社区那一个导航项**里取，不能整页找 nav__badge ——
+        // 作业/资料也有角标，整页找会把它们算进来（那样断言就没意义了）。
+        // 窗口给 800 字符：图标 svg 本身就有几百字符，窗口太小会"永远取不到"
+        // 而把断言悄悄变成"角标是 0"。
+        const badgeOf = (html) => {
+          const m = /href="\/community"[^>]*>[\s\S]{0,800}?nav__badge">(\d+)</.exec(html);
+          return m ? Number(m[1]) : 0;
+        };
+        const homeBefore = await req('GET', '/');
+        ok('（前提）导航里有社区入口，而且刚看过之后角标是 0',
+          homeBefore.text.includes('href="/community"') && badgeOf(homeBefore.text) === 0,
+          `角标 ${badgeOf(homeBefore.text)} —— 前置不成立的话下面两条是空转的`);
+
+        // ⚠️ 必须等过一秒：updated_at 是**秒**精度，而"看过了"记的也是秒。
+        //    同一秒里"看过"和"更新"的先后比不出来，角标会随机是 0。
+        await new Promise((r) => setTimeout(r, 1100));
+        await schoolMate('PATCH', `/api/materials/${mateMaterialId}`,
+          { json: { title: '同校同学的笔记（更新过）' } });
+
+        const homeAfter = await req('GET', '/');
+        ok('★ 同学更新了公开资料之后，社区角标冒出数字',
+          badgeOf(homeAfter.text) >= 1,
+          '★ 同学更新了公开资料，我这边一点提示都没有 —— 只能自己去翻');
+
+        // 打开社区 → 角标清零
+        await req('GET', '/community');
+        const homeCleared = await req('GET', '/');
+        ok('★ 看过社区之后角标清零（不是个永远挂着的数字）',
+          badgeOf(homeCleared.text) === 0,
+          '★ 看过之后角标还在 —— 永远挂着的角标两天就会被无视');
+
+        // 「再看更多」指向的地址要真能打开，而且资料不到一屏时不该出现那一行
+        const deeper = await req('GET', '/community?show=80');
+        ok('★ ?show=80 能打开（「再看更多」不是个点了没反应的链接）',
+          deeper.status === 200, `状态码 ${deeper.status}`);
+        ok('★ 资料不到一屏时不出现「共 N 份」那一行（不能凭空说有更多）',
+          !deeper.text.includes('data-more-row'));
+      }
+
+      // ---- 换学校会让已公开的资料「换边」，这件事要说清楚 ----
+      {
+        // 我此刻有公开的资料（上面批量公开过），设置页应当给出警告
+        await req('POST', '/api/materials/publish', { json: { published: 1 } });
+        const setPage = await req('GET', '/settings');
+        ok('★ 有资料公开时，设置页的「学校」那一栏警告换学校会让它们换边',
+          /换一所学校会让它们/.test(setPage.text),
+          '没提醒 —— 换完学校才发现原来同校的同学看不到了');
+
+        await req('POST', '/api/materials/publish', { json: { published: 0 } });
+        const setPage2 = await req('GET', '/settings');
+        ok('★ 什么都没公开时不吓唬人（那一句不该出现）',
+          !/换一所学校会让它们/.test(setPage2.text));
+      }
+
       // 收尾：把自己造的两份资料**删掉**（不只是取消公开）。
       // 后面的用例在数磁盘上的文件个数，多留两个会让那边莫名其妙地红，
       // 而报错信息完全指不到这里。
