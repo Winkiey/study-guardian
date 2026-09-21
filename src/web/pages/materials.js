@@ -40,7 +40,10 @@ function categoryOptions(selected) {
   ).join('');
 }
 
-export function materialsPage({ user, materials, courses, stats, filters, storage, uploadFormTemplate = '', editFormTemplate = '' }) {
+export function materialsPage({
+  user, materials, courses, stats, filters, storage,
+  uploadFormTemplate = '', editFormTemplate = '', schoolVerified = false,
+}) {
   // 「作用于哪些」的一句话说明。批量按钮最怕的是用户不知道自己会改到多少东西，
   // 所以把范围用文字摊开：是全部，还是某个分类 / 某门课。
   const scopeParts = [];
@@ -54,6 +57,16 @@ export function materialsPage({ user, materials, courses, stats, filters, storag
   }
   const scopeLabel = scopeParts.length ? `（${scopeParts.join(' + ')}）` : '（全部）';
 
+  // ⚠️ 学校没从名单里选过的人，勾了「公开给同校」是**谁也看不到**的：
+  //    可见性要求双方学校都有效（community.js 的 sameSchool 对空/未验证直接 false），
+  //    所以这不是"可能看不到"，是确定看不到。
+  //    这件事必须在用户**动手的地方**就说清楚 —— 见下面三处：
+  //    列表顶部的横幅、行上的徽标、批量条上的说明。
+  //    （auth.js 的 normalizeProfile 注释里早就写了「前端要把这一点说清楚」，
+  //      这里就是补上那一句。）
+  const publishedHere = materials.filter((m) => m.published).length;
+  const showSchoolWarning = !schoolVerified;
+
   const body = `
 ${pageHeader({
     title: '资料库',
@@ -62,6 +75,23 @@ ${pageHeader({
     subtitle: stats.total ? `${stats.total} 份 · 共 ${stats.totalLabel}` : '',
     actions: `<button type="button" class="btn btn--primary" data-upload-material>${icon('upload', 17)}<span>上传资料</span></button>`,
   })}
+
+${showSchoolWarning && publishedHere ? `
+<div class="notice notice--warn" data-school-publish-warning>
+  <div class="notice__icon">${icon('alert', 18)}</div>
+  <div class="notice__body">
+    <strong>你标了「同校可见」的资料，现在谁也看不到</strong>
+    <p>
+      这一屏里有 <strong>${publishedHere} 份</strong>是公开状态，但你的学校还没有
+      <strong>从名单里选过</strong> —— 校友社区是按学校分的，校名对不上名单就没有"同校"可言，
+      所以同学那边一份都看不到。
+    </p>
+    <p class="small">
+      去<a href="/settings#system">设置 → 账号 → 个人资料</a>里，从下拉候选里挑一所学校保存。
+      已经公开的这几份<strong>会立刻生效</strong>，不用重新勾一遍。
+    </p>
+  </div>
+</div>` : ''}
 
 <div class="toolbar">
   <form class="search" method="get" action="/materials" role="search">
@@ -109,7 +139,7 @@ ${materials.length === 0
           : '把老师发的课件传上来，之后不管在哪台设备上都能直接打开看，不用再翻微信/QQ 聊天记录。',
         action: `<button type="button" class="btn btn--primary" data-upload-material>${icon('upload', 17)}<span>上传资料</span></button>`,
       })
-      : `<ul class="material-list">${materials.map(materialRow).join('')}</ul>
+      : `<ul class="material-list">${materials.map((m) => materialRow(m, schoolVerified)).join('')}</ul>
 
 ${/* 批量公开。作用范围是**当前筛选**（分类/课程），不是整个资料库 ——
      资料库里常混着老师发的东西、带答案的、自己整理的笔记，
@@ -124,6 +154,12 @@ ${/* 批量公开。作用范围是**当前筛选**（分类/课程），不是�
       作用于<strong>这一屏的 ${materials.length} 份</strong>${scopeLabel}
       —— 想只公开某几份，先用上面的筛选缩到那一类。
     </span>
+    ${/* 学校没选过时，这一排按钮点下去同样不会有任何人看到。
+         不写这一句的话，「全部公开」看起来是个生效的操作。 */ ''}
+    ${!schoolVerified ? `<span class="field__help" data-bulk-school-warning>
+      ⚠️ 你的学校还没从名单里选过，<strong>现在公开谁也看不到</strong> ——
+      先去<a href="/settings#system">设置</a>里选一所学校。
+    </span>` : ''}
   </div>
   <div class="btn-row">
     <button type="button" class="btn btn--outline btn--sm" data-bulk-set="1">
@@ -161,12 +197,20 @@ ${editFormTemplate}
  * ⚠️ 操作按钮放在 `<a>` **外面**：交互元素不能嵌套。放里面的话点「删除」
  * 会同时触发「打开这份资料」，键盘和读屏也会乱。
  */
-function materialRow(m) {
+function materialRow(m, schoolVerified = true) {
   // 分类（课件/作业/其他）和文件类型（演示文稿/PDF…）是**两回事**：
   // 前者是筛选用的维度，后者是"这是什么文件"。两个都有用，都放上。
   const metaParts = [m.categoryLabel, m.kindLabel, m.sizeLabel, m.updated_at?.slice(5, 10)]
     .filter(Boolean)
     .map((x) => escapeHtml(String(x)));
+
+  // 公开徽标要说**实话**：学校没从名单里选过时，标成「同校可见」是假的
+  //（sameSchool 对未验证的校名直接返回 false，同学一份都看不到）。
+  // 所以那时候画一个黄色警告徽标，而不是一个让人安心的蓝色徽标。
+  const publishedBadge = !m.published ? ''
+    : schoolVerified
+      ? `<span class="badge badge--primary" title="同校同学能看到并下载这份资料">${icon('users', 12)} 同校可见</span>`
+      : `<span class="badge badge--warn" title="你的学校还没从名单里选过，现在谁也看不到这份资料。去设置里选一所学校就会立刻生效。">${icon('alert', 12)} 还没人能看到</span>`;
 
   return `<li class="material-row" data-material="${m.id}">
   <a class="material-row__link" href="/materials/${m.id}">
@@ -183,7 +227,7 @@ function materialRow(m) {
       </span>
     </span>
     ${m.hasPdf ? '<span class="badge badge--success">PDF</span>' : ''}
-    ${m.published ? `<span class="badge badge--primary" title="同校同学能看到并下载这份资料">${icon('users', 12)} 同校可见</span>` : ''}
+    ${publishedBadge}
   </a>
   <span class="material-row__actions">
     <button type="button" class="btn btn--ghost btn--sm" data-edit-material="${m.id}"
@@ -538,7 +582,7 @@ export function renderUploadForm({ courses, maxUploadMB, currentCourseId }) {
 // 编辑资料表单
 // ============================================================
 
-export function renderMaterialEditForm({ courses }) {
+export function renderMaterialEditForm({ courses, schoolVerified = true }) {
   return `<template id="material-edit-template">
   <form class="form" data-material-edit-form>
     <input type="hidden" name="id">
@@ -586,6 +630,16 @@ export function renderMaterialEditForm({ courses }) {
             也能下载原文件。别的学校的人看不到，没登录的人更看不到。
             默认不公开，每份资料单独设。
           </span>
+          ${/* ⚠️ 学校没从名单里选过时，这个开关勾了是**确定无效**的
+               （sameSchool 对未验证的校名直接 false），必须在勾之前就说清楚，
+                不能等用户勾完、发现没人看得到才明白。
+                注意这里**不禁用**开关：先勾上、以后选好学校就立刻生效，
+                是个合理的用法（"先整理、后公开"），只是不能让人以为现在就可见。 */ ''}
+          ${!schoolVerified ? `<span class="field__help field__help--warn" data-pub-school-warning>
+            ⚠️ 你的学校还没<strong>从名单里选过</strong>，所以现在勾上<strong>谁也看不到</strong>。
+            去<a href="/settings#system">设置 → 个人资料</a>里选一所学校，
+            已经勾上的会立刻生效 —— 不用回来重勾。
+          </span>` : ''}
         </span>
       </label>
     </div>

@@ -67,8 +67,14 @@ function needsSchoolCard({ school, schoolVerified }) {
  *
  * 它和学校无关：学校还没从名单里选过的人也该看得见自己公开了什么，
  * 所以它**不放在** `schoolVerified` 那个分支里。
+ *
+ * ⚠️ 但「和学校无关」不等于「可以说同校同学看得到」：
+ *    校名没从名单里选过时，sameSchool 直接返回 false，这 N 份**谁也看不到**。
+ *    第一版这里写死了「同校同学现在能看到、也能下载这几份」——
+ *    在学校未验证的分支上那是**假话**，而且同一页上面还写着「还进不了校友社区」，
+ *    自相矛盾。所以下面按 schoolVerified 分两套说法。
  */
-function myPublishedSection(materials, total) {
+function myPublishedSection(materials, total, schoolVerified) {
   // 标题上的数字用**真实总数**，不是列表长度 —— 列表最多列 20 份，
   // 只公开了 3 份的人看到的必须是 3，公开了 30 份的人也不该看到 "20"
   // 却不知道还有 10 份没列出来。
@@ -81,10 +87,15 @@ ${card({
       ? `<p class="small">你还没有公开任何资料。在<a href="/materials">我的资料</a>里编辑任意一份，
            勾上「公开给同校同学」，它就会出现在这里；资料多的可以用列表底部那条
            <strong>批量公开</strong>一次搞定。</p>
-         <p class="field__help">
+         ${schoolVerified
+      ? `<p class="field__help">
            公开出去的范围是<strong>同校同学</strong> —— 他们可以看，也可以下载。
            没公开的东西只有你自己看得见，别人连「存在」都问不出来。
          </p>`
+      : `<p class="field__help field__help--warn">
+           不过你的学校还没<strong>从名单里选过</strong>，所以现在就算公开，
+           同学那边也看不到 —— 先去<a href="/settings#system">设置 → 个人资料</a>里选一所学校。
+         </p>`}`
       : `<ul class="material-list">
         ${materials.map((m) => `
           <li class="material-row">
@@ -100,11 +111,24 @@ ${card({
             </a>
           </li>`).join('')}
       </ul>
-      <p class="field__help">
-        ${truncated ? `这里只列了最近 ${materials.length} 份，全部在<a href="/materials">我的资料</a>里。` : ''}
+      ${truncated ? `<p class="field__help">
+        这里只列了最近 ${materials.length} 份，全部在<a href="/materials">我的资料</a>里。
+      </p>` : ''}
+      ${schoolVerified
+      ? `<p class="field__help">
         同校同学现在能看到、也能下载这几份。想收回就在<a href="/materials">我的资料</a>里
         取消勾选（或用底部的<strong>批量公开</strong>一次收回）。
-      </p>`,
+      </p>`
+      : `<p class="field__help field__help--warn" data-my-published-invisible>
+        ⚠️ 这 ${count} 份现在<strong>谁也看不到</strong> —— 你的学校还没
+        <strong>从名单里选过</strong>。社区是按学校分的，校名对不上名单就没有"同校"可言，
+        所以同学那边一份都看不到。
+      </p>
+      <p class="field__help">
+        去<a href="/settings#system">设置 → 个人资料</a>里选一所学校保存，
+        这几份会<strong>立刻对同校同学可见</strong>，不用回来重勾。
+        想收回就在<a href="/materials">我的资料</a>里取消勾选。
+      </p>`}`,
   })}
 </section>`;
 }
@@ -155,7 +179,7 @@ ${feed.length === 0
 `}
 
 ${/* 放在学校判断**外面**：自己公开了什么，和有没有从名单选过学校无关 */ ''}
-${myPublishedSection(myMaterials, myPublished)}
+${myPublishedSection(myMaterials, myPublished, schoolVerified)}
 
 ${schoolVerified && alumni.length ? card({
       title: '同校校友',

@@ -2990,6 +2990,58 @@ async function run() {
         && bulkPage.text.includes('data-bulk-set="0"'));
       ok('★ 操作条写明了「作用于这一屏的 N 份」（不能让人不知道会改到多少）',
         /这一屏的\s*\d+\s*份/.test(bulkPage.text));
+
+      // ---- 「公开了但谁也看不到」必须在界面上说清楚 ----
+      // 学校没从名单里选过的人**可以**勾「公开给同校」，但他公开出去的东西
+      // 确定没有任何人看得到（community.js 的 sameSchool 对未验证校名直接 false）。
+      // 以前界面对此只字不提，徽标还写着「同校可见」—— 那是在骗用户：
+      // 他勾完、看到「同校可见」，会以为同学已经能下载了。
+      {
+        const nosUp = multipart(
+          { title: '没填学校的资料', category: 'courseware' },
+          { field: 'file', filename: 'nos.txt', type: 'text/plain', data: Buffer.from('没填学校的资料') },
+        );
+        const nosUpload = await noSchool('POST', '/api/materials', {
+          body: nosUp.body, headers: { 'Content-Type': nosUp.contentType },
+        });
+        const nosMatId = nosUpload.json?.material?.id || nosUpload.json?.id;
+        ok('（前提）没填学校的账号上传了一份资料并设为公开', Boolean(nosMatId));
+        await noSchool('PATCH', `/api/materials/${nosMatId}`, { json: { published: 1 } });
+
+        const nosLib = await noSchool('GET', '/materials');
+        ok('★ 资料库顶部直接说明「公开了现在谁也看不到」',
+          nosLib.text.includes('data-school-publish-warning'),
+          '没有任何提示，用户会以为公开已经生效了');
+        // 用主徽标独有的 title 判断，而不是找「同校可见」四个字 ——
+        // 警告横幅的正文里也写了「你标了『同校可见』的资料」，会误判
+        ok('★ 行上的徽标换成警告，不再写「同校可见」',
+          nosLib.text.includes('还没人能看到')
+          && !nosLib.text.includes('title="同校同学能看到并下载这份资料"'),
+          '★ 徽标还在说「同校可见」—— 学校没从名单里选过时那句话是假的');
+        ok('★ 编辑表单在**勾之前**就说了（不能等勾完才发现）',
+          nosLib.text.includes('data-pub-school-warning'));
+        ok('★ 批量公开条上也说了',
+          nosLib.text.includes('data-bulk-school-warning'));
+
+        const nosBoard2 = await noSchool('GET', '/community');
+        ok('★ 社区页「我公开的」不再谎称同校同学看得到',
+          nosBoard2.text.includes('data-my-published-invisible')
+          && !nosBoard2.text.includes('同校同学现在能看到'),
+          '★ 那一栏还在说同校同学能看到 —— 学校没选过时那句话是假的');
+
+        // ⚠️ 对照：学校已验证的账号**不该**出现这些警告。
+        //    没有这一条，上面几条会被一个"永远显示"的警告满足，等于没测。
+        await req('POST', '/api/materials/publish', { json: { published: 1 } });
+        const myLib = await req('GET', '/materials');
+        ok('★ 对照：学校已验证的人看不到这些警告（否则上面几条是空转的）',
+          !myLib.text.includes('data-school-publish-warning')
+          && !myLib.text.includes('data-bulk-school-warning')
+          && myLib.text.includes('title="同校同学能看到并下载这份资料"'),
+          '警告在一个学校正常的人那里也出现了 —— 那它不是判断出来的，是写死的');
+        await req('POST', '/api/materials/publish', { json: { published: 0 } });
+
+        if (nosMatId) await noSchool('DELETE', `/api/materials/${nosMatId}`);
+      }
     }
 
     const anonProfile = createClient(baseUrl);

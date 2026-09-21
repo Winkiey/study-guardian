@@ -890,6 +890,15 @@ a.stat:hover {
 .field__help { font-size: 12.5px; color: var(--c-text-3); margin: 0; line-height: 1.6; }
 .field__help a { color: var(--c-primary); }
 .field__help strong { color: var(--c-text-2); font-weight: 620; }
+/* 「警告版」的字段说明：用在「你这么做是**确定无效**的」这种地方
+   （例：学校没从名单里选过时，勾「公开给同校」谁也看不到）。
+   ⚠️ 用 --c-warn 而不是随手挑一个橙色：design-tokens 的测试已经验过
+      状态色在**最差底色**（浅色 --c-surface-3、深色最亮那层）上仍 ≥4.5:1。
+      换色值前先去看那个测试，别照抄别处的橙。
+   ⚠️ 必须定义在 .field__help 之后：`.field__help--warn a` 和 `.field__help a`
+      特异性相同，靠出现顺序决胜（单类选择器都是这个规矩，见文件开头那段说明）。 */
+.field__help--warn, .field__help--warn strong { color: var(--c-warn); }
+.field__help--warn a { color: var(--c-warn); text-decoration: underline; }
 .field__inline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
 /* ---- 带候选的输入框（学校名） ----

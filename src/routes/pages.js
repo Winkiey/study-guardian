@@ -546,13 +546,20 @@ export function registerPages(router) {
       stats: materials.materialStats(userId, courseId || undefined),
       filters: { keyword, category, courseId },
       storage: storageInfo(),
+      // ⚠️ 学校没从名单里选过时，「公开给同校」是**确定无效**的
+      //    （community.js 的 sameSchool 对未验证校名直接 false）。
+      //    页面据此在三处说实话：列表顶部横幅、行上的徽标、编辑表单的说明。
+      schoolVerified: schoolIsVerified(ctx.user.school),
       // 上传与编辑表单作为 <template> 渲染进页面，前端 JS 拿来开弹窗
       uploadFormTemplate: renderUploadForm({
         courses: courses.listCourses(userId),
         maxUploadMB: Math.round(config.maxUploadBytes / 1024 / 1024),
         currentCourseId: courseId,
       }),
-      editFormTemplate: renderMaterialEditForm({ courses: courses.listCourses(userId) }),
+      editFormTemplate: renderMaterialEditForm({
+        courses: courses.listCourses(userId),
+        schoolVerified: schoolIsVerified(ctx.user.school),
+      }),
     }), { user: ctx.user, stats: navStats(userId) });
   }));
 
@@ -598,7 +605,11 @@ export function registerPages(router) {
       textContent,
       officeData,
       // 预览页也要能「编辑资料信息」，把表单模板一并渲染进页面
-      editFormTemplate: renderMaterialEditForm({ courses: courses.listCourses(userId) }),
+      // （schoolVerified 一起带上：这里也有那个公开开关，同样要说实话）
+      editFormTemplate: renderMaterialEditForm({
+        courses: courses.listCourses(userId),
+        schoolVerified: schoolIsVerified(ctx.user.school),
+      }),
     }), { user: ctx.user, stats: navStats(userId), wide: true });
   }));
 
