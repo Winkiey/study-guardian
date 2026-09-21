@@ -2565,6 +2565,117 @@ async function run() {
       },
     });
 
+    // ---- 头像 ----
+    // 一张最小合法的 PNG（1×1，RGBA）。手写死字节是为了不依赖项目里的编码器 ——
+    // 这一段测的是**上传接口**，用哪来的图不重要，但必须是真 PNG
+    // （接口看文件头，不看扩展名）。
+    const TINY_PNG = Buffer.from(
+      '89504e470d0a1a0a0000000d4948445200000001000000010806000000'
+      + '1f15c4890000000a49444154789c63000100000500010d0a2db4000000'
+      + '0049454e44ae426082', 'hex',
+    );
+    ok('（前提）测试用的 PNG 字节是真的 PNG',
+      TINY_PNG.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])));
+
+    const avatarUp = multipart({}, {
+      field: 'file', filename: '头像.png', type: 'image/png', data: TINY_PNG,
+    });
+    const avatarRes = await req('POST', '/api/avatar', {
+      body: avatarUp.body, headers: { 'Content-Type': avatarUp.contentType },
+    });
+    ok('★ 能上传 PNG 头像', avatarRes.status === 200, `状态码 ${avatarRes.status}`);
+    // 上传响应里带上了地址，里面就有自己的 userId —— 后面验可见性要用它。
+    // （从响应里取，比在别处猜一个"当前用户"接口可靠。）
+    const myUserId = Number(/\/avatar\/(\d+)/.exec(avatarRes.json?.url || '')?.[1] || 0);
+    ok('★ 上传响应给出头像地址（前端据此直接换 <img>，不用刷新）',
+      myUserId > 0, avatarRes.json?.url);
+
+    const avatarGet = await req('GET', `/avatar/${myUserId}`);
+    ok('★ 能取回自己的头像，而且 Content-Type 是 image/png',
+      avatarGet.status === 200 && avatarGet.headers.get('content-type') === 'image/png',
+      `状态码 ${avatarGet.status}，type=${avatarGet.headers.get('content-type')}`);
+    ok('★ 头像响应不缓存给公开代理（private）',
+      /private/.test(avatarGet.headers.get('cache-control') || ''),
+      avatarGet.headers.get('cache-control'));
+
+    // 不是图片的东西要被挡：改个名字和 MIME 不算数
+    const notImage = multipart({}, {
+      field: 'file', filename: '假的.png', type: 'image/png',
+      data: Buffer.from('<?php echo 1; ?> 这不是图片'),
+    });
+    const notImageRes = await req('POST', '/api/avatar', {
+      body: notImage.body, headers: { 'Content-Type': notImage.contentType },
+    });
+    ok('★ 改名成 .png 的非图片被拒绝（只看文件头）',
+      notImageRes.status === 400, `状态码 ${notImageRes.status}`);
+
+    // ---- 头像的可见性：自己 或 同校 ----
+    // 这一段是本批最要紧的断言：把「同校」这条唯一边界钉住。
+    const schoolMate = createClient(baseUrl);
+    const MATE = { username: `e2e同校${Math.floor(Math.random() * 100000)}`, password: 'mate123456' };
+    await schoolMate('POST', '/register', {
+      form: { ...MATE, password2: MATE.password, displayName: '同校同学', inviteCode: E2E_INVITE_CODE },
+    });
+    await schoolMate('POST', '/api/profile', {
+      json: { displayName: '同校同学', school: '东北财经大学', college: '统计学院', major: '统计学' },
+    });
+    const mateAvatar = await schoolMate('GET', `/avatar/${myUserId}`);
+    ok('★ 同校同学能看到我的头像', mateAvatar.status === 200, `状态码 ${mateAvatar.status}`);
+
+    const outsider = createClient(baseUrl);
+    const OUT = { username: `e2e外校${Math.floor(Math.random() * 100000)}`, password: 'out123456' };
+    await outsider('POST', '/register', {
+      form: { ...OUT, password2: OUT.password, displayName: '外校同学', inviteCode: E2E_INVITE_CODE },
+    });
+    await outsider('POST', '/api/profile', {
+      json: { displayName: '外校同学', school: '北京大学', college: '光华管理学院', major: '工商管理' },
+    });
+    const outsiderAvatar = await outsider('GET', `/avatar/${myUserId}`);
+    ok('★ 别的学校看不到我的头像（404，不是 403 —— 不确认存在与否）',
+      outsiderAvatar.status === 404, `状态码 ${outsiderAvatar.status}`);
+
+    const noSchool = createClient(baseUrl);
+    const NOS = { username: `e2e没填${Math.floor(Math.random() * 100000)}`, password: 'nos123456' };
+    await noSchool('POST', '/register', {
+      form: { ...NOS, password2: NOS.password, displayName: '没填学校', inviteCode: E2E_INVITE_CODE },
+    });
+    const noSchoolAvatar = await noSchool('GET', `/avatar/${myUserId}`);
+    ok('★ 没填学校的人也看不到（同校判断对空学校返回 false）',
+      noSchoolAvatar.status === 404, `状态码 ${noSchoolAvatar.status}`);
+
+    const anonAvatar = createClient(baseUrl);
+    const anonAvatarRes = await anonAvatar('GET', `/avatar/${myUserId}`);
+    // 未登录时拿到的是 302（跳登录页）而不是 401 —— 站点的错误处理对所有
+    // 非 /api/ 路径都这样。这里**不挑**具体是哪个，只要求「不是 200 也不是 403」：
+    //   · 403 会暗示"这个头像存在但你不能看"，那是个探测口子；
+    //   · 200 就是直接泄露了。
+    // 302 和 404 都看不出头像存不存在，安全上是等价的。
+    ok('★ 未登录取头像拿不到内容（302 跳登录 / 401 都可，但不能是 200 或 403）',
+      anonAvatarRes.status !== 200 && anonAvatarRes.status !== 403,
+      `状态码 ${anonAvatarRes.status}`);
+
+    const anonUpload = createClient(baseUrl);
+    const anonUploadRes = await anonUpload('POST', '/api/avatar', {
+      body: avatarUp.body, headers: { 'Content-Type': avatarUp.contentType },
+    });
+    ok('★ 未登录不能上传头像',
+      anonUploadRes.status === 302 || anonUploadRes.status === 401,
+      `状态码 ${anonUploadRes.status}`);
+
+    // 设置页上应该已经显示出头像 <img>
+    const withAvatar = await req('GET', '/settings');
+    ok('★ 设置页把头像换成了 <img>（不再是首字母）',
+      /class="user-chip__avatar"><img src="\/avatar\//.test(withAvatar.text)
+      && /data-avatar-preview/.test(withAvatar.text));
+    ok('★ 页面上说明了头像只有自己和同校同学能看到',
+      /只有你自己和同校同学能看到/.test(withAvatar.text));
+
+    // 删掉之后回 404
+    const avatarDel = await req('DELETE', '/api/avatar', { json: {} });
+    ok('★ 能删掉头像', avatarDel.status === 200, `状态码 ${avatarDel.status}`);
+    ok('★ 删掉之后取不到了',
+      (await req('GET', `/avatar/${myUserId}`)).status === 404);
+
     const anonProfile = createClient(baseUrl);
     const anonProfileRes = await anonProfile('POST', '/api/profile', {
       json: { displayName: '路人', school: '东北财经大学' },

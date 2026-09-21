@@ -2412,6 +2412,7 @@ function initSettings() {
   initFieldErrors();
   initSchoolPickers();
   initProfileForm();
+  initAvatarForm();
   initRevokeButtons();
   initDeleteAccount();
   initSchedulerButton();
@@ -3521,6 +3522,83 @@ function initProfileForm() {
       btn.disabled = false;
       btn.classList.remove('is-loading');
     }
+  });
+}
+
+/**
+ * 头像上传 / 删除。
+ *
+ * ⚠️ 上传走**单独的接口**，不跟着「保存资料」一起提交。
+ * 合成一个表单的话，每次改昵称都会把头像文件重传一遍（几 MB），
+ * 而且没选文件时还得小心别把已有头像冲掉。
+ *
+ * 也不在这里做格式校验：说了算的是服务端（看文件头）。
+ * 前端只挡一下「体积明显超了」，省一次白跑 —— 但这只是体验，不是安全边界。
+ */
+function initAvatarForm() {
+  const box = document.querySelector('[data-avatar-edit]');
+  if (!box) return;
+  const input = box.querySelector('[data-avatar-input]');
+  const preview = box.querySelector('[data-avatar-preview]');
+
+  const upload = box.querySelector('[data-avatar-upload]');
+  upload?.addEventListener('click', async () => {
+    const file = input?.files?.[0];
+    if (!file) {
+      // 挂到 file 输入框上，比一个会飘走的提示好定位
+      setFieldError(input, '先选一张图片');
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      setFieldError(input, `这张 ${(file.size / 1024 / 1024).toFixed(1)}MB，超过 2MB 了`);
+      return;
+    }
+    clearFieldError(input);
+
+    const fd = new FormData();
+    fd.append('file', file, file.name);
+    upload.disabled = true;
+    upload.classList.add('is-loading');
+    try {
+      await api('/api/avatar', { method: 'POST', body: fd, raw: true });
+      toast('头像已更新', 'success');
+      // 头像地址带 ETag，但页面上的 <img> 还是旧的 —— 重载最省事
+      setTimeout(reloadPreservingScroll, 600);
+    } catch (err) {
+      if (!placeServerError(document.querySelector('[data-profile-form]') || document, err.message)) {
+        toast(err.message, 'error', 8000);
+      }
+    } finally {
+      upload.disabled = false;
+      upload.classList.remove('is-loading');
+    }
+  });
+
+  box.querySelector('[data-avatar-remove]')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    try {
+      await api('/api/avatar', { method: 'DELETE' });
+      toast('头像已删掉，改回昵称首字母', 'success');
+      setTimeout(reloadPreservingScroll, 600);
+    } catch (err) {
+      toast(err.message, 'error');
+      btn.disabled = false;
+    }
+  });
+
+  // 选完文件就能看到缩略图，不用先上传再等
+  input?.addEventListener('change', () => {
+    const file = input.files?.[0];
+    if (!file || !preview) return;
+    clearFieldError(input);
+    const url = URL.createObjectURL(file);
+    preview.textContent = '';
+    const img = document.createElement('img');
+    img.src = url;
+    img.alt = '待上传的头像预览';
+    img.addEventListener('load', () => URL.revokeObjectURL(url), { once: true });
+    preview.appendChild(img);
   });
 }
 

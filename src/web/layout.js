@@ -214,7 +214,9 @@ export function renderPage({ title, active, body, user, scripts = '', stats = {}
     <div class="sidebar__footer">
       ${user ? `
       <div class="user-chip">
-        <span class="user-chip__avatar">${escapeHtml((user.display_name || user.username || '?').slice(0, 1))}</span>
+        <span class="user-chip__avatar">${user.avatar_ext
+        ? `<img src="/avatar/${escapeHtml(String(user.id))}" alt="">`
+        : escapeHtml((user.display_name || user.username || '?').slice(0, 1))}</span>
         <span class="user-chip__name">${escapeHtml(user.display_name || user.username)}</span>
       </div>
       <form method="post" action="/logout" class="logout-form">

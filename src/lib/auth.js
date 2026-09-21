@@ -172,7 +172,8 @@ export function currentUser(req) {
   if (!payload) return null;
 
   const user = get(
-    'SELECT id, username, display_name, school, created_at, session_version FROM users WHERE id = ?',
+    `SELECT id, username, display_name, school, college, major, avatar_ext, created_at, session_version
+       FROM users WHERE id = ?`,
     payload.userId,
   );
   if (!user) return null;

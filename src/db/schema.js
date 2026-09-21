@@ -12,7 +12,7 @@
  */
 
 /** 当前结构版本号，配合 PRAGMA user_version 做迁移 */
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 /**
  * 课程标记色的默认值。
@@ -97,6 +97,16 @@ export const MIGRATIONS = {
     (db) => addColumnIfMissing(db, 'users', 'college', "TEXT NOT NULL DEFAULT ''"),
     (db) => addColumnIfMissing(db, 'users', 'major', "TEXT NOT NULL DEFAULT ''"),
   ],
+  // v7：头像。
+  //
+  // 只加一列存**扩展名**（'png' / 'jpg'），不存路径也不存二进制：
+  //   · 路径由 userId 拼（data/avatars/<id>.<ext>），不含用户提供的字符串，
+  //     所以不存在路径穿越的余地；
+  //   · 图片本身放磁盘，数据库不因为几张头像膨胀。
+  // 空串 = 没有头像，前端就显示昵称首字母。默认空串，所以升级后谁都不受影响。
+  7: [
+    (db) => addColumnIfMissing(db, 'users', 'avatar_ext', "TEXT NOT NULL DEFAULT ''"),
+  ],
 };
 
 /** 缺了才加，已经有了就跳过（让迁移可以安全重跑） */
@@ -131,7 +141,11 @@ CREATE TABLE IF NOT EXISTS users (
   -- 校友社区用的资料。school 以后从固定名单里选（见 src/data/schools.js），
   -- 因为「同校」是社区**唯一**的可见性边界，名字对不上边界就等于没有。
   college          TEXT NOT NULL DEFAULT '',
-  major            TEXT NOT NULL DEFAULT ''
+  major            TEXT NOT NULL DEFAULT '',
+  -- 头像的扩展名（'png' / 'jpg'）或空串。**只存扩展名，不存路径**：
+  -- 路径由 userId 拼出来（见 src/lib/avatar.js），路径里不含任何用户提供的
+  -- 字符串，于是不存在路径穿越的余地，也不用再写一层过滤。
+  avatar_ext       TEXT NOT NULL DEFAULT ''
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_lower ON users(lower(username));
 

@@ -20,8 +20,13 @@ import {
 } from '../lib/http.js';
 import config from '../config.js';
 import { all, get, run } from '../db/index.js';
-import { changePassword, clearSessionCookie, passwordProblem, requireUser, revokeCalendarTokens, revokeOtherSessions, schoolIsVerified, setSessionCookie, updateProfile, verifyPassword } from '../lib/auth.js';
+import { changePassword, clearSessionCookie, currentUser, passwordProblem, requireUser, revokeCalendarTokens, revokeOtherSessions, schoolIsVerified, setSessionCookie, updateProfile, verifyPassword } from '../lib/auth.js';
 import { SCHOOL_NAMES, isKnownSchool, schoolPlace } from '../data/schools.js';
+import {
+  AVATAR_MAX_BYTES, avatarExtOf, avatarMime, avatarPath, removeAvatar, saveAvatar,
+} from '../lib/avatar.js';
+import { canViewAvatar } from '../lib/community.js';
+import fs from 'node:fs';
 import { deleteAccount } from '../lib/account.js';
 import * as courses from '../lib/courses.js';
 import * as assignments from '../lib/assignments.js';
@@ -742,6 +747,79 @@ export function registerApi(router) {
       schoolVerified: schoolIsVerified(saved.school),
     });
   }));
+
+  /**
+   * 上传 / 删除头像。
+   *
+   * 校验全在 src/lib/avatar.js 里（看文件头，不信扩展名和 MIME）。
+   */
+  router.post('/api/avatar', guard(async (ctx) => {
+    const parsed = await readBodyAuto(ctx.req, { multipart: AVATAR_MAX_BYTES + 64 * 1024 });
+    const file = parsed.type === 'multipart' ? parsed.data?.files?.[0] : null;
+    if (!file?.data?.length) throw badRequest('没有收到图片');
+
+    let info;
+    try {
+      info = saveAvatar(ctx.user.id, file.data);
+    } catch (err) {
+      // 类型不对、太大、像素超标都是**说给用户听**的原因，回 400
+      throw badRequest(err.message);
+    }
+    sendJson(ctx.res, {
+      ok: true,
+      width: info.width,
+      height: info.height,
+      // 顺带把地址给出去：前端想不刷新页面就换掉 <img> 时要用它
+      url: `/avatar/${ctx.user.id}`,
+    });
+  }));
+
+  router.delete('/api/avatar', guard(async (ctx) => {
+    removeAvatar(ctx.user.id);
+    sendJson(ctx.res, { ok: true });
+  }));
+
+  /**
+   * 取头像图片。
+   *
+   * 授权规则是用户拍板的：**自己 或 同校**。
+   * 判断走 src/lib/community.js 的 canViewAvatar —— 不在别处再写一遍，
+   * 那种散落的判断早晚会漏掉一个条件。
+   *
+   * 不存在的头像回 404 而不是 500：前端会先看 hasAvatar 再决定要不要
+   * 请求这个地址，所以 404 基本只会出现在「刚删掉但页面还没刷新」时。
+   */
+  router.get('/avatar/:userId', async (ctx) => {
+    const ownerId = Number(ctx.params.userId);
+    if (!Number.isInteger(ownerId) || ownerId <= 0) throw notFound('没有这个头像');
+
+    // ⚠️ 这里**不能用 guard()**：guard 要求登录，而未登录时应该回 401 而不是
+    //    让「别人的头像存在与否」通过错误信息泄露出去。所以手动判一下，
+    //    未登录统一 401，不区分「用户不存在」和「没有头像」。
+    const viewer = currentUser(ctx.req);
+    if (!viewer) throw unauthorized('请先登录');
+    if (!canViewAvatar(viewer.id, ownerId)) throw notFound('没有这个头像');
+
+    const ext = avatarExtOf(ownerId);
+    if (!ext) throw notFound('没有这个头像');
+    const file = avatarPath(ownerId, ext);
+    let stat;
+    try {
+      stat = fs.statSync(file);
+    } catch {
+      throw notFound('没有这个头像');
+    }
+    if (!stat.isFile()) throw notFound('没有这个头像');
+
+    ctx.res.writeHead(200, {
+      'Content-Type': avatarMime(ext),
+      'Content-Length': stat.size,
+      // 头像可能随时被换掉，所以不缓存太久；ETag 靠 mtime，换了就变
+      'Cache-Control': 'private, max-age=60, must-revalidate',
+      ETag: `"av${ownerId}-${stat.mtimeMs.toString(36)}"`,
+    });
+    ctx.res.end(fs.readFileSync(file));
+  });
 
   router.post('/api/password', guard(async (ctx) => {
     const body = await readJson(ctx.req);

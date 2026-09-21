@@ -473,6 +473,37 @@ ${card({
     </p>
   <form class="form" data-profile-form>
     <div class="form__row">
+      <div class="field">
+        <label class="field__label">头像</label>
+        ${/* ⚠️ 这个 div 在 form 里面，但它自己的按钮是 type=button，
+             而且 file 输入框不在表单提交的字段里 —— 上传走的是单独的接口，
+             不然「保存资料」会把头像一起重传一遍。 */ ''}
+        <div class="avatar-edit" data-avatar-edit>
+          <span class="avatar-edit__preview" data-avatar-preview>
+            ${user?.avatar_ext
+        ? `<img src="/avatar/${escapeHtml(String(user.id))}" alt="你的头像">`
+        : `<span class="avatar-edit__letter">${escapeHtml((user?.display_name || user?.username || '?').slice(0, 1))}</span>`}
+          </span>
+          <div class="avatar-edit__actions">
+            <input type="file" id="pf_avatar" class="input input--file input--sm"
+                   accept="image/png,image/jpeg,.png,.jpg,.jpeg" data-avatar-input>
+            <div class="btn-row mt-sm">
+              <button type="button" class="btn btn--outline btn--sm" data-avatar-upload>
+                ${icon('upload', 15)}<span>上传头像</span>
+              </button>
+              ${user?.avatar_ext
+        ? `<button type="button" class="btn btn--danger-ghost btn--sm" data-avatar-remove>${icon('trash', 15)}<span>删掉</span></button>`
+        : ''}
+            </div>
+            <p class="field__help">
+              PNG 或 JPEG，2MB 以内。<strong>只有你自己和同校同学能看到</strong>；
+              别人、别校的人看到的都是昵称首字母。
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="form__row">
       <div class="field field--grow">
         <label class="field__label" for="pf_name">怎么称呼你</label>
         <input id="pf_name" class="input" name="displayName" maxlength="24"
