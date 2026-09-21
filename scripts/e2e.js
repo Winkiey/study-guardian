@@ -2795,6 +2795,9 @@ async function run() {
         await outsider('PATCH', `/api/materials/${outMaterialId}`, { json: { published: 1 } });
       }
 
+      // 先把我自己的一份资料也公开 —— 社区列表**不该**出现自己的东西
+      const minePub = await req('PATCH', `/api/materials/${materialId}`, { json: { published: 1 } });
+
       const board = await req('GET', '/community');
       ok('★ 社区页能打开', board.status === 200, `状态码 ${board.status}`);
       ok('★ 能看到同校同学公开的资料',
@@ -2803,8 +2806,16 @@ async function run() {
       ok('★ 看不到外校同学公开的资料（跨校隔离）',
         !board.text.includes('外校同学的笔记'),
         '★ 外校的东西出现在我的社区里 —— 学校的边界没生效');
-      ok('★ 社区列表里没有出现自己的资料（只显示别人的）',
-        board.text.includes('同校同学的笔记'));
+      // ⚠️ 第一版这里写的是"同校同学的笔记在页面上" —— 和上面一条**完全重复**，
+      //    等于没测。改成本来该测的：我自己公开的资料不该出现在我自己的社区流里。
+      const myTitle = '我自己公开的资料';
+      await req('PATCH', `/api/materials/${materialId}`, { json: { title: myTitle, published: 1 } });
+      const board2 = await req('GET', '/community');
+      ok('★ 社区列表里不出现自己的资料（只显示别人的）',
+        !board2.text.includes(myTitle),
+        '★ 自己的东西出现在自己的社区流里 —— 那条 SQL 忘了排除自己');
+      await req('PATCH', `/api/materials/${materialId}`, { json: { title: 'E2E 课件', published: 0 } });
+      void minePub;
       // ⚠️ 这一条是本批最要紧的隐私断言
       ok('★ 社区页面上没有同校同学的登录用户名',
         !board.text.includes(MATE.username),
