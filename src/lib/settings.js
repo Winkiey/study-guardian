@@ -63,20 +63,13 @@ export function getBoolSetting(userId, key, fallback = false) {
  * 前端设置页会用它来渲染表单，所以字段带着说明文字。
  */
 export const SETTING_DEFS = [
-  {
-    key: 'display_name',
-    label: '称呼',
-    type: 'text',
-    default: '',
-    help: '首页问候语会用这个名字。',
-  },
-  {
-    key: 'school',
-    label: '学校',
-    type: 'text',
-    default: '东北财经大学',
-    help: '仅用于展示。',
-  },
+  // ⚠️ 「称呼」和「学校」**故意不在这里**。
+  //    它们属于**用户资料**，存在 users 表里，走 POST /api/profile。
+  //    以前这两个键写在这里，于是：
+  //      · 设置页上渲染出两个输入框，而前端又把它们 skip 掉（"走用户资料接口"），
+  //        可那个接口根本不存在 —— 填了保存，什么都没发生，也不报错；
+  //      · 同一个值在 users 和 settings 两张表里各存一份，谁是真的说不清。
+  //    现在单一来源是 users 表，这里不再重复定义。
   {
     key: 'default_remind_offsets',
     label: '新建作业的默认提醒',

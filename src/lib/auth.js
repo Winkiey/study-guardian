@@ -12,6 +12,7 @@ import crypto from 'node:crypto';
 import config from '../config.js';
 import { get, run } from '../db/index.js';
 import { parseCookies, serializeCookie, unauthorized } from './http.js';
+import { isKnownSchool } from '../data/schools.js';
 
 export const SESSION_COOKIE = 'sg_session';
 const SESSION_DAYS = 30;
@@ -295,19 +296,26 @@ export function isUsernameTaken(username) {
 }
 
 /** 创建用户 */
-export function createUser({ username, password, displayName = '', school = '' }) {
+export function createUser({
+  username, password, displayName = '', school = '', college = '', major = '',
+}) {
   const name = normalizeUsername(username);
   const hash = hashPassword(password);
   try {
     const { lastInsertRowid } = run(
-      `INSERT INTO users (username, password_hash, display_name, school)
-       VALUES (?, ?, ?, ?)`,
+      `INSERT INTO users (username, password_hash, display_name, school, college, major)
+       VALUES (?, ?, ?, ?, ?, ?)`,
       name,
       hash,
       displayName,
       school,
+      college,
+      major,
     );
-    return get('SELECT id, username, display_name, school, created_at FROM users WHERE id = ?', lastInsertRowid);
+    return get(
+      'SELECT id, username, display_name, school, college, major, created_at FROM users WHERE id = ?',
+      lastInsertRowid,
+    );
   } catch (err) {
     // 撞唯一索引时给一句人话。
     // 上层确实会先查一次重名，但那是「先查再插」：两个人在同一瞬间提交
@@ -339,7 +347,73 @@ export function changePassword(userId, newPassword) {
   );
 }
 
+// ============================================================
+// 个人资料（校友社区要用）
+// ============================================================
+
+/** 各字段长度上限。这些名字会显示给别人看，不设上限的话有人能拿它刷屏。 */
+export const PROFILE_LIMITS = {
+  displayName: 24,
+  school: 60,
+  college: 40,
+  major: 40,
+};
+
+/**
+ * 校验并规范化一份个人资料，返回可以直接写库的值。
+ *
+ * ⚠️ school 必须**在名单里**。这不是「最好校验一下」：
+ *    校友社区里「同校」是唯一的可见性边界，学校字符串就是那个边界的全部依据。
+ *    允许手填就等于允许任何人写「北京大学」，然后看到北大同学公开的资料。
+ *
+ * 空 school 允许（注册时选填），但那样的人不参与社区 ——
+ * 前端要把这一点说清楚，而不是让人填完了才发现什么都看不到。
+ *
+ * @param {{displayName?:string, school?:string, college?:string, major?:string}} input
+ * @throws {Error} 带中文、面向用户的原因
+ */
+export function normalizeProfile(input = {}) {
+  const clean = (v, max, label) => {
+    // 把连续空白压成一个空格：昵称里塞一堆空格会把别人的列表撑歪
+    const s = String(v ?? '').replace(/\s+/g, ' ').trim();
+    if (s.length > max) throw new Error(`${label}不能超过 ${max} 个字`);
+    return s;
+  };
+
+  const displayName = clean(input.displayName, PROFILE_LIMITS.displayName, '昵称');
+  const school = clean(input.school, PROFILE_LIMITS.school, '学校');
+  const college = clean(input.college, PROFILE_LIMITS.college, '学院');
+  const major = clean(input.major, PROFILE_LIMITS.major, '专业');
+
+  if (school && !isKnownSchool(school)) {
+    throw new Error(`「${school}」不在学校名单里。请从提示里选一个，或者把校名写全 ——`
+      + '社区是按学校分的，名字对不上就找不到同学。');
+  }
+
+  return { displayName, school, college, major };
+}
+
+/** 写个人资料 */
+export function updateProfile(userId, data) {
+  const p = normalizeProfile(data);
+  run(
+    'UPDATE users SET display_name = ?, school = ?, college = ?, major = ? WHERE id = ?',
+    p.displayName, p.school, p.college, p.major, userId,
+  );
+  return p;
+}
+
+/**
+ * 这个人的学校是不是「从名单里选的」。
+ *
+ * 老账号的 school 是手填的（那时候还没有名单）。**不能因为对不上就把它删掉** ——
+ * 那是用户自己填的。所以这里只做标记：页面上显示「未从名单选择」并提示重选一次；
+ * 在重选之前这个人不参与社区（同校判断匹配不上，这是名单方案的必然代价）。
+ */
+export function schoolIsVerified(school) {
+  return isKnownSchool(school);
+}
+
 /** 首页应该跳去哪里：没账号跳初始化，有账号未登录跳登录页 */
-export function bootstrapState() {
-  return { initialized: hasAnyUser() };
+export function bootstrapState() {  return { initialized: hasAnyUser() };
 }

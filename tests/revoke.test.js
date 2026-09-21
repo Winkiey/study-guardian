@@ -232,8 +232,14 @@ function legacySignature(payload) {
 }
 
 describe('★ 数据库迁移与界面入口', () => {
-  test('★ SCHEMA_VERSION 提到了 5，并且有对应的迁移', () => {
-    assert.equal(schema.SCHEMA_VERSION, 5, '版本号没提上去，迁移不会跑');
+  test('★ v5 那次迁移还在，而且版本号没被后来的改动盖回去', () => {
+    // ⚠️ 这条原来写的是「SCHEMA_VERSION === 5」。加了 v6（校友社区的
+    //    college/major）之后它就红了 —— 而这正是它该做的事：版本号是
+    //    「迁移跑不跑」的唯一开关，有人加了列却忘了提版本号，
+    //    线上的表现就是「表里没有那一列」的运行时报错。
+    //    所以改成断言**至少到 5**，并且 v5 那一步必须还在。
+    assert.ok(schema.SCHEMA_VERSION >= 5,
+      `SCHEMA_VERSION 是 ${schema.SCHEMA_VERSION}，比 v5 还小 —— 迁移不会跑`);
     assert.ok(schema.MIGRATIONS[5], '缺少 v5 迁移');
     assert.equal(schema.MIGRATIONS[5].length, 2, 'v5 应该给两个计数器各加一列');
   });

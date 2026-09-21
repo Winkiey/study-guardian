@@ -20,7 +20,8 @@ import {
 } from '../lib/http.js';
 import config from '../config.js';
 import { all, get, run } from '../db/index.js';
-import { changePassword, clearSessionCookie, passwordProblem, requireUser, revokeCalendarTokens, revokeOtherSessions, setSessionCookie, verifyPassword } from '../lib/auth.js';
+import { changePassword, clearSessionCookie, passwordProblem, requireUser, revokeCalendarTokens, revokeOtherSessions, schoolIsVerified, setSessionCookie, updateProfile, verifyPassword } from '../lib/auth.js';
+import { SCHOOL_NAMES, isKnownSchool, schoolPlace } from '../data/schools.js';
 import { deleteAccount } from '../lib/account.js';
 import * as courses from '../lib/courses.js';
 import * as assignments from '../lib/assignments.js';
@@ -676,6 +677,70 @@ export function registerApi(router) {
     } catch (err) {
       throw badRequest(err.message);
     }
+  }));
+
+  /**
+   * 学校名补全。
+   *
+   * 为什么走接口、而不是把 3013 个校名塞进注册页：
+   * 那样要给**首屏**加约 120KB 的 HTML，和「登录页要更轻」的目标直接冲突。
+   * 按需取的话每次请求只有几百字节。
+   *
+   * 匹配规则：**前缀优先，其次包含**。前缀优先是因为用户打「东北」时想要的是
+   * 「东北财经大学」「东北大学」这些，而不是名字中间恰好有「东北」的学校。
+   *
+   * 不需要登录：注册页就要用，那时候还没有账号。
+   */
+  router.get('/api/schools', async (ctx) => {
+    const q = String(ctx.url.searchParams.get('q') || '').trim();
+    // ⚠️ 空查询返回空数组。不过滤就返回全部的话，等于白送一个
+    //    「一次拿走 3013 条」的爬取接口。
+    if (!q) return sendJson(ctx.res, { schools: [], exact: false });
+
+    const prefix = [];
+    const contains = [];
+    for (const name of SCHOOL_NAMES) {
+      if (name.startsWith(q)) {
+        prefix.push(name);
+        // 前缀命中已经够填满一屏了，就别再往后扫 3000 条
+        if (prefix.length >= 20) break;
+      } else if (name.includes(q)) {
+        contains.push(name);
+      }
+    }
+    const schools = [...prefix, ...contains].slice(0, 20)
+      .map((name) => ({ name, place: schoolPlace(name) }));
+
+    return sendJson(ctx.res, { schools, exact: isKnownSchool(q) });
+  });
+
+  /**
+   * 保存个人资料。
+   *
+   * 单一来源是 users 表 —— 以前「称呼」和「学校」同时存在于设置里，
+   * 而设置页那两个输入框其实是死的（前端 skip 掉、接口又不存在）。
+   */
+  router.post('/api/profile', guard(async (ctx) => {
+    const body = await readJson(ctx.req);
+    let saved;
+    try {
+      saved = updateProfile(ctx.user.id, {
+        displayName: body.displayName,
+        school: body.school,
+        college: body.college,
+        major: body.major,
+      });
+    } catch (err) {
+      // 「学校不在名单里」这类原因是**说给用户听的**，回 400 而不是 500
+      throw badRequest(err.message);
+    }
+    sendJson(ctx.res, {
+      ok: true,
+      profile: saved,
+      // 顺便告诉前端学校是否已在名单里：不在名单的人不参与社区，
+      // 这件事要在界面上说清楚，而不是让他填完才发现什么都看不到
+      schoolVerified: schoolIsVerified(saved.school),
+    });
   }));
 
   router.post('/api/password', guard(async (ctx) => {

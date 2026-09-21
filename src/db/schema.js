@@ -12,7 +12,7 @@
  */
 
 /** 当前结构版本号，配合 PRAGMA user_version 做迁移 */
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 /**
  * 课程标记色的默认值。
@@ -82,6 +82,21 @@ export const MIGRATIONS = {
     (db) => addColumnIfMissing(db, 'users', 'session_version', 'INTEGER NOT NULL DEFAULT 0'),
     (db) => addColumnIfMissing(db, 'users', 'calendar_version', 'INTEGER NOT NULL DEFAULT 0'),
   ],
+  // v6：校友社区要用的资料字段。
+  //
+  // school 加这两个字段只是开始 —— 真正的改动是「学校从固定名单里选」。
+  // 为什么要名单：社区里「同校」是**唯一**的可见性边界，
+  // 而手填的学校挡不住「家里蹲大学」；有名单才能靠精确相等判断同校，
+  // 不用做模糊匹配（「北大」和「北京大学」算不算同校？模糊匹配永远答不清，
+  // 而答不清就意味着有人能看到本不该看到的资料）。
+  //
+  // ⚠️ 老账号的 school 是手填的，**不迁移、不清空**：用户自己填过的值不能
+  //    被代码删掉。页面上会把它标成「未从名单选择」并提示重选一次；
+  //    在重选之前，这个人不参与社区（因为同校判断匹配不上）。
+  6: [
+    (db) => addColumnIfMissing(db, 'users', 'college', "TEXT NOT NULL DEFAULT ''"),
+    (db) => addColumnIfMissing(db, 'users', 'major', "TEXT NOT NULL DEFAULT ''"),
+  ],
 };
 
 /** 缺了才加，已经有了就跳过（让迁移可以安全重跑） */
@@ -112,7 +127,11 @@ CREATE TABLE IF NOT EXISTS users (
   -- 两个「吊销计数器」。见 v5 迁移里的说明：会话令牌和日历订阅令牌
   -- 都是无状态签名令牌，想把已经发出去的作废，唯一办法就是把计数 +1。
   session_version  INTEGER NOT NULL DEFAULT 0,
-  calendar_version INTEGER NOT NULL DEFAULT 0
+  calendar_version INTEGER NOT NULL DEFAULT 0,
+  -- 校友社区用的资料。school 以后从固定名单里选（见 src/data/schools.js），
+  -- 因为「同校」是社区**唯一**的可见性边界，名字对不上边界就等于没有。
+  college          TEXT NOT NULL DEFAULT '',
+  major            TEXT NOT NULL DEFAULT ''
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_lower ON users(lower(username));
 

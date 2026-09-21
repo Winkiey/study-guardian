@@ -29,6 +29,7 @@ import {
   bootstrapState,
   clearSessionCookie,
   createUser,
+  normalizeProfile,
   currentUser,
   findUserByUsername,
   hashPassword,
@@ -205,11 +206,23 @@ export function registerPages(router) {
 
     let user;
     try {
+      // ⚠️ 学校必须过名单校验，而且**不能有默认值**。
+      // 以前这里写的是 `|| '东北财经大学'` —— 不填学校的人会被静默安上这个默认值，
+      // 于是所有没填的人都成了「同校」，社区按学校分就完全失去意义了。
+      // 宁可留空（那个人不参与社区），也不要替他做一个假的归属。
+      const profile = normalizeProfile({
+        displayName: form.displayName,
+        school: form.school,
+        college: form.college,
+        major: form.major,
+      });
       user = createUser({
         username,
         password,
-        displayName: String(form.displayName || '').trim(),
-        school: String(form.school || '').trim() || '东北财经大学',
+        displayName: profile.displayName,
+        school: profile.school,
+        college: profile.college,
+        major: profile.major,
       });
     } catch (err) {
       return fail(err.message);

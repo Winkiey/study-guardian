@@ -3170,7 +3170,6 @@ function initSettingsForm() {
     const raw = formToObject(form);
     const payload = {};
     for (const [key, value] of Object.entries(raw)) {
-      if (key === 'display_name' || key === 'school') continue; // 这两项走用户资料接口
       const el = form.querySelector(`[name="${CSS.escape(key)}"]`);
       if (el?.type === 'checkbox') payload[key] = el.checked ? '1' : '0';
       else payload[key] = value;
