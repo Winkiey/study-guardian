@@ -16,6 +16,7 @@ import {
   readBodyAuto,
   escapeHtml,
   unauthorized,
+  safeBackPath,
 } from '../lib/http.js';
 import config from '../config.js';
 import { get } from '../db/index.js';
@@ -616,6 +617,15 @@ export function registerPages(router) {
     }
     const isOwner = Number(material.user_id) === Number(userId);
 
+    // 「返回上一步」的目标。本人是资料库，而且**保留课程筛选** ——
+    // 从筛过的列表点进来时，列表把当时的筛选拼在 ?back= 里带过来了。
+    // 看别人的资料则回校友社区（那才是他的来路）。
+    // ⚠️ 必须过一遍 safeBackPath：?back= 是用户可控的，原样拼进 href
+    //    就等于把本站当跳板（开放重定向），而链接长在我们自己的域名下。
+    const backHref = isOwner
+      ? safeBackPath(ctx.url.searchParams.get('back'), '/materials')
+      : '/community';
+
     // 文本类资料读取正文；Office 类尝试读取抽取出来的结构
     let textContent = '';
     let officeData = null;
@@ -650,6 +660,8 @@ export function registerPages(router) {
       // 那些按钮对同校同学点了只会失败（后端都带 user_id 校验），
       // 摆在别人面前等于在骗人。
       isOwner,
+      backHref,
+      backLabel: isOwner ? '返回资料库' : '返回校友社区',
       // 预览页也要能「编辑资料信息」，把表单模板一并渲染进页面
       // （schoolVerified 一起带上：这里也有那个公开开关，同样要说实话）
       // 只有本人会用到它，所以看别人的资料时不注入。

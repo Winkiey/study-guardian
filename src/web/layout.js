@@ -285,9 +285,21 @@ function navBadge(key, stats) {
 
 /**
  * 页面头部（标题 + 描述 + 操作区）。
+ *
+ * `back` 是「返回上一步」那个按钮：`{ href, label }`。
+ * ⚠️ 它和面包屑不一样，是**动作**而不是层级说明，所以刻意单独占一行
+ *    放在最上面 —— 塞进右侧操作区的话，手机上那一片会挤成一团，
+ *    用户反馈的正是「手机上找不到返回」。
+ * ⚠️ href 必须是服务端算好的**站内**路径：经过 http.js 的 safeBackPath()
+ *    过滤，别把请求里的原值直接拼进来（那是开放重定向）。
  */
-export function pageHeader({ title, subtitle = '', actions = '', breadcrumb = null }) {
-  return `<header class="page-head">
+export function pageHeader({
+  title, subtitle = '', actions = '', breadcrumb = null, back = null,
+}) {
+  return `<header class="page-head${back ? ' page-head--has-back' : ''}">
+  ${back ? `<a class="back-link" href="${escapeHtml(back.href)}">
+    ${icon('chevronLeft', 16)}<span>${escapeHtml(back.label || '返回')}</span>
+  </a>` : ''}
   ${breadcrumb ? `<nav class="breadcrumb">${breadcrumb}</nav>` : ''}
   <div class="page-head__row">
     <div class="page-head__text">

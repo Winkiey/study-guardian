@@ -3153,6 +3153,64 @@ async function run() {
       ok('★ 操作条写明了「作用于这一屏的 N 份」（不能让人不知道会改到多少）',
         /这一屏的\s*\d+\s*份/.test(bulkPage.text));
 
+      // ---- 返回按钮：从筛过的列表点进去，返回要回到**筛过的那一屏** ----
+      // 用户的原话：「资料库每次选择课程后，点击返回的时候我希望返回到
+      // 所选课程的页面而不是全部课程」。
+      {
+        const myCourses = (await req('GET', '/api/courses')).json?.courses || [];
+        ok('（前提）有课可以拿来筛选', myCourses.length > 0, '没有课的话下面几条是空转的');
+        const pick = myCourses[0];
+        await req('PATCH', `/api/materials/${materialId}`, { json: { courseId: pick.id } });
+
+        const filtered = await req('GET', `/materials?courseId=${pick.id}`);
+        ok('★ 按课程筛选时，列表里的资料链接带上了 back=（否则返回会丢筛选）',
+          new RegExp(`/materials/\\d+\\?back=[^"]*courseId%3D${pick.id}`).test(filtered.text),
+          '★ 链接里没带筛选 —— 点进去再返回就回到全部课程了');
+
+        const link = new RegExp(`href="(/materials/${materialId}\\?back=[^"]+)"`).exec(filtered.text);
+        ok('（前提）能从那屏里找到这份资料的链接', Boolean(link));
+        if (link) {
+          const detail = await req('GET', link[1].replace(/&amp;/g, '&'));
+          ok('★ 详情页有「返回」按钮', /class="back-link"/.test(detail.text),
+            '详情页没有返回按钮');
+          const backHref = /class="back-link" href="([^"]+)"/.exec(detail.text)?.[1] || '';
+          ok('★★ 「返回」指回**筛过的那一屏**，不是全部课程',
+            backHref.includes(`courseId=${pick.id}`),
+            `返回目标算出来是 ${backHref} —— 把课程筛选丢了`);
+          ok('★ 「返回」是单独一行（不在右上角那堆按钮里），手机上也看得见',
+            /class="page-head page-head--has-back"/.test(detail.text));
+          ok('★ 样式里给了它手机上够大的点击目标',
+            /\.back-link \{[\s\S]{0,400}?min-height: 40px/.test(
+              (await req('GET', '/static/app.css')).text,
+            ));
+        }
+
+        const plain = await req('GET', `/materials/${materialId}`);
+        const plainBack = /class="back-link" href="([^"]+)"/.exec(plain.text)?.[1] || '';
+        ok('★ 没带 back 时返回目标是 /materials（不是空白，也不是外站）',
+          plainBack === '/materials', `实际 ${plainBack}`);
+
+        // ⚠️ 开放重定向：?back= 是用户可控的，绝不能被原样放进 href
+        for (const evil of [
+          'https://example.com',
+          '//example.com',
+          '/\\example.com',
+          '/materials/../../../etc/passwd',
+          'javascript:alert(1)',
+          '/nope',
+        ]) {
+          const r = await req('GET', `/materials/${materialId}?back=${encodeURIComponent(evil)}`);
+          const got = /class="back-link" href="([^"]+)"/.exec(r.text)?.[1] || '';
+          ok(`★ 恶意的 back=${evil.slice(0, 26)} 被挡掉（不把本站当跳板）`,
+            got === '/materials',
+            `★ 原样放行了：${got} —— 这是开放重定向`);
+        }
+
+        ok('★ 没筛选时列表链接不带 back（URL 保持干净）',
+          !/back=/.test((await req('GET', '/materials')).text));
+      }
+
+
       // ---- 「公开了但谁也看不到」必须在界面上说清楚 ----
       // 学校没从名单里选过的人**可以**勾「公开给同校」，但他公开出去的东西
       // 确定没有任何人看得到（community.js 的 sameSchool 对未验证校名直接 false）。

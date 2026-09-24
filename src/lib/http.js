@@ -614,6 +614,48 @@ export function randomId(bytes = 16) {
   return crypto.randomBytes(bytes).toString('hex');
 }
 
+/**
+ * 把请求里的 `?back=` 变成一个**敢直接放进 href** 的站内路径。
+ *
+ * ⚠️ 这个函数存在的全部意义就是挡开放重定向。`?back=` 是用户可控的，
+ *    原样拼进 <a href> 就等于把本站当成跳板：
+ *      `?back=https://坏网站`      → 直接跳走
+ *      `?back=//坏网站`            → 协议相对，也跳走
+ *      `?back=/\坏网站`            → 反斜杠，部分浏览器照样当 // 处理
+ *    而那个链接长在**我们自己的域名**下、还带着我们的样式，
+ *    看起来完全可信 —— 这是钓鱼最喜欢的一种。
+ *
+ * 规则：必须 / 开头、不能 // 或 /\ 开头、不含控制字符和反斜杠、
+ * 长度有上限、而且**前缀在白名单里**（只允许几个真实存在的板块，
+ * 把可回跳的面收窄）。任何一条不合规都返回 fallback ——
+ * 宁可回到安全的默认位置，也不放一个可疑地址出去。
+ *
+ * @param {string} raw 请求里的 back 参数（已经过 URL 解码）
+ * @param {string} fallback 不合法时用的安全目标
+ */
+export function safeBackPath(raw, fallback = '/') {
+  const s = String(raw ?? '').trim();
+  if (!s || s.length > 300) return fallback;
+  if (!s.startsWith('/')) return fallback;
+  if (s.startsWith('//') || s.startsWith('/\\')) return fallback;
+  // 控制字符（含换行）和反斜杠一律拒绝
+  // eslint-disable-next-line no-control-regex
+  if (/[\\\u0000-\u001f\u007f]/.test(s)) return fallback;
+
+  // 路径里不许有 `..` 段（只看 ? 之前那部分，所以 `?q=..` 这种正常查询不受影响）。
+  // `/materials/../../../etc/passwd` 其实还是**同源**的（浏览器会把它解析回本站
+  // 根目录），所以它不是开放重定向；但一个"返回上一步"的目标里出现 `..`
+  // 永远不是正常情况，挡掉不要钱。
+  const pathOnly = s.split('?')[0];
+  if (pathOnly.split('/').includes('..')) return fallback;
+
+  const ALLOWED = ['/materials', '/courses', '/assignments', '/timetable',
+    '/community', '/settings', '/import', '/calendar'];
+  const ok = ALLOWED.some((p) => s === p || s.startsWith(`${p}?`) || s.startsWith(`${p}/`))
+    || s === '/';
+  return ok ? s : fallback;
+}
+
 /** HTML 转义，模板里凡是插入用户数据都必须走这里 */
 export function escapeHtml(value) {
   if (value === null || value === undefined) return '';

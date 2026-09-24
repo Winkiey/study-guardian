@@ -111,6 +111,7 @@ ${pageHeader({
       course.term?.name ? escapeHtml(course.term.name) : '',
     ].filter(Boolean).join(' · '),
     breadcrumb: `<a href="/courses">课程</a> ${icon('chevronRight', 12)} ${escapeHtml(course.name)}`,
+    back: { href: '/courses', label: '返回课程' },
     actions: `
       <button type="button" class="btn btn--outline btn--sm" data-edit-course="${course.id}">${icon('edit', 16)}<span>编辑</span></button>
       <button type="button" class="btn btn--danger-ghost btn--sm" data-delete-course="${course.id}" data-course-name="${escapeHtml(course.name)}">${icon('trash', 16)}<span>删除</span></button>`,

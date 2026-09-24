@@ -67,6 +67,18 @@ export function materialsPage({
   const publishedHere = materials.filter((m) => m.published).length;
   const showSchoolWarning = !schoolVerified;
 
+  // ⚠️ 从列表点进某一份资料时，把**当前的筛选**一起带上。
+  //    不带的话详情页的「返回」只能回 /materials（全部课程）——
+  //    用户按课程筛过之后再点开一份资料，返回就把筛选丢了。
+  //    只在**真的筛过**时才加参数：没筛的时候 URL 保持干净，
+  //    而那时候返回目标本来就是 /materials。
+  const listQuery = new URLSearchParams();
+  if (filters.keyword) listQuery.set('q', filters.keyword);
+  if (filters.category) listQuery.set('category', filters.category);
+  if (filters.courseId) listQuery.set('courseId', String(filters.courseId));
+  const listUrl = listQuery.toString() ? `/materials?${listQuery.toString()}` : '/materials';
+  const backQuery = listUrl === '/materials' ? '' : `?back=${encodeURIComponent(listUrl)}`;
+
   const body = `
 ${pageHeader({
     title: '资料库',
@@ -139,7 +151,7 @@ ${materials.length === 0
           : '把老师发的课件传上来，之后不管在哪台设备上都能直接打开看，不用再翻微信/QQ 聊天记录。',
         action: `<button type="button" class="btn btn--primary" data-upload-material>${icon('upload', 17)}<span>上传资料</span></button>`,
       })
-      : `<ul class="material-list">${materials.map((m) => materialRow(m, schoolVerified)).join('')}</ul>
+      : `<ul class="material-list">${materials.map((m) => materialRow(m, schoolVerified, backQuery)).join('')}</ul>
 
 ${/* 批量公开。作用范围是**当前筛选**（分类/课程），不是整个资料库 ——
      资料库里常混着老师发的东西、带答案的、自己整理的笔记，
@@ -201,7 +213,7 @@ ${editFormTemplate}
  * ⚠️ 操作按钮放在 `<a>` **外面**：交互元素不能嵌套。放里面的话点「删除」
  * 会同时触发「打开这份资料」，键盘和读屏也会乱。
  */
-function materialRow(m, schoolVerified = true) {
+function materialRow(m, schoolVerified = true, backQuery = '') {
   // 分类（课件/作业/其他）和文件类型（演示文稿/PDF…）是**两回事**：
   // 前者是筛选用的维度，后者是"这是什么文件"。两个都有用，都放上。
   const metaParts = [m.categoryLabel, m.kindLabel, m.sizeLabel, m.updated_at?.slice(5, 10)]
@@ -217,7 +229,7 @@ function materialRow(m, schoolVerified = true) {
       : `<span class="badge badge--warn" title="你的学校还没从名单里选过，现在谁也看不到这份资料。去设置里选一所学校就会立刻生效。">${icon('alert', 12)} 还没人能看到</span>`;
 
   return `<li class="material-row" data-material="${m.id}">
-  <a class="material-row__link" href="/materials/${m.id}">
+  <a class="material-row__link" href="/materials/${m.id}${backQuery}">
     <span class="material-row__icon">${m.kindIcon}</span>
     <span class="material-row__body">
       <span class="material-row__title" title="${escapeHtml(m.original_name)}">${escapeHtml(m.title)}</span>
@@ -247,7 +259,8 @@ function materialRow(m, schoolVerified = true) {
 // ============================================================
 
 export function materialPreviewPage({
-  user, material, siblings, textContent, officeData, editFormTemplate = '', isOwner = true,
+  user, material, siblings, textContent, officeData, editFormTemplate = '',
+  isOwner = true, backHref = '/materials', backLabel = '返回资料库',
 }) {
   // 预览有缺憾时要如实告诉用户，并且给一个「重新转换」的入口。
   //
@@ -282,9 +295,11 @@ ${pageHeader({
     subtitle: `${escapeHtml(material.original_name)} · ${escapeHtml(material.kindLabel)} · ${escapeHtml(material.sizeLabel)}`,
     // 看别人的资料时，面包屑的第一格应该是「校友社区」而不是「资料库」——
     // 点「资料库」会回到自己那堆文件，和眼前这份毫无关系，等于把人带丢。
+    // 本人的话，第一格跟随「返回」的目标（筛过课程时就是那一屏）。
     breadcrumb: isOwner
-      ? `<a href="/materials">资料库</a> ${icon('chevronRight', 12)} ${escapeHtml(material.title)}`
+      ? `<a href="${escapeHtml(backHref)}">资料库</a> ${icon('chevronRight', 12)} ${escapeHtml(material.title)}`
       : `<a href="/community">校友社区</a> ${icon('chevronRight', 12)} ${escapeHtml(material.title)}`,
+    back: { href: backHref, label: backLabel },
     actions: `
       <a class="btn btn--outline btn--sm" href="/materials/${material.id}/raw?download=1">${icon('download', 16)}<span>下载原件</span></a>
       ${material.pdf_name ? `<a class="btn btn--outline btn--sm" href="/materials/${material.id}/pdf?download=1">${icon('download', 16)}<span>下载 PDF</span></a>` : ''}

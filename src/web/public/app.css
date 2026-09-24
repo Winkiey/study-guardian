@@ -628,6 +628,22 @@ hr { border: 0; border-top: 1px solid var(--c-border); margin: 18px 0; }
    6 · 页头
    ========================================================================== */
 .page-head { margin-bottom: 32px; }
+/* 「返回上一步」。单独占一行、放在标题上面 —— 用户反馈的是"网页和手机都
+   找不到返回"，所以它必须一眼就能看到，不能塞进右上角那堆按钮里
+   （那一片在手机上本来就会挤成两行）。
+   点击目标按手机来的：min-height 40px + 内边距，手指点得准。 */
+.back-link {
+  display: inline-flex; align-items: center; gap: 4px;
+  min-height: 40px;
+  padding: 0 12px 0 8px;
+  margin: 0 0 6px -8px;
+  border-radius: var(--radius-sm);
+  color: var(--c-text-2);
+  font-size: 13.5px; font-weight: 560;
+  text-decoration: none;
+}
+.back-link:hover { background: var(--c-surface-3); color: var(--c-primary); text-decoration: none; }
+.back-link svg { flex: none; }
 .breadcrumb {
   display: flex; align-items: center; gap: 5px;
   font-size: 13px; color: var(--c-text-3);
@@ -635,6 +651,13 @@ hr { border: 0; border-top: 1px solid var(--c-border); margin: 18px 0; }
 }
 .breadcrumb a { color: var(--c-text-2); }
 .breadcrumb a:hover { color: var(--c-primary); }
+@media (max-width: 640px) {
+  /* 手机上把面包屑收掉：它和上面那个「返回」说的是同一件事，
+     而面包屑在窄屏会折行、把标题往下挤。返回按钮留下来就够了。
+     ⚠️ 用 .page-head--has-back 这个类，而不是 CSS 的 :has() ——
+        这个项目其它地方没用过 :has()，没必要为这一处多要一个浏览器能力。 */
+  .page-head--has-back .breadcrumb { display: none; }
+}
 .page-head__row {
   display: flex; align-items: flex-end; justify-content: space-between;
   gap: 16px; flex-wrap: wrap;
