@@ -3,6 +3,11 @@
 /data/
 /logs/
 
+# 备份产物（scripts/backup.mjs 的默认输出目录）
+# 备份里就是一整份数据库 —— 和 /data/ 是同一类东西，凭什么它就该被提交。
+# ⚠️ 这条不只是"整洁"问题：`git add -A` 会把它整个扫进公开仓库。
+/backups/
+
 # 本地环境变量（含 SMTP 授权码、Bark Key 等敏感信息）
 .env
 .env.local

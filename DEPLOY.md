@@ -376,7 +376,20 @@ pm2 restart study-guardian
 
 ## 备份（强烈建议做）
 
-数据全在 `/opt/study-guardian/data` 一个目录里，备份就是打包这个目录。
+数据全在 `/opt/study-guardian/data` 一个目录里。但**别用 `tar` 直接打包它** ——
+这是最容易写、也最容易在**需要它的那一天**才发现是坏的那种备份：
+
+1. **WAL 模式**：新写的数据先落在 `data/app.db-wal` 里，主库文件可能只有几 KB。
+   直接拷 `app.db` 会得到一个**几乎空的库**（这个坑在本项目迁移时真实踩过：
+   app.db 4KB，真正的内容在 816KB 的 wal 里）。
+   `tar` 虽然会把 `-wal` 一起打包，但它是逐个文件读的 —— 打包过程中数据库被写入，
+   就会得到"库"和"wal"来自不同时刻的一对文件，能不能读出来全靠运气。
+2. **没有验证**：打完就完事了，没人知道里面那 4KB 的 app.db 是不是空的。
+
+所以用项目自带的脚本，它做的是 `VACUUM INTO`（原子、服务在跑也安全），
+而且**打完会把备份打开数一遍**，对不上就以非 0 退出。
+
+### 配自动备份
 
 ```bash
 crontab -e
@@ -385,14 +398,87 @@ crontab -e
 在末尾加上这一行（保存方式同 nano）：
 
 ```
-0 3 * * * cd /opt/study-guardian && tar czf /root/backup-$(date +\%F).tgz data && find /root -name 'backup-*.tgz' -mtime +14 -delete
+0 3 * * * cd /opt/study-guardian && node scripts/backup.mjs >> backups/backup.log 2>&1
 ```
 
-这样每天凌晨 3 点自动打包一次，并只保留最近 14 天。
+`--keep` 默认保留最近 14 份，轮换脚本自己会做，不需要再写一个 `find -delete`。
+
+> **为什么日志要重定向到文件**：cron 只在有输出时才给你发信，而很多机器的
+> 邮件是没配的 —— 那样失败就**悄无声息**了。写进 `backups/backup.log` 之后，
+> 出问题能翻出来看。
+
+### 确认它到底有没有在跑
+
+这是**唯一**该信的东西 —— 别凭"我配过 cron"就以为有备份：
+
+```bash
+cd /opt/study-guardian && node scripts/backup.mjs --status
+```
+
+- 一切正常时它会说 `✓ 备份是新的`，并打出最近一次的时间、内容（用户/课程/资料/作业/考试）
+  和总量，退出码 **0**。
+- 一份都没有、或者最新那份超过 36 小时（`--max-age-hours` 可调）时，
+  它会**以非 0 退出**并告诉你先去看 `crontab -l` 和 `backups/backup.log`。
+
+（所以 `--status` 也可以直接放进 cron 当监控用 —— 一个**悄悄失败**的备份
+比没有备份更危险：你以为有。）
+
+想看全部备份：
+
+```bash
+node scripts/backup.mjs --list
+```
+
+### 三种备份的取舍
+
+| 命令 | 备了什么 | 什么时候用 |
+| --- | --- | --- |
+| `node scripts/backup.mjs` | 数据库 + 头像 | **每天**用这个。小、快，而数据库是唯一无法重建的东西 |
+| `node scripts/backup.mjs --with-files` | 上面 + 课件原文件 | 整机搬家前跑一次。课件可能很大，而且多数能从老师那儿再拿到 |
+| `node scripts/backup.mjs --keep 30` | 同上，保留 30 份 | 想留更久 |
+
+> **默认不备课件是刻意的**：恢复时缺了它们，库里的记录会指向不存在的文件
+> （资料列表还在，但点开打不开）。所以这是"日常备份"和"搬家"两种用途的取舍，
+> 不是遗漏 —— 真要搬家就加 `--with-files`。
+
+### 恢复
+
+```bash
+cd /opt/study-guardian
+pm2 stop study-guardian                  # ⚠️ 必须先停服务
+cp -a data data.before-restore           # 先把现在这份留个底，万一恢复错了还能回来
+cp backups/2026-09-21_030000/app.db data/app.db
+rm -f data/app.db-wal data/app.db-shm    # ⚠️ 旧库的 wal 必须删掉
+cp -a backups/2026-09-21_030000/avatars/. data/avatars/   # 如果备份里有
+pm2 start study-guardian
+```
+
+**没有提供自动恢复脚本，这是有意的**：恢复会覆盖正在用的数据库，而那是最容易
+把"还有救"变成"没救了"的一步。上面这几行每一步都能看懂、也能在动手前核对，
+比一个 `--restore` 让人放心。
+
+> `.env` **不在备份里**。里面有会话密钥和邀请码 —— 在公开仓库附近流转的压缩包
+> 里放密钥不是好主意。这两样丢了都不致命：密钥丢了所有人重新登录一次，
+> 邀请码丢了重新设一个。请自己在本地留一份。
+
+### 把备份弄到本机
+
+备份是**目录**（这个项目零依赖，Node 里没有内置的压缩/打包写入）。
+
+```bash
+# 在服务器上：把**已经做完的**备份目录打个包（不是 data 目录！）
+cd /opt/study-guardian && tar czf /root/backup-$(date +%F).tgz -C backups 2026-09-21_030000
+```
+
+然后从**你的电脑**上拉下来：
+
+```bash
+scp root@你的公网IP:/root/backup-*.tgz .
+```
 
 > ⚠️ 云服务器是**租的**，到期不续费数据就没了。
 > 而且备份和原数据在同一台机器上，机器本身坏了两份都没了。
-> **偶尔下载一份到本地**（用 WinSCP 或 `scp root@你的IP:/root/backup-*.tgz .`）更稳妥。
+> **定期下载一份到本地**才是真的备份。
 
 ---
 
