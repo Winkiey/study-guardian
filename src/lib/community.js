@@ -17,6 +17,7 @@
 import { get, all } from '../db/index.js';
 import { schoolIsVerified } from './auth.js';
 import { getSetting, setSetting } from './settings.js';
+import { isNicknameBanned, safeDisplayName } from './nickname.js';
 
 /**
  * 两个人的学校是不是同一所、而且都来自名单。
@@ -43,9 +44,13 @@ export function publicProfile(userId) {
   // ⚠️ 刻意**不返回 username**。用户名是登录凭据，
   //    同校陌生人看到之后可以拿去试密码；社区里只需要认得出人，
   //    昵称 + 头像就够了。要加字段之前先想清楚这一点。
+  //
+  // ⚠️ displayName 走 safeDisplayName（禁词过滤）。这里是**唯一的出口**：
+  //    别人看到的昵称都从 publicProfile / communityFeed / alumniList 来，
+  //    所以过滤放在这三处就等于全站生效，不用去改用户存储的数据。
   return {
     id: row.id,
-    displayName: row.display_name || '',
+    displayName: safeDisplayName(row.display_name),
     school: row.school || '',
     college: row.college || '',
     major: row.major || '',
@@ -199,7 +204,7 @@ export function communityFeed(viewerId, opts = {}) {
     course: r.course_name ? { name: r.course_name, color: r.course_color || '' } : null,
     owner: {
       id: r.owner_id,
-      displayName: r.display_name || '',
+      displayName: safeDisplayName(r.display_name),
       college: r.college || '',
       major: r.major || '',
       hasAvatar: Boolean(r.avatar_ext),
@@ -284,7 +289,14 @@ export function markCommunitySeen(userId) {
  */
 export function publishBlocker(userId) {
   const me = get('SELECT display_name FROM users WHERE id = ?', userId);
-  if (String(me?.display_name || '').trim()) return '';
+  const raw = String(me?.display_name || '').trim();
+  // 被禁的昵称和"没昵称"在这一步是同一件事：同学看不到你的名字，
+  // 所以不能公开（否则卡片上写着「（没填昵称） 公开了这份资料」）。
+  if (isNicknameBanned(raw)) {
+    return '你的昵称里有不允许出现的称呼，现在同学看不到它，所以还不能公开资料。'
+      + '去「设置 → 账号 → 个人资料」改一个昵称（改完立刻就能公开）。';
+  }
+  if (raw) return '';
   return '先在「设置 → 账号 → 个人资料」里起个昵称再公开 —— '
     + '校友社区里只显示昵称和头像，没有昵称的话同学不知道这份东西是谁给的。';
 }
@@ -352,7 +364,7 @@ export function alumniList(viewerId, opts = {}) {
     school, viewerId, limit,
   ).map((r) => ({
     id: r.id,
-    displayName: r.display_name || '',
+    displayName: safeDisplayName(r.display_name),
     college: r.college || '',
     major: r.major || '',
     hasAvatar: Boolean(r.avatar_ext),

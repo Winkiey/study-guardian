@@ -13,6 +13,7 @@ import config from '../config.js';
 import { get, run } from '../db/index.js';
 import { parseCookies, serializeCookie, unauthorized } from './http.js';
 import { isKnownSchool } from '../data/schools.js';
+import { nicknameProblem } from './nickname.js';
 
 export const SESSION_COOKIE = 'sg_session';
 const SESSION_DAYS = 30;
@@ -311,6 +312,14 @@ export function createUser({
 }) {
   const name = normalizeUsername(username);
   const hash = hashPassword(password);
+
+  // ⚠️ 注册这条路**不经过** normalizeProfile，所以禁词要在这里也挡一道。
+  //    放在 createUser 里而不是只放路由里，是为了让「建账号」这个动作
+  //    本身就不可能建出违禁昵称 —— 网页、命令行脚本、以后任何新入口都跑不掉。
+  //    判断本身仍然只有一处：nickname.js 的 nicknameProblem。
+  const nickProblem = nicknameProblem(displayName);
+  if (nickProblem) throw new Error(nickProblem);
+
   try {
     const { lastInsertRowid } = run(
       `INSERT INTO users (username, password_hash, display_name, school, college, major)
@@ -394,6 +403,11 @@ export function normalizeProfile(input = {}) {
   const school = clean(input.school, PROFILE_LIMITS.school, '学校');
   const college = clean(input.college, PROFILE_LIMITS.college, '学院');
   const major = clean(input.major, PROFILE_LIMITS.major, '专业');
+
+  // 禁词表和判断都在 nickname.js 里（规则只写一处）。
+  // 注册那条路走的是 createUser，那边也调同一个函数 —— 两条路一条口径。
+  const nameProblem = nicknameProblem(displayName);
+  if (nameProblem) throw new Error(nameProblem);
 
   if (school && !isKnownSchool(school)) {
     throw new Error(`「${school}」不在学校名单里。请从提示里选一个，或者把校名写全 ——`

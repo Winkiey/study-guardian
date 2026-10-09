@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import config from '../config.js';
 import { escapeHtml } from '../lib/http.js';
+import { bannedWordIn, isNicknameBanned } from '../lib/nickname.js';
 
 // ============================================================
 // 静态资源版本号
@@ -233,6 +234,7 @@ export function renderPage({ title, active, body, user, scripts = '', stats = {}
   </aside>`}
 
   <main class="main" id="main">
+    ${nicknameBannedNotice(user)}
     ${body}
   </main>
 
@@ -281,6 +283,40 @@ function navBadge(key, stats) {
   // 永远挂着的角标等于没有角标，用户两天就学会无视它。
   if (key === 'community' && stats.communityNew > 0) return String(stats.communityNew);
   return '';
+}
+
+/**
+ * 昵称被禁时的全站提示。
+ *
+ * 为什么必须放在 layout（每一页都渲染）而不是各页面自己加：
+ * **被禁的人自己看不出来**。他打开设置，昵称还好好地写在那里；
+ * 只有**别人**那边看到的才是「（没填昵称）」。所以必须有一个他一定会
+ * 撞见的地方 —— 而且手机上也要看得见，layout 正好同时满足这两点。
+ *
+ * 文案里刻意说清三件事：为什么（会读到别人身上）、现在什么后果
+ * （同学看不到、不能公开）、怎么恢复（改一个词，立刻生效，数据没删）。
+ */
+function nicknameBannedNotice(user) {
+  const raw = String(user?.display_name || '');
+  if (!isNicknameBanned(raw)) return '';
+  const hit = escapeHtml(bannedWordIn(raw));
+  return `
+  <div class="notice notice--warn" data-nickname-banned>
+    <div class="notice__icon">${icon('alert', 18)}</div>
+    <div class="notice__body">
+      <strong>你的昵称里有不允许出现的称呼</strong>
+      <p>
+        「${hit}」这类称呼（亲属、主仆那种）会让别人不舒服 —— 社区里的资料卡会写成
+        「<em>昵称</em> 公开了这份资料」，读起来是把同学当下辈。
+        所以你的昵称现在<strong>同学看不到</strong>，在社区里显示成「（没填昵称）」，
+        这期间也<strong>不能公开</strong>新资料。
+      </p>
+      <p class="small">
+        去<a href="/settings#system">设置 → 账号 → 个人资料</a>改一个就好 ——
+        <strong>改完立刻恢复</strong>，不用做别的。你原来填的那几个字不会被自动删掉。
+      </p>
+    </div>
+  </div>`;
 }
 
 /**

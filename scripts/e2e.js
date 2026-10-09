@@ -3074,6 +3074,132 @@ async function run() {
         if (noNameId) await noname('DELETE', `/api/materials/${noNameId}`);
       }
 
+      // ---- 昵称禁词：写入这一侧挡住 ----
+      {
+        const badName = `E2EBan${Math.floor(Math.random() * 100000)}`;
+        const banned = createClient(baseUrl);
+        const reg = await banned('POST', '/register', {
+          form: {
+            username: badName, password: 'banned123456', password2: 'banned123456',
+            displayName: '爸爸', inviteCode: E2E_INVITE_CODE,
+          },
+        });
+        ok('★ 注册时不能用违禁昵称（400 + 点名是哪个词）',
+          reg.status !== 302 && /爸爸/.test(reg.text),
+          '★ 用「爸爸」注册成功了 —— 页面上就会出现「爸爸 公开了这份资料」');
+
+        // 对照组：同样的账号换个正常昵称就能注册 ——
+        // 没有这一条的话，上面那条会被"注册整个坏掉了"满足。
+        const goodReg = await createClient(baseUrl)('POST', '/register', {
+          form: {
+            username: badName, password: 'banned123456', password2: 'banned123456',
+            displayName: '正常人', inviteCode: E2E_INVITE_CODE,
+          },
+        });
+        ok('★ 对照：换成正常昵称就能注册（不是注册功能坏了）',
+          goodReg.status === 302, `状态码 ${goodReg.status}`);
+
+        // 改资料时同样挡住，而且被拒之后原来的昵称没被改坏
+        const setBad = await req('POST', '/api/profile', { json: { displayName: '叫我主人' } });
+        ok('★ 改资料时也不许用违禁昵称',
+          setBad.status === 400 && /主人/.test(setBad.json?.error || ''),
+          `状态码 ${setBad.status}，error=${setBad.json?.error}`);
+        const stillMe = await req('GET', '/api/profile');
+        ok('★ 被拒之后原来的昵称没被改坏',
+          (stillMe.json?.user?.display_name ?? stillMe.json?.displayName) !== '叫我主人');
+      }
+
+      // ---- 昵称禁词：**已经存在**的违禁昵称要封禁，并给他改的机会 ----
+      // 用户的要求：「对于已设置的现有用户昵称进行强行封禁并给与修改机会」。
+      // 这里直接把库里那行改成违禁值，模拟"规则上线之前就填好了"的老账号 ——
+      // 走 API 是造不出这种数据的（写入侧已经挡住了）。
+      {
+        const legacyName = `E2ELegacy${Math.floor(Math.random() * 100000)}`;
+        const legacy = createClient(baseUrl);
+        await legacy('POST', '/register', {
+          form: {
+            username: legacyName, password: 'legacy123456', password2: 'legacy123456',
+            displayName: '乖乖', inviteCode: E2E_INVITE_CODE,
+          },
+        });
+        // ⚠️ 必须让他和我**同校**：不然他根本不会出现在我的社区里，
+        //    下面那条"别人看不到违禁昵称"就会因为"这个人压根不在页面上"
+        //    而白白通过 —— 这正是第一版的问题（A/B 注射 bug 之后一条都没红，
+        //    才发现断言是空转的）。
+        // 注意 /api/profile 是**整体覆盖**：只传 school 会把昵称清掉，
+        // 所以要一起传。
+        await legacy('POST', '/api/profile', {
+          json: { displayName: '乖乖', school: '东北财经大学' },
+        });
+
+        // 先正常公开一份资料（封禁之后就不许公开了），这样他才会进我的社区流
+        const up = multipart(
+          { title: '老账号的资料', category: 'courseware' },
+          { field: 'file', filename: 'l.txt', type: 'text/plain', data: Buffer.from('x') },
+        );
+        const upRes = await legacy('POST', '/api/materials', {
+          body: up.body, headers: { 'Content-Type': up.contentType },
+        });
+        const legacyMatId = upRes.json?.material?.id || upRes.json?.id;
+        await legacy('PATCH', `/api/materials/${legacyMatId}`, { json: { published: 1 } });
+
+        // 他先以正常昵称出现在我的社区里 —— 这是"封禁之后要挡住"的前提
+        const feedBefore = await req('GET', '/community');
+        ok('（前提）这个人以正常昵称出现在我的社区里（否则下面那条是空转的）',
+          feedBefore.text.includes('乖乖'),
+          '他不在这页上，那"看不到违禁昵称"就无从谈起');
+
+        // ⚠️ 绕过写入校验，直接把库里的昵称改成违禁值（模拟老数据）
+        const { DatabaseSync } = await import('node:sqlite');
+        const ldb = new DatabaseSync(path.join(dataDir, 'app.db'));
+        ldb.prepare('UPDATE users SET display_name = ? WHERE username = ?').run('爸爸', legacyName);
+        ldb.close();
+
+        const home = await legacy('GET', '/');
+        ok('★★ 老账号的违禁昵称：每一页顶部都告诉他，并给出改的地方',
+          home.text.includes('data-nickname-banned')
+          && /不允许出现的称呼/.test(home.text)
+          && /个人资料/.test(home.text),
+          '★ 他看不见自己被封了 —— 只有别人那边看到变成「（没填昵称）」，他自己毫无察觉');
+
+        ok('★ 提示里点名了是哪个词（不然他不知道改哪儿）',
+          /爸爸/.test(home.text));
+
+        ok('★ 封禁期间不能公开资料（卡片会写成「（没填昵称）公开了这份资料」）',
+          (await legacy('POST', '/api/materials/publish', { json: { published: 1 } })).status === 400);
+
+        // ★ 这一条才是重点：他**确实还在我的社区里**（那份资料早已公开），
+        //   但昵称不该漏出来。
+        //   ⚠️ 必须排在下面那条「取消公开」检查**之前** —— 那条会把他的资料
+        //      全撤下来，而封禁期间他又公开不了，撤了就再也回不到这份状态。
+        const board = await req('GET', '/community');
+        ok('（前提）封禁之后他仍然在我的社区流里（资料还公开着）',
+          board.text.includes('老账号的资料'),
+          '他不在这页上了 —— 下面那条又变成了空转');
+        ok('★★ 同校同学看到的是「（没填昵称）」，不是那个违禁昵称',
+          !board.text.includes('爸爸'),
+          '★ 违禁昵称漏到别人那一侧了 —— safeDisplayName 有一条路没接上');
+
+        ok('★ 但「取消公开」不受影响（不能把人锁死在公开状态）',
+          (await legacy('POST', '/api/materials/publish', { json: { published: 0 } })).status === 200);
+
+        // 给他改的机会：改一个正常昵称 → 立刻恢复
+        const fixed = await legacy('POST', '/api/profile', { json: { displayName: '改好了' } });
+        ok('★ 改一个正常昵称就能改（给与修改机会）', fixed.status === 200);
+        const homeAfter = await legacy('GET', '/');
+        ok('★ 改完之后提示立刻消失（不用等重启、不用找管理员）',
+          !homeAfter.text.includes('data-nickname-banned'));
+        ok('★ 而且立刻就能公开资料了',
+          (await legacy('POST', '/api/materials/publish', { json: { published: 1 } })).status === 200);
+        await legacy('POST', '/api/materials/publish', { json: { published: 0 } });
+
+        // 对照：昵称正常的人（我）从来不该看到这个提示
+        ok('★ 对照：昵称正常的人看不到这个提示（否则它是写死的）',
+          !(await req('GET', '/')).text.includes('data-nickname-banned'));
+
+        if (legacyMatId) await legacy('DELETE', `/api/materials/${legacyMatId}`);
+      }
+
       // 收尾：把自己造的两份资料**删掉**（不只是取消公开）。
       // 后面的用例在数磁盘上的文件个数，多留两个会让那边莫名其妙地红，
       // 而报错信息完全指不到这里。
