@@ -12,7 +12,7 @@
  */
 
 /** 当前结构版本号，配合 PRAGMA user_version 做迁移 */
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;
 
 /**
  * 课程标记色的默认值。
@@ -137,6 +137,30 @@ export const MIGRATIONS = {
   9: [
     (db) => db.exec('DROP INDEX IF EXISTS idx_users_username_lower'),
   ],
+  // v10：调休 / 停课覆盖。
+  //
+  // 课表原本是「每周固定重复」的，但法定节假日调休会让某一周**整周都错**——
+  // 而且错得很自然（看起来就是一张正常课表，你不会怀疑它）。
+  // 一张表存两种覆盖：off（这天停课）、swap（这天按另一个星期几的课表上）。
+  //
+  // 用 `CREATE TABLE IF NOT EXISTS` 是幂等的，重跑安全。
+  // 独立建表而不是给 course_sessions 加列：覆盖是**按天**的，
+  // 而 sessions 是"每周几+第几节"的模板，两者的粒度根本不同。
+  10: [
+    (db) => db.exec(`
+      CREATE TABLE IF NOT EXISTS schedule_overrides (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        date       TEXT NOT NULL,
+        kind       TEXT NOT NULL,
+        swap_to    INTEGER,
+        note       TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_overrides_user_date
+        ON schedule_overrides(user_id, date);
+    `),
+  ],
 };
 
 /** 缺了才加，已经有了就跳过（让迁移可以安全重跑） */
@@ -196,6 +220,25 @@ CREATE TABLE IF NOT EXISTS terms (
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 CREATE INDEX IF NOT EXISTS idx_terms_user ON terms(user_id, is_active DESC);
+
+-- ============================================================
+-- 调休 / 停课覆盖（v10）。
+--
+-- 法定节假日调休会让课表的某一周**整周都错**，而固定周重复表达不了
+-- 「10 月 1 日至 7 日放假」「10 月 11 日上周三的课」这种通知。
+-- 一天最多一条（UNIQUE），因为一天不可能既停课又调课。
+-- ============================================================
+CREATE TABLE IF NOT EXISTS schedule_overrides (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  date       TEXT NOT NULL,
+  kind       TEXT NOT NULL,              -- 'off' 停课 / 'swap' 按另一个星期几上
+  swap_to    INTEGER,                    -- kind='swap' 时：1-7（周一到周日）
+  note       TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_overrides_user_date
+  ON schedule_overrides(user_id, date);
 
 -- ============================================================
 -- 课程

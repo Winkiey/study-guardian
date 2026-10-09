@@ -26,6 +26,7 @@ import { slidesDirFor } from './materials.js';
 const USER_TABLES = [
   ['terms', '学期'],
   ['courses', '课程'],
+  ['schedule_overrides', '调休/停课'],
   ['materials', '课件'],
   ['assignments', '作业'],
   ['reminders', '提醒'],

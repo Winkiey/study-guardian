@@ -231,6 +231,14 @@ async function seedUserData(userId) {
   );
   const courseId = db.scalar('SELECT id FROM courses WHERE user_id = ? ORDER BY id DESC LIMIT 1', userId);
 
+  // 调休/停课覆盖（v10 加的表）。这里必须**真的造一行**：
+  // 下面那条"删除前每张表都得有数据"的守卫会让漏掉的表当场暴露，
+  // 而如果只是让它数到 0，那条断言就变成空转的。
+  db.run(
+    'INSERT INTO schedule_overrides (user_id, date, kind, note) VALUES (?, ?, ?, ?)',
+    userId, '2025-10-01', 'off', '国庆',
+  );
+
   // 真的写一个文件到 uploads，再写两个派生产物到 cache
   //
   // 注意用 saved.relPath 而不是 saved.storedName：库里那一列存的是**相对路径**
@@ -284,11 +292,24 @@ async function seedUserData(userId) {
   };
 }
 
-/** 数一遍某个用户名下各类数据的行数 */
+/**
+ * 数一遍某个用户名下各类数据的行数。
+ *
+ * ⚠️ 表名从**数据库结构**里现读（凡是带 user_id 列的表），不手写一份。
+ *    手写的那份就是 account.js 的 USER_TABLES 的第二个副本：加一张新表时
+ *    必然漏一个，而漏掉的那半正是"注销了，东西还在"。
+ *    （v10 加 schedule_overrides 的时候，这个副本和 account.js 两边都要改，
+ *      其中一边就是靠这条守卫顶出来的。）
+ */
 function countAll(userId) {
+  const tables = db.all(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+  )
+    .map((r) => r.name)
+    .filter((t) => db.all(`PRAGMA table_info(${t})`).some((c) => c.name === 'user_id'));
+
   const out = {};
-  for (const [table] of [['terms'], ['courses'], ['materials'], ['assignments'],
-    ['reminders'], ['notify_channels'], ['notify_log'], ['settings']]) {
+  for (const table of tables) {
     out[table] = Number(db.scalar(`SELECT COUNT(*) FROM ${table} WHERE user_id = ?`, userId) || 0);
   }
   return out;
@@ -337,11 +358,13 @@ describe('注销账号', () => {
     assert.equal(result.username, u.username);
     assert.deepEqual(result.counts, before, '返回的行数应该和删除前数到的一致');
 
-    // 该用户的行全没了
-    assert.deepEqual(countAll(u.id), {
-      terms: 0, courses: 0, materials: 0, assignments: 0,
-      reminders: 0, notify_channels: 0, notify_log: 0, settings: 0,
-    });
+    // 该用户的行全没了。**逐张表断言**，不再手写一份表名清单 ——
+    // 手写的那份会和 countAll 一样迟早漏掉新表。
+    const after = countAll(u.id);
+    assert.ok(Object.keys(after).length > 0, '（前提）确实数到了表，否则下面那条是空转的');
+    for (const [table, n] of Object.entries(after)) {
+      assert.equal(n, 0, `★ 注销之后 ${table} 里还剩 ${n} 行`);
+    }
     assert.equal(auth.findUserByUsername(u.username), undefined);
     assert.equal(db.scalar('SELECT COUNT(*) FROM users WHERE id = ?', u.id), 0);
 

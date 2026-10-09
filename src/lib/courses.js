@@ -10,6 +10,7 @@ import { notFound } from './http.js';
 import { DEFAULT_COURSE_COLOR } from '../db/schema.js';
 import { expandCourseSessions, termProgress, weekOfDate } from './weeks.js';
 import { addDays, startOfWeek, todayStr } from './datetime.js';
+import { applyOverrides, overridesInRange } from './schedule-overrides.js';
 
 // ============================================================
 // 学期
@@ -567,6 +568,14 @@ export function deleteException(userId, id) {
 /**
  * 取某个日期区间内所有课的安排。
  * 内部先把每门课的上课时间展开成具体日期，再统一排序。
+ *
+ * ⚠️ 调休 / 停课覆盖在这里统一生效 —— 这是**唯一**的展开入口，
+ *    今天、本周、未来 N 天全都经过它，所以覆盖只要接在这里，
+ *    首页和课程表就不可能各显示一套。
+ *
+ * 实现上有个必须的细节：为了支持「这天按周四的课表上」，
+ * 展开的区间要**往前多铺 6 天**，否则查"今天"（区间只有一天）时
+ * 找不到源星期几的课，调休就会静默失效。铺完再按原区间裁掉。
  */
 export function occurrencesInRange(userId, rangeStart, rangeEnd, { termId } = {}) {
   const term = termId
@@ -594,25 +603,31 @@ export function occurrencesInRange(userId, rangeStart, rangeEnd, { termId } = {}
   const sessionsByCourse = groupBy(sessions, 'course_id');
   const exceptionsByCourse = groupBy(exceptions, 'course_id');
 
-  const occurrences = [];
+  // 往前多铺 6 天：调休的来源（"按周四上"的那个周四）可能在区间之外。
+  const padStart = addDays(rangeStart, -7);
+
+  const raw = [];
   for (const course of courses) {
-    occurrences.push(
+    raw.push(
       ...expandCourseSessions({
         course,
         sessions: sessionsByCourse.get(course.id) || [],
         exceptions: exceptionsByCourse.get(course.id) || [],
         termStart: term.start_date,
-        rangeStart,
+        rangeStart: padStart,
         rangeEnd,
       }),
     );
   }
 
+  const byDate = overridesInRange(userId, padStart, rangeEnd);
+  const occurrences = applyOverrides(raw, byDate, { from: rangeStart, to: rangeEnd });
+
   occurrences.sort((a, b) => (a.date === b.date
     ? a.startTime.localeCompare(b.startTime)
     : a.date.localeCompare(b.date)));
 
-  return { term, occurrences };
+  return { term, occurrences, overrides: byDate };
 }
 
 /** 今天的课 */
