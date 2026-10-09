@@ -84,8 +84,11 @@ export function listAssignments(userId, opts = {}) {
 export function decorateAssignment(row) {
   if (!row) return row;
   const urgency = urgencyOf(row.due_at);
+  const isExam = row.kind === 'exam';
   return {
     ...row,
+    isExam,
+    kindLabel: isExam ? '考试' : '作业',
     statusLabel: STATUS_LABELS[row.status] || row.status,
     priorityLabel: PRIORITY_LABELS[row.priority] ?? '中',
     urgency,
@@ -93,6 +96,9 @@ export function decorateAssignment(row) {
     dueLabel: row.due_at ? row.due_at.slice(0, 16).replace('T', ' ') : '无截止时间',
     dueDistance: row.due_at ? humanizeDistance(row.due_at) : '',
     isOverdue: urgency === 'overdue' && row.status !== 'done',
+    // 考试的时间点是**开考**，作业的是**截止** —— 同一个字段，
+    // 在界面上必须说成不同的话，否则「明天截止」会让人以为还有一整天。
+    dueWord: isExam ? '开考' : '截止',
     offsetsList: String(row.remind_offsets || '')
       .split(',')
       .map((s) => s.trim())
@@ -121,12 +127,29 @@ export function getAssignment(userId, id) {
   return decorated;
 }
 
+/**
+ * 考试默认的提醒节奏：提前一周、提前一天、**当天早上**。
+ *
+ * 和作业不一样，是有道理的：作业是"还有多久要交"，越近越有用；
+ * 考试是"到点就得坐在考场里"，提前一周是为了留复习时间，
+ * 当天早上是为了别睡过头 / 别忘带证件。三件事的用处各不相同。
+ *
+ * ⚠️ 'morning' 不是分钟数（见 scheduler.js 的 MORNING_TOKEN）：
+ *    早 7 点对 8 点的考试是提前 60 分钟，对下午 2 点的是 420 分钟 ——
+ *    同一个意思，分钟数却跟着考试时间变，所以只能是一个记号。
+ */
+export const EXAM_REMIND_OFFSETS = '10080,1440,morning';
+/** 作业默认（沿用原来的，不动） */
+export const HOMEWORK_REMIND_OFFSETS = '1440,120';
+
 export function createAssignment(userId, data) {
+  const kind = data.kind === 'exam' ? 'exam' : 'homework';
   const { lastInsertRowid } = run(
     `INSERT INTO assignments
        (user_id, course_id, title, description, due_at, status, priority, progress,
-        full_score, weight, material_id, remind_offsets, notify_channels)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        full_score, weight, material_id, remind_offsets, notify_channels,
+        kind, location, exam_format, exam_scope)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     userId,
     data.courseId ? Number(data.courseId) : null,
     String(data.title || '').trim(),
@@ -138,8 +161,13 @@ export function createAssignment(userId, data) {
     toNumberOrNull(data.fullScore) ?? 100,
     toNumberOrNull(data.weight),
     data.materialId ? Number(data.materialId) : null,
-    data.remindOffsets ?? '1440,120',
+    // 没点名提前量时按类型给默认值：考试的节奏和作业不一样
+    data.remindOffsets ?? (kind === 'exam' ? EXAM_REMIND_OFFSETS : HOMEWORK_REMIND_OFFSETS),
     data.notifyChannels || '',
+    kind,
+    String(data.location || '').trim(),
+    String(data.examFormat || '').trim(),
+    String(data.examScope || '').trim(),
   );
 
   syncAssignmentReminders(lastInsertRowid);
@@ -167,6 +195,7 @@ export function updateAssignment(userId, id, data) {
        course_id = ?, title = ?, description = ?, due_at = ?, status = ?, priority = ?,
        progress = ?, submitted_at = ?, score = ?, full_score = ?, weight = ?,
        material_id = ?, remind_offsets = ?, notify_channels = ?,
+       kind = ?, location = ?, exam_format = ?, exam_scope = ?,
        updated_at = datetime('now','localtime')
      WHERE id = ? AND user_id = ?`,
     data.courseId === undefined ? row.course_id : (data.courseId ? Number(data.courseId) : null),
@@ -183,6 +212,10 @@ export function updateAssignment(userId, id, data) {
     data.materialId === undefined ? row.material_id : (data.materialId ? Number(data.materialId) : null),
     data.remindOffsets ?? row.remind_offsets,
     data.notifyChannels ?? row.notify_channels,
+    data.kind === undefined ? row.kind : (data.kind === 'exam' ? 'exam' : 'homework'),
+    data.location === undefined ? row.location : String(data.location || '').trim(),
+    data.examFormat === undefined ? row.exam_format : String(data.examFormat || '').trim(),
+    data.examScope === undefined ? row.exam_scope : String(data.examScope || '').trim(),
     id,
     userId,
   );

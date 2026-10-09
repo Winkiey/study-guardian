@@ -12,7 +12,7 @@
  */
 
 /** 当前结构版本号，配合 PRAGMA user_version 做迁移 */
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 11;
 
 /**
  * 课程标记色的默认值。
@@ -160,6 +160,22 @@ export const MIGRATIONS = {
       CREATE UNIQUE INDEX IF NOT EXISTS idx_overrides_user_date
         ON schedule_overrides(user_id, date);
     `),
+  ],
+  // v11：考试。
+  //
+  // 考试**不单独建表**，而是给 assignments 加一个 kind='exam'。
+  // 理由：作业那套东西（提醒生成、通知渠道、待办统计、日历导出、
+  // 「已完成」勾选）全部是围着 assignments 建的，考试需要的也是同一套 ——
+  // 单独建表就得把每一处都复制一遍，而每复制一处就多一个会漏的地方。
+  // 代价是几张只有考试才用的列（地点/形式/范围），留空即可。
+  //
+  // ⚠️ 默认值 'homework' 不能省：老数据的 kind 必须是作业，
+  //    否则它们会突然被当成考试（提醒节奏也跟着变）。
+  11: [
+    (db) => addColumnIfMissing(db, 'assignments', 'kind', "TEXT NOT NULL DEFAULT 'homework'"),
+    (db) => addColumnIfMissing(db, 'assignments', 'location', "TEXT NOT NULL DEFAULT ''"),
+    (db) => addColumnIfMissing(db, 'assignments', 'exam_format', "TEXT NOT NULL DEFAULT ''"),
+    (db) => addColumnIfMissing(db, 'assignments', 'exam_scope', "TEXT NOT NULL DEFAULT ''"),
   ],
 };
 
@@ -374,6 +390,14 @@ CREATE TABLE IF NOT EXISTS assignments (
   material_id     INTEGER REFERENCES materials(id) ON DELETE SET NULL,
   remind_offsets  TEXT NOT NULL DEFAULT '1440,120',
   notify_channels TEXT NOT NULL DEFAULT '',
+  -- 考试（v11）。kind='exam' 时下面三列才有内容。
+  -- 考试不单独建表：提醒生成、通知渠道、待办统计、日历导出全都是围着
+  -- 这张表建的，考试需要的也是同一套；单独建表就得处处复制，而每复制
+  -- 一处就多一个会漏的地方。
+  kind            TEXT NOT NULL DEFAULT 'homework',
+  location        TEXT NOT NULL DEFAULT '',
+  exam_format     TEXT NOT NULL DEFAULT '',
+  exam_scope      TEXT NOT NULL DEFAULT '',
   created_at      TEXT NOT NULL DEFAULT (datetime('now','localtime')),
   updated_at      TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );

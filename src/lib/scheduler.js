@@ -57,14 +57,22 @@ export function syncAssignmentReminders(assignmentId) {
     ? get('SELECT name FROM courses WHERE id = ?', assignment.course_id)
     : null;
 
-  const offsets = parseOffsets(assignment.remind_offsets);
+  const spec = parseRemindSpec(assignment.remind_offsets);
   const now = nowStr();
   let created = 0;
   let skipped = 0;
 
-  for (const offset of offsets) {
-    const fireAt = addMinutes(assignment.due_at, -offset);
+  // 分钟数和「当天早上」放在一起排队，按实际触发时刻从晚到早处理 ——
+  // 这样日志和提醒列表的顺序和它们真正会响的顺序一致。
+  const plan = spec.offsets.map((n) => ({ spec: n, fireAt: reminderFireAt(assignment.due_at, n) }));
+  if (spec.morning) plan.push({ spec: MORNING_TOKEN, fireAt: reminderFireAt(assignment.due_at, MORNING_TOKEN) });
+  plan.sort((a, b) => String(b.fireAt).localeCompare(String(a.fireAt)));
+
+  for (const item of plan) {
+    const fireAt = item.fireAt;
     if (!fireAt) continue;
+
+    const offsets = item.spec === MORNING_TOKEN ? MORNING_TOKEN : item.spec;
 
     // 已经过了触发时间（比如作业是昨天建的、提前量是 1 天）就跳过
     if (diffMinutes(now, fireAt) < 0) {
@@ -72,8 +80,8 @@ export function syncAssignmentReminders(assignmentId) {
       continue;
     }
 
-    const title = buildReminderTitle(assignment, course, offset);
-    const body = buildReminderBody(assignment, course, offset);
+    const title = buildReminderTitle(assignment, course, offsets);
+    const body = buildReminderBody(assignment, course, offsets);
 
     run(
       `INSERT INTO reminders
@@ -106,33 +114,85 @@ export function parseOffsets(text) {
 }
 
 /**
- * 提醒标题。用「人话」表达紧迫程度：
- * 提前 1 天 → 「明天截止」；提前 2 小时 → 「2 小时后截止」。
+ * 「当天早上」这个记号。
+ *
+ * 考试要「当天早上再提醒一次」，但**它不是"提前多少分钟"**：
+ * 早上 7 点提醒，对 8 点的考试是提前 60 分钟，对下午 2 点的考试是提前 420 分钟 ——
+ * 同一个意思，分钟数却跟着考试时间变。所以它不能表达成一个 offset，
+ * 只能是一个记号，在生成提醒时按"那一天的 07:00"现算。
  */
-function buildReminderTitle(assignment, course, offsetMinutes) {
-  const coursePart = course?.name ? `【${course.name}】` : '';
-  let when;
-  if (offsetMinutes >= 60 * 24) {
-    const days = Math.round(offsetMinutes / (60 * 24));
-    when = days === 1 ? '明天截止' : `${days} 天后截止`;
-  } else if (offsetMinutes >= 60) {
-    const hours = Math.round(offsetMinutes / 60);
-    when = `${hours} 小时后截止`;
-  } else {
-    when = `${offsetMinutes} 分钟后截止`;
-  }
-  return `${coursePart}作业「${assignment.title}」${when}`;
+export const MORNING_TOKEN = 'morning';
+export const MORNING_HOUR = 7;
+
+/** 把提前量字符串拆成「分钟数列表 + 要不要当天早上提醒」 */
+export function parseRemindSpec(text) {
+  const parts = String(text ?? '').trim().split(/[,，\s]+/);
+  const morning = parts.some((p) => p.trim().toLowerCase() === MORNING_TOKEN);
+  return { offsets: parseOffsets(text), morning };
 }
 
-function buildReminderBody(assignment, course, offsetMinutes) {
+/** 某一天（含时间）的当天 07:00 */
+function morningOf(dueAt) {
+  const day = String(dueAt || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
+  return `${day} ${String(MORNING_HOUR).padStart(2, '0')}:00:00`;
+}
+
+/**
+ * 一条提醒该在什么时候发。
+ * @param {string} dueAt 考试/作业的时间
+ * @param {number|string} spec 分钟数，或 MORNING_TOKEN
+ */
+export function reminderFireAt(dueAt, spec) {
+  if (spec === MORNING_TOKEN) return morningOf(dueAt);
+  return addMinutes(dueAt, -Number(spec));
+}
+
+/**
+ * 提醒标题。用「人话」表达紧迫程度：
+ * 提前 1 天 → 「明天截止」；提前 2 小时 → 「2 小时后截止」。
+ *
+ * ⚠️ 考试说的是「开考」不是「截止」：考试的时间点是**开始**，
+ *    而作业的时间点是**结束**。用错词的话，写着"明天截止"的考试
+ *    会让人以为明天一整天都还能准备 —— 这是会误事的差别。
+ */
+function buildReminderTitle(assignment, course, offset) {
+  const coursePart = course?.name ? `【${course.name}】` : '';
+  const isExam = assignment.kind === 'exam';
+  const noun = isExam ? '考试' : '作业';
+  let when;
+  if (offset === MORNING_TOKEN) {
+    when = isExam ? '今天开考' : '今天截止';
+  } else if (offset >= 60 * 24) {
+    const days = Math.round(offset / (60 * 24));
+    when = isExam
+      ? (days === 1 ? '明天开考' : `${days} 天后开考`)
+      : (days === 1 ? '明天截止' : `${days} 天后截止`);
+  } else if (offset >= 60) {
+    const hours = Math.round(offset / 60);
+    when = isExam ? `${hours} 小时后开考` : `${hours} 小时后截止`;
+  } else {
+    when = isExam ? `${offset} 分钟后开考` : `${offset} 分钟后截止`;
+  }
+  return `${coursePart}${noun}「${assignment.title}」${when}`;
+}
+
+function buildReminderBody(assignment, course, offset) {
+  const isExam = assignment.kind === 'exam';
   const lines = [];
   if (course?.name) lines.push(`课程：${course.name}`);
-  lines.push(`作业：${assignment.title}`);
+  lines.push(`${isExam ? '考试' : '作业'}：${assignment.title}`);
   if (assignment.due_at) {
-    lines.push(`截止：${assignment.due_at.replace('T', ' ').slice(0, 16)}（${humanizeDistance(assignment.due_at)}）`);
+    // 考试是「开考」，作业是「截止」—— 同一个时间点，对考生的意思完全不同
+    lines.push(`${isExam ? '开考' : '截止'}：`
+      + `${assignment.due_at.replace('T', ' ').slice(0, 16)}（${humanizeDistance(assignment.due_at)}）`);
   }
+  // 考试最要紧的三件事：在哪考、怎么考、考到哪
+  if (isExam && assignment.location) lines.push(`地点：${assignment.location}`);
+  if (isExam && assignment.exam_format) lines.push(`形式：${assignment.exam_format}`);
+  if (isExam && assignment.exam_scope) lines.push(`范围：${assignment.exam_scope}`);
   if (assignment.priority === 2) lines.push('优先级：高');
-  if (Number(assignment.progress) > 0) lines.push(`当前进度：${assignment.progress}%`);
+  if (!isExam && Number(assignment.progress) > 0) lines.push(`当前进度：${assignment.progress}%`);
   if (assignment.description) lines.push('', String(assignment.description).slice(0, 500));
   return lines.join('\n');
 }
