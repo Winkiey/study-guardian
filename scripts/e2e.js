@@ -4465,6 +4465,123 @@ async function run() {
     ok('课表页有「周次不对？」的入口',
       ttHint.text.includes('周次不对？') && ttHint.text.includes('/settings#term'));
 
+    // ---- 停课 / 调休覆盖（整条链路：表单 → 落库 → 课表跟着变 → 能删）----
+    // 课表原本每周固定重复，法定节假日调休会让**某一周整周都错** ——
+    // 而且错得很自然（看起来就是一张正常课表，你不会去怀疑它）。
+    {
+      const panel = await req('GET', '/timetable');
+      ok('★ 课表页有「停课 / 调休」面板和表单',
+        panel.text.includes('data-ov-form')
+        && /name="date"/.test(panel.text)
+        && /name="kind"/.test(panel.text)
+        && /name="swapTo"/.test(panel.text));
+
+      // 从当前这一周里取 7 天。⚠️ 用页面自己给出的日期，不写死某一天 ——
+      // 写死的日期属于哪一周取决于学期起始日，断言会莫名其妙地空转。
+      const dates = [...panel.text.matchAll(/data-date="(\d{4}-\d{2}-\d{2})"/g)].map((m) => m[1]);
+      ok('（前提）课表上取到了这一周的 7 个日期', dates.length >= 7, `只取到 ${dates.length} 个`);
+      const d0 = dates[0];
+      const d1 = dates[1];
+
+      // 取这一周的周次号，好让 POST 之后能跳回同一周
+      const weekNo = Number(/href="\/timetable\?week=(\d+)"/.exec(panel.text)?.[1] || 1) + 1;
+      const blocksOn = (html, date) =>
+        (html.match(new RegExp(`class="course-block[^"]*"[^>]*data-date="${date}"`, 'g')) || []).length;
+
+      // ① 停课：那一天不再有课程块，而且格子上标出「停课」
+      const offRes = await req('POST', '/timetable/overrides', {
+        form: { date: d0, kind: 'off', swapTo: '', note: '国庆', week: String(weekNo) },
+      });
+      ok('★ 加一条停课：302 回课表页（不是错误页）',
+        offRes.status === 302, `状态码 ${offRes.status}`);
+
+      const afterOff = await req('GET', `/timetable?week=${weekNo}`);
+      ok('★★ 停课那天的课程块全没了',
+        blocksOn(afterOff.text, d0) === 0,
+        `★ ${d0} 还有 ${blocksOn(afterOff.text, d0)} 个课程块 —— 停课没生效`);
+      ok('★★ 而且那一天在表头上标出了「停课」（不是让课凭空消失）',
+        new RegExp(`data-date="${d0}"[\\s\\S]{0,300}?week-grid__ov`).test(afterOff.text)
+        && /停课/.test(afterOff.text),
+        '★ 课没了但没有任何说明 —— 看的人只会以为课表坏了');
+      ok('★ 别的天不受影响（不是把整周都清了）',
+        dates.slice(2).some((d) => blocksOn(afterOff.text, d) > 0)
+        || blocksOn(panel.text, dates[2]) === 0,
+        '停课把整周都清掉了');
+
+      // ② 调课：那天按另一个星期几上
+      const swapRes = await req('POST', '/timetable/overrides', {
+        form: { date: d1, kind: 'swap', swapTo: '3', note: '', week: String(weekNo) },
+      });
+      ok('★ 加一条调课：也是 302 回课表页', swapRes.status === 302, `状态码 ${swapRes.status}`);
+      const afterSwap = await req('GET', `/timetable?week=${weekNo}`);
+      ok('★★ 调课那天在表头上标出了「按…的课表上」',
+        new RegExp(`data-date="${d1}"[\\s\\S]{0,300}?按.{1,3}的课表上`).test(afterSwap.text),
+        '★ 调课生效了但页面上看不出来为什么那天多/少课');
+
+      // ③ 面板里**真的列出了两条**。
+      // ⚠️ 不能写成 /停课/.test(...) —— 面板自己的说明文字里就有「停课」两个字，
+      //    那样写不管有没有存进去都是绿的（第一版就是这么写的）。
+      //    数 .ov-row 的条数才是真的。
+      const ovRows = (afterSwap.text.match(/class="ov-row"/g) || []).length;
+      ok('★★ 面板里列出了刚加的两条（数行数，不是找「停课」两个字）',
+        ovRows === 2, `面板里有 ${ovRows} 条，期望 2 条 —— 说明有一条没存进去`);
+
+      // ④ 非法输入：302 回课表页并带上原因，不是 400/500，也不是静默成功
+      const badRes = await req('POST', '/timetable/overrides', {
+        form: { date: '2026/03/04', kind: 'off', week: String(weekNo) },
+      });
+      ok('★ 日期写法不对时：302 回课表页并带上原因（不是 400/500）',
+        badRes.status === 302 && /ovError=/.test(badRes.headers.get('location') || ''),
+        `状态码 ${badRes.status} → ${badRes.headers.get('location') || ''}`);
+      ok('★ 错误原因显示在面板上',
+        (await req('GET', `/timetable?week=${weekNo}&ovError=${encodeURIComponent('日期格式不对')}`))
+          .text.includes('data-ov-error'));
+      ok('★ 被拒之后没有留下任何覆盖（不能存半条进去）',
+        !(await req('GET', `/timetable?week=${weekNo}`)).text.includes('2026/03/04'));
+
+      const badSwap = await req('POST', '/timetable/overrides', {
+        form: { date: d0, kind: 'swap', swapTo: '9', week: String(weekNo) },
+      });
+      ok('★ 调课没给合法的星期几时同样被拒',
+        badSwap.status === 302 && /ovError=/.test(badSwap.headers.get('location') || ''));
+
+      // ⑤ 删一条（POST 不是 GET）
+      const idMatch = new RegExp(`name="id" value="(\\d+)"[\\s\\S]{0,300}?aria-label="删掉 ${d1}`)
+        .exec(afterSwap.text);
+      ok('（前提）找得到调课那条的删除按钮', Boolean(idMatch), '找不到就没法验删除');
+      if (idMatch) {
+        const delRes = await req('POST', '/timetable/overrides/delete', {
+          form: { id: idMatch[1], week: String(weekNo) },
+        });
+        ok('★ 能删掉一条', delRes.status === 302, `状态码 ${delRes.status}`);
+        const afterDel = await req('GET', `/timetable?week=${weekNo}`);
+        ok('★ 删完之后那条不再生效（表头上没有调课标记了）',
+          !new RegExp(`data-date="${d1}"[\\s\\S]{0,300}?按.{1,3}的课表上`).test(afterDel.text),
+          '删了但课表没恢复');
+        // 删别人的 / 不存在的 id：不该报错，也不该删到东西
+        const bogus = await req('POST', '/timetable/overrides/delete', {
+          form: { id: '99999999', week: String(weekNo) },
+        });
+        ok('★ 删一个不存在的 id：不报错，也不影响别的',
+          bogus.status === 302
+          && new RegExp(`data-date="${d0}"[\\s\\S]{0,300}?week-grid__ov`).test(
+            (await req('GET', `/timetable?week=${weekNo}`)).text,
+          ),
+          '删不存在的 id 时把别的覆盖一起弄没了');
+      }
+
+      // ⑥ 收尾：把停课那条也删掉，别影响后面的用例
+      const offId = new RegExp(`name="id" value="(\\d+)"[\\s\\S]{0,300}?aria-label="删掉 ${d0}`)
+        .exec((await req('GET', `/timetable?week=${weekNo}`)).text);
+      if (offId) {
+        await req('POST', '/timetable/overrides/delete', { form: { id: offId[1], week: String(weekNo) } });
+      }
+      const cleaned = await req('GET', `/timetable?week=${weekNo}`);
+      ok('★ 全部删完之后，课表和原来一样（没留下痕迹）',
+        blocksOn(cleaned.text, d0) === blocksOn(panel.text, d0),
+        `原来 ${blocksOn(panel.text, d0)} 个块，现在 ${blocksOn(cleaned.text, d0)} 个`);
+    }
+
     // --------------------------------------------------------
     section('12. 数据落盘检查');
 

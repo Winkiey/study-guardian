@@ -182,6 +182,10 @@ export function applyOverrides(occurrences, byDate, clip) {
       out.push({
         ...src,
         date,                        // 日期改到调课这一天
+        // `moved` 是课表页认的标记（courseBlock 里那个「调课」小旗子，
+        // 样式 .is-moved / .course-block__flag 早就在了）。名字必须对上，
+        // 写错的话页面不会报错，只是那个旗子永远不出现。
+        moved: true,
         movedFrom: src.date,         // 留着，界面上要说明"这节课本来是周三的"
         weekday: weekdayOf(date),
       });

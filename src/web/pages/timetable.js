@@ -8,6 +8,7 @@
 import { escapeHtml } from '../../lib/http.js';
 import { icon, pageHeader, emptyState, card, badge } from '../layout.js';
 import { addDays, formatDateCn, nowStr, todayStr, weekdayCn, WEEKDAY_SHORT } from '../../lib/datetime.js';
+import { OVERRIDE_KINDS, describeOverride } from '../../lib/schedule-overrides.js';
 import { buildTimetableGrid } from '../../lib/weeks.js';
 
 export function timetablePage({
@@ -23,6 +24,9 @@ export function timetablePage({
   importHint,
   periodSchedule = [],
   hasCustomPeriods = false,
+  overrides = null,
+  allOverrides = [],
+  ovError = '',
 }) {
   const today = todayStr();
   const currentHm = nowStr().slice(11, 16);
@@ -37,7 +41,16 @@ export function timetablePage({
   const days = [];
   for (let i = 0; i < 7; i += 1) {
     const date = addDays(weekStart, i);
-    days.push({ date, weekday: i + 1, items: byDate.get(date) || [] });
+    const ov = (overrides && overrides.get(date)) || null;
+    days.push({
+      date,
+      // 星期几要按**覆盖之后**的来：调休那天显示"周六"但上的是周三的课，
+      // 表头仍写周六（那是真实的日期），另用标记说明"按周三上"。
+      weekday: i + 1,
+      items: byDate.get(date) || [],
+      override: ov,
+      ovLabel: ov ? describeOverride(ov) : '',
+    });
   }
 
   // 有作息表就按「第 1-2 节」分行；对不上则自动退回整点分行
@@ -108,10 +121,14 @@ ${usingPeriodRows
     <!-- 表头 -->
     <div class="week-grid__head week-grid__corner" style="grid-row:1;grid-column:1">${usingPeriodRows ? '节次' : '时间'}</div>
     ${days.map((d, i) => `
-      <div class="week-grid__head${d.date === today ? ' is-today' : ''}"
+      <div class="week-grid__head${d.date === today ? ' is-today' : ''}${d.override ? ' is-overridden' : ''}"
            style="grid-row:1;grid-column:${i + 2}" data-date="${d.date}">
         <span class="week-grid__weekday">${weekdayCn(d.weekday)}</span>
         <span class="week-grid__date">${Number(d.date.slice(8, 10))}</span>
+        ${/* ⚠️ 停课/调休必须**显式标出来**。不标的话，那一天的课凭空消失
+             （或者多出一节"周三的课"），看的人只会以为课表坏了 ——
+             而"课表坏了"和"放假了"，在他心里的分量完全不同。 */ ''}
+        ${d.override ? `<span class="week-grid__ov" title="${escapeHtml(d.ovLabel)}">${escapeHtml(d.ovLabel)}</span>` : ''}
       </div>`).join('')}
 
     <!-- 左侧时间列 -->
@@ -148,6 +165,7 @@ ${card({
           <span class="day-row__name">${weekdayCn(d.weekday)}</span>
           <span class="day-row__date">${escapeHtml(d.date.slice(5))}</span>
           ${d.date === today ? badge('今天', 'primary') : ''}
+          ${d.override ? badge(d.ovLabel, 'warn') : ''}
         </div>
         <div class="day-row__body">
           ${d.items.length
@@ -157,11 +175,17 @@ ${card({
                 <span class="course-chip__name">${escapeHtml(o.courseName)}</span>
                 ${o.location ? `<span class="course-chip__place">${escapeHtml(o.location)}</span>` : ''}
               </a>`).join('')
-            : '<span class="muted small">无课</span>'}
+            : /* 「无课」和「停课」不是一回事：一个是本来就没有，一个是被取消了。
+                 写成同一句的话，放假那几天看起来就像课表出了问题。 */
+              (d.override && d.override.kind === 'off'
+                ? '<span class="muted small">停课</span>'
+                : '<span class="muted small">无课</span>')}
         </div>
       </div>`).join('')}
   </div>`,
   })}
+
+${overridesCard({ allOverrides, viewWeek, ovError })}
 
 <div class="grid grid--2 mt-lg">
   ${card({
@@ -209,6 +233,84 @@ ${card({
  * 一眼就能看出它比其他课长。
  */
 /**
+ * 「停课 / 调休」管理面板。
+ *
+ * 做成**普通的表单 POST**（服务端处理完 302 回课表页），不是 fetch + JS：
+ * 这一屏做的是"改课表"，最怕的是点了没反应；表单提交有明确的成败和刷新，
+ * 而且没有 JS 也能用。删一条也是一次 POST（不是 GET）—— 删除不该是一条
+ * 能被浏览器预取、能被"刷新重放"的链接。
+ */
+function overridesCard({ allOverrides, viewWeek, ovError }) {
+  const weekdayOptions = [1, 2, 3, 4, 5, 6, 7]
+    .map((w) => `<option value="${w}">${weekdayCn(w)}</option>`).join('');
+
+  const rows = allOverrides.slice(0, 40).map((ov) => `
+    <li class="ov-row">
+      <span class="ov-row__date">${escapeHtml(ov.date)}</span>
+      <span class="ov-row__what">${escapeHtml(describeOverride(ov))}</span>
+      ${ov.note ? `<span class="ov-row__note muted small">${escapeHtml(ov.note)}</span>` : ''}
+      <form method="post" action="/timetable/overrides/delete" class="ov-row__del">
+        <input type="hidden" name="id" value="${Number(ov.id)}">
+        <input type="hidden" name="week" value="${Number(viewWeek)}">
+        <button type="submit" class="btn btn--ghost btn--sm btn--icon"
+                title="删掉这条" aria-label="删掉 ${escapeHtml(ov.date)} 的${escapeHtml(describeOverride(ov))}">
+          ${icon('trash', 15)}
+        </button>
+      </form>
+    </li>`).join('');
+
+  return card({
+    title: '停课 / 调休',
+    body: `
+    <p class="small">
+      法定节假日调休那几天，课表和平时不一样：有的日子停课，有的日子要
+      「按周四的课表上」。在这里加一条，课表和首页的「今天的课」都会跟着改 ——
+      不用去动课程本身。
+    </p>
+    ${ovError ? `<div class="notice notice--warn notice--compact" data-ov-error>
+      <div class="notice__icon">${icon('alert', 16)}</div>
+      <div class="notice__body"><p class="small">${escapeHtml(ovError)}</p></div>
+    </div>` : ''}
+    <form class="ov-form" method="post" action="/timetable/overrides" data-ov-form>
+      <input type="hidden" name="week" value="${Number(viewWeek)}">
+      <div class="ov-form__row">
+        <div class="field">
+          <label class="field__label" for="ov_date">日期</label>
+          <input id="ov_date" class="input" type="date" name="date" required>
+        </div>
+        <div class="field">
+          <label class="field__label" for="ov_kind">怎么处理</label>
+          <select id="ov_kind" class="input" name="kind">
+            ${OVERRIDE_KINDS.map((k) => `<option value="${escapeHtml(k.key)}">${escapeHtml(k.label)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field">
+          <label class="field__label" for="ov_swap">按星期几上</label>
+          <select id="ov_swap" class="input" name="swapTo">
+            <option value="">（停课时不用选）</option>${weekdayOptions}
+          </select>
+        </div>
+        <div class="field field--grow">
+          <label class="field__label" for="ov_note">备注</label>
+          <input id="ov_note" class="input" name="note" maxlength="100" placeholder="例如：国庆">
+        </div>
+      </div>
+      <div class="btn-row">
+        <button type="submit" class="btn btn--primary btn--sm">${icon('calendar', 15)}<span>加一条</span></button>
+      </div>
+      <p class="field__help">
+        「停课」= 这一天不上课；「按星期几上」= 这一天按那一天原本的课表上
+        （例如「周六上周三的课」）。同一天只保留一条，再设一次就是改。
+      </p>
+    </form>
+    ${allOverrides.length
+      ? `<ul class="ov-list">${rows}</ul>
+         ${allOverrides.length > 40 ? '<p class="field__help">只列了最近 40 条。</p>' : ''}`
+      : '<p class="muted small">还没有设过停课或调休。</p>'}`,
+  });
+}
+
+/**
  * 「当前时间线」。
  *
  * 只在今天这一列、而且现在正好落在某一行里时才有意义 ——
@@ -251,6 +353,7 @@ function courseBlock(block, currentHm, today) {
 
   return `<a class="course-block${isNow ? ' is-now' : ''}${o.moved ? ' is-moved' : ''}"
      href="/courses/${o.courseId}"
+     data-date="${escapeHtml(o.date)}"
      style="grid-row:${block.startRow + 2} / span ${block.rowSpan};grid-column:${block.column + 2};--block-color:${escapeHtml(o.courseColor || '#3a63e8')}"
      title="${escapeHtml(tooltip)}">
   <span class="course-block__name">${escapeHtml(o.courseName)}</span>

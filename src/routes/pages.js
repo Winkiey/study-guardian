@@ -70,6 +70,7 @@ import { converterStatus } from '../lib/convert.js';
 import { schedulerStatus } from '../lib/scheduler.js';
 import { subscriptionUrl } from '../lib/export/ics-export.js';
 import { parseIcsTimetable, importCourses } from '../lib/import/ics-import.js';
+import { deleteOverride, listOverrides, setOverride } from '../lib/schedule-overrides.js';
 import { extractTimetableImage } from '../lib/import/pdf-image.js';
 
 /**
@@ -377,9 +378,9 @@ export function registerPages(router) {
       weekEnd = addDays(weekStart, 6);
     }
 
-    const { occurrences } = term
+    const { occurrences, overrides } = term
       ? courses.occurrencesInRange(userId, weekStart, weekEnd, { termId: term.id })
-      : { occurrences: [] };
+      : { occurrences: [], overrides: null };
 
     output(ctx.res, timetablePage({
       user: ctx.user,
@@ -388,6 +389,11 @@ export function registerPages(router) {
       weekStart,
       weekEnd,
       occurrences,
+      // 这一周里哪些天被停课/调休了（用来在表头和按天列表上标出来），
+      // 以及全部覆盖（管理面板里列出来）。都用 lib 里同一份数据。
+      overrides,
+      allOverrides: listOverrides(userId),
+      ovError: String(ctx.url.searchParams.get('ovError') || ''),
       courses: courses.listCourses(userId),
       viewWeek,
       totalWeeks: Number(term?.week_count || 18),
@@ -396,6 +402,49 @@ export function registerPages(router) {
       periodSchedule: getPeriodSchedule(userId),
       hasCustomPeriods: hasCustomPeriodSchedule(userId),
     }), { user: ctx.user, stats: navStats(userId) });
+  }));
+
+  /**
+   * 加一条停课 / 调休。
+   *
+   * 走**普通表单 POST + 302 回课表页**，不是 JSON 接口 + fetch：
+   * 这一屏改的是课表本身，最怕"点了没反应"；表单提交有明确的成败和刷新，
+   * 而且没有 JS 也能用（这个项目的底线之一）。
+   *
+   * 出错时不抛 400 页面，而是把原因带回课表页显示 —— 用户刚填的表单
+   * 还在浏览器里（history 里那一页），点回去就能改，比一个错误页有用。
+   *
+   * ⚠️ 必须包在 `page()` 里：ctx.user 是**只有 page() 才会设**的
+   *    （见上面那个 page 的定义）。不包的话 ctx.user 是 undefined，
+   *    于是 setOverride(undefined, …) 直接抛、被 catch 掉、302 回课表页 ——
+   *    **看起来一切正常，但什么都没存**。这个坑踩过一次：自测里
+   *    "提交后 302" 那几条全绿，而覆盖一条都没生效。
+   */
+  router.post('/timetable/overrides', page(async (ctx) => {
+    const form = await readBodyAuto(ctx.req);
+    const data = form.data || {};
+    const week = Number.parseInt(data.week, 10) || 0;
+    const back = week ? `/timetable?week=${week}` : '/timetable';
+    try {
+      setOverride(ctx.user.id, {
+        date: data.date,
+        kind: data.kind,
+        swapTo: data.swapTo === '' || data.swapTo == null ? null : data.swapTo,
+        note: data.note,
+      });
+      return redirect(ctx.res, back);
+    } catch (err) {
+      return redirect(ctx.res, `${back}${back.includes('?') ? '&' : '?'}ovError=${encodeURIComponent(err.message)}`);
+    }
+  }));
+
+  /** 删一条。用 POST 不是 GET —— 删除不该能被预取、被刷新重放。同上，必须包 page()。 */
+  router.post('/timetable/overrides/delete', page(async (ctx) => {
+    const form = await readBodyAuto(ctx.req);
+    const data = form.data || {};
+    const week = Number.parseInt(data.week, 10) || 0;
+    deleteOverride(ctx.user.id, data.id);
+    return redirect(ctx.res, week ? `/timetable?week=${week}` : '/timetable');
   }));
 
   // ==========================================================
