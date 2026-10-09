@@ -62,7 +62,7 @@ import { importManualPage, importPage, importResultPage } from '../web/pages/imp
 import { alumniPage, communityPage } from '../web/pages/community.js';
 import {
   alumniList, alumniMaterials, canViewCommunityUser, canViewMaterial, communityFeed,
-  communityNewCount,
+  communityNewCount, communityCourses,
   countAlumni, countCommunityFeed, markCommunitySeen,
   myPublishedCount, myPublishedMaterials, publicProfile,
 } from '../lib/community.js';
@@ -472,13 +472,35 @@ export function registerPages(router) {
     //    顺序反过来的话，你打开社区页、角标还挂着"3 份新的"，得刷新一次才消失。
     markCommunitySeen(userId);
 
+    // 搜索与筛选。三个条件都从 URL 来（GET 表单，没有 JS 也能用），
+    // 而且**一起**喂给 communityFeed 和 countCommunityFeed ——
+    // 两者用的是 community.js 里同一组条件，所以"筛出 3 份、底部写共 12 份"
+    // 这种对不上的情况不可能出现。
+    const q = String(ctx.url.searchParams.get('q') || '').trim();
+    const rawCategory = String(ctx.url.searchParams.get('category') || '').trim();
+    const courseName = String(ctx.url.searchParams.get('courseName') || '').trim();
+    // 分类要过白名单：直接手改 URL 传一个不存在的分类，会匹配不到任何行、
+    // 于是显示"没有匹配的资料" —— 用户以为社区是空的。
+    // 不认识的分类一律当"没筛"，比报错更合手（它只是个筛选框）。
+    const category = rawCategory && materials.isKnownCategory(rawCategory) ? rawCategory : '';
+    const filterOpts = { q, category, courseName };
+
     output(ctx.res, communityPage({
       user: ctx.user,
       school,
       schoolVerified: schoolIsVerified(school),
       mySchool: schoolIsVerified(school) ? school : '',
-      feed: communityFeed(userId, { limit: show }),
-      feedTotal: countCommunityFeed(userId),
+      feed: communityFeed(userId, { ...filterOpts, limit: show }),
+      feedTotal: countCommunityFeed(userId, filterOpts),
+      // 顶部那句"同校公开的一共 N 份"要的是**不带筛选**的总数 ——
+      // 把筛过的数传进去会变成"筛选的结果说一共多少"，自己跟自己循环。
+      totalAll: countCommunityFeed(userId),
+      // 筛选项列表故意不带 q/category：否则每点一次筛选项，可选项就跟着缩一圈，
+      // 最后换不回别的课程。
+      courseFacets: communityCourses(userId),
+      q,
+      category,
+      courseName,
       alumni: alumniList(userId, { limit: alumniShow }),
       alumniTotal: countAlumni(userId),
       myPublished: myPublishedCount(userId),

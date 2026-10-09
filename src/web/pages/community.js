@@ -18,6 +18,60 @@
 
 import { escapeHtml } from '../../lib/http.js';
 import { icon, pageHeader, card, emptyState } from '../layout.js';
+import { MATERIAL_CATEGORIES } from '../../lib/materials.js';
+
+/**
+ * 社区页的搜索 / 筛选条。
+ *
+ * 做成一个普通的 **GET 表单**（服务端渲染，不依赖 JS）：这个项目里
+ * 「没有 JS 也能用」是条底线，而搜索恰恰是最不该依赖 JS 的功能之一。
+ * 筛选条件全在 URL 里，所以能收藏、能分享、刷新不丢。
+ */
+function feedFilterBar({ q, category, courseName, courseFacets, feedTotal, totalAll }) {
+  const catOptions = MATERIAL_CATEGORIES
+    .map((c) => `<option value="${escapeHtml(c.key)}"${c.key === category ? ' selected' : ''}>${escapeHtml(c.label)}</option>`)
+    .join('');
+  const courseOptions = courseFacets
+    .map((c) => `<option value="${escapeHtml(c.name)}"${c.name === courseName ? ' selected' : ''}>`
+      + `${escapeHtml(c.name)}（${c.count}）</option>`)
+    .join('');
+  const isFiltering = Boolean(q || category || courseName);
+  return `<form class="community-filter" method="get" action="/community" data-community-filter>
+  <div class="community-filter__row">
+    <div class="field field--grow">
+      <label class="field__label" for="cf_q">搜同校公开的资料</label>
+      <input id="cf_q" class="input" type="search" name="q" value="${escapeHtml(q)}"
+             placeholder="标题、说明、标签、正文都会被搜到">
+    </div>
+    <div class="field">
+      <label class="field__label" for="cf_course">课程</label>
+      <select id="cf_course" class="input" name="courseName">
+        <option value="">全部课程</option>${courseOptions}
+      </select>
+    </div>
+    <div class="field">
+      <label class="field__label" for="cf_cat">分类</label>
+      <select id="cf_cat" class="input" name="category">
+        <option value="">全部分类</option>${catOptions}
+      </select>
+    </div>
+  </div>
+  <div class="community-filter__actions">
+    <button type="submit" class="btn btn--primary btn--sm">${icon('search', 15)}<span>搜索</span></button>
+    ${isFiltering ? `<a class="btn btn--ghost btn--sm" href="/community">清除筛选</a>` : ''}
+    <span class="muted small">
+      ${/* ⚠️ 这里必须是**筛过之后**的 feedTotal，不是 totalAll。
+           第一版写的就是 totalAll（"同校公开的一共多少"），于是文案写着
+           "筛选出 12 份"、下面只列 1 张卡 —— 而且当时只有一个候选，
+           两个数恰好相等，测试全绿。是反向验证把这个错抓出来的。
+           所以两个数都给出来：用户既知道筛出多少，也知道总量是多少。 */ ''}
+      ${isFiltering
+      ? `筛选出 ${feedTotal} 份（同校公开的一共 ${totalAll} 份）`
+      : `同校公开的一共 ${totalAll} 份`}
+    </span>
+  </div>
+</form>`;
+}
 
 /**
  * 列表底部那行「共 N 份，这里显示最近 M 份 + 再看更多」。
@@ -31,20 +85,35 @@ import { icon, pageHeader, card, emptyState } from '../layout.js';
  *
  * @param {number} shown  这一屏显示了几条
  * @param {number} total  一共有多少条（和列表用同一组可见性条件算出来的）
+ * @param {string} nextHref 「再看更多」指向的地址（**已经带上当前筛选**）；
+ *                          传空串表示到上限了，不给链接 ——
+ *                          给一个点了没变化的按钮比不给更糟。
  */
-function moreRow(shown, total, unit, show, base) {
+function moreRow(shown, total, unit, nextHref) {
   if (!(total > shown)) return '';
-  const next = Math.min(show + 40, 200);
-  // 已经加到上限了就不再给链接 —— 给一个点了没变化的按钮比不给更糟
-  const more = next > show
-    ? `<a class="btn btn--outline btn--sm" href="${base}?show=${next}">
-        ${icon('chevronDown', 15)}<span>再看 ${next - show} ${unit}</span>
+  const more = nextHref
+    ? `<a class="btn btn--outline btn--sm" href="${escapeHtml(nextHref)}">
+        ${icon('chevronDown', 15)}<span>再看 ${Math.min(40, total - shown)} ${unit}</span>
       </a>`
     : '';
   return `<div class="more-row" data-more-row>
     <span class="muted small">共 ${total} ${unit}，这里显示最近 ${shown} 个。</span>
     ${more}
   </div>`;
+}
+
+/**
+ * 社区页的链接。**筛选条件必须一路带着走** —— 否则「再看更多」和切换筛选
+ * 会把用户好不容易搜出来的那一屏弄丢，他还得重新输一遍关键词。
+ */
+function communityHref({ q = '', category = '', courseName = '', show = 0 } = {}) {
+  const p = new URLSearchParams();
+  if (q) p.set('q', q);
+  if (category) p.set('category', category);
+  if (courseName) p.set('courseName', courseName);
+  if (show) p.set('show', String(Math.min(show, 200)));
+  const s = p.toString();
+  return s ? `/community?${s}` : '/community';
 }
 
 /** 头像：有图显示图，没有就显示昵称首字母 —— 和侧栏那个圆圈一套逻辑 */
@@ -166,7 +235,9 @@ export function communityPage({
   user, school, schoolVerified, feed = [], feedTotal = 0,
   alumni = [], alumniTotal = 0,
   myPublished = 0, mySchool = '', myMaterials = [], show = 40,
+  q = '', category = '', courseName = '', courseFacets = [], totalAll = 0,
 }) {
+  const isFiltering = Boolean(q || category || courseName);
   const body = `
 ${pageHeader({
     title: '校友社区',
@@ -193,18 +264,31 @@ ${!schoolVerified ? needsSchoolCard({ school, schoolVerified }) : `
 </div>
 
 <section class="community-section" data-shared-feed>
+${feedFilterBar({ q, category, courseName, courseFacets, feedTotal, totalAll })}
 ${feed.length === 0
-      ? emptyState({
-        level: 2,
-        icon: 'folder',
-        title: '同校同学还没公开什么资料',
-        description: '等同学把课件公开出来，这里就会有了。你也可以先在「我的资料」里挑几份公开。',
-        action: `<a class="btn btn--primary" href="/materials">${icon('folder', 16)}<span>去我的资料</span></a>`,
-      })
+      ? (isFiltering
+        ? emptyState({
+          level: 2,
+          icon: 'search',
+          title: '没有匹配的资料',
+          // ⚠️ 空结果的两种原因必须分开说：一种是"同学确实没公开过"，
+          //    一种是"你筛掉了"。混成一句的话，用户会以为社区是空的，
+          //    然后放弃这个功能 —— 而东西其实就在那儿。
+          description: '换一个关键词，或者去掉筛选看看全部。',
+          action: `<a class="btn btn--outline" href="/community">${icon('chevronLeft', 16)}<span>看全部</span></a>`,
+        })
+        : emptyState({
+          level: 2,
+          icon: 'folder',
+          title: '同校同学还没公开什么资料',
+          description: '等同学把课件公开出来，这里就会有了。你也可以先在「我的资料」里挑几份公开。',
+          action: `<a class="btn btn--primary" href="/materials">${icon('folder', 16)}<span>去我的资料</span></a>`,
+        }))
       : `<div class="community-grid">
         ${feed.map((item) => feedCard(item)).join('')}
       </div>
-      ${moreRow(feed.length, feedTotal, '份公开的资料', show, '/community')}`}
+      ${moreRow(feed.length, feedTotal, '份公开的资料',
+        feedTotal > show && show < 200 ? communityHref({ q, category, courseName, show: show + 40 }) : '')}`}
 </section>
 `}
 
@@ -224,7 +308,13 @@ ${schoolVerified && alumni.length ? card({
             </span>
           </a>`).join('')}
       </div>
-      ${moreRow(alumni.length, alumniTotal, '位校友', show, '/community')}
+      ${/* 校友名单**不跟随**搜索/分类筛选（那是资料维度的筛选，人是没有分类的），
+           所以这里的"再看更多"只带 show。
+           ⚠️ 这个 `${...}` 里必须有个真正的表达式（这里用 ''）——
+              只写注释的话插值是空的，会直接变成 SyntaxError。
+              上面几处也都有同样的 ''，别顺手删掉。 */ ''}
+      ${moreRow(alumni.length, alumniTotal, '位校友',
+        alumniTotal > alumni.length && show < 200 ? `/community?show=${Math.min(show + 40, 200)}` : '')}
       <p class="field__help">
         只有<strong>公开过资料</strong>的同学会出现在这里 —— 这份名单不是全校名册。
       </p>`,

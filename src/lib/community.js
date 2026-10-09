@@ -136,15 +136,23 @@ export function myPublishedCount(userId) {
 }
 
 /**
- * 社区流的可见性条件 —— **只写一处**，下面三个查询共用：
+ * 社区流的筛选条件 —— **只写一处**，下面三个查询共用：
  * 列表（communityFeed）、总数（countCommunityFeed）、未读数（communityNewCount）。
  *
- * 为什么非要抽出来：这三个数字都是给用户看的，分开写就会出现
+ * 为什么非要抽出来：这些都是给用户看的数字，分开写就会出现
  * 「列表里 3 份、底部写共 2 份」或者「角标说有 1 份新的、点进去什么都没有」。
  * 这种错**不会报错**，只会让人不再相信那个数字 —— 而"信不信社区里的东西"
  * 恰好是这个功能唯一的价值。
  *
- * ⚠️ 调用方必须 `JOIN users u ON u.id = m.user_id`（条件里用到了 u.school）。
+ * ⚠️ 搜索/筛选（q、category、courseId）也放在这里，理由同上：
+ *    搜出来 3 份、底写"共 12 份"比不显示总数更糟。
+ *    角标**不传**这些参数，所以它数的一直是"全部未读"，不受当前搜索影响 ——
+ *    这是有意的：角标回答的是"有没有新东西"，不是"搜索框里那批有没有新的"。
+ *
+ * ⚠️ 调用方必须 `JOIN users u ON u.id = m.user_id`
+ *    **并且** `LEFT JOIN courses c ON c.id = m.course_id`
+ *    —— 条件里用到了 u.school 和 c.name，少一个 JOIN 就是 "no such column"。
+ *    （这一条踩过：按课程名筛加进来之后，两个 count 查询忘了补 courses 那半边。）
  * ⚠️ 只比较 `u.school = ?` 还不够：校名必须来自名单，否则两个都把学校填成
  *    「家里蹲大学」的人会互相看到 —— 而那个名字是他们自己挑的。
  *    名单那一道由 myVerifiedSchool 卡住，不过就整体返回 null。
@@ -156,9 +164,30 @@ function feedScope(viewerId, opts = {}) {
   if (!school) return null;
   const where = ['m.published = 1', 'u.school = ?', 'u.id <> ?'];
   const params = [school, Number(viewerId)];
-  if (opts.courseId) {
-    where.push('m.course_id = ?');
-    params.push(Number(opts.courseId));
+  // ⚠️ 按**课程名**筛，不是按 course_id。
+  //    `m.course_id` 指向的是**资料主人自己的**课程行 —— 我看不到、也猜不到
+  //    别人的课程 id。而我看到的是卡片上写的「线性代数」这个**名字**。
+  //    所以这里按 c.name 匹配（同一个班的人各有各的课程行，但名字一样）。
+  //    （原来这里写的是 courseId，从来没人传过 —— 而且传了也匹配不到东西，
+  //      属于"看起来能用其实一定不生效"的那种坑，索性换掉。）
+  const courseName = String(opts.courseName || '').trim();
+  if (courseName) {
+    where.push('c.name = ?');
+    params.push(courseName);
+  }
+  if (opts.category) {
+    where.push('m.category = ?');
+    params.push(String(opts.category));
+  }
+  // 关键词：和资料库那边的口径**保持一致** —— 标题、说明、标签、正文
+  // （正文存在 text_cache 里，上传时抽好的）。只搜标题的话，
+  // "第 5 周讲的那个概念"就搜不到了，而那正是搜索最有用的场景。
+  const q = String(opts.q || '').trim();
+  if (q) {
+    const like = `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+    where.push(`(m.title LIKE ? ESCAPE '\\' OR m.description LIKE ? ESCAPE '\\'`
+      + ` OR m.tags LIKE ? ESCAPE '\\' OR m.text_cache LIKE ? ESCAPE '\\')`);
+    params.push(like, like, like, like);
   }
   return { where: where.join(' AND '), params };
 }
@@ -220,16 +249,42 @@ export function countCommunityFeed(viewerId, opts = {}) {
     `SELECT COUNT(*) AS c
        FROM materials m
        JOIN users u ON u.id = m.user_id
+       LEFT JOIN courses c ON c.id = m.course_id
       WHERE ${scope.where}`,
     ...scope.params,
   );
   return Number(row?.c) || 0;
 }
 
+/**
+ * 社区里出现过哪些课程（给筛选用）。
+ *
+ * 用**课程名**而不是 id：我看不到别人的课程 id，能看到的只是卡片上那个名字。
+ * 只统计当前可见的那一批（同校 + 已公开 + 别人的），所以不会因为
+ * "某门课只有外校人公开过"而给一个筛出来永远是空的选项。
+ *
+ * 参数故意**不接受 q / category**：选项列表要在用户选了筛选之后
+ * 依然稳定 —— 否则每点一次筛选项，可选项就跟着缩一圈，最后没法换回去。
+ */
+export function communityCourses(viewerId, opts = {}) {
+  const scope = feedScope(viewerId, opts);
+  if (!scope) return [];
+  return all(
+    `SELECT c.name AS name, COUNT(*) AS n
+       FROM materials m
+       JOIN users u ON u.id = m.user_id
+       JOIN courses c ON c.id = m.course_id
+      WHERE ${scope.where}
+      GROUP BY c.name
+      ORDER BY n DESC, c.name ASC
+      LIMIT 60`,
+    ...scope.params,
+  ).map((r) => ({ name: r.name || '', count: Number(r.n) || 0 }));
+}
+
 // ============================================================
 // 「有没有新东西」—— 社区导航上的那个角标
 // ============================================================
-
 /** 上次看社区的时间，存在 settings 里 */
 const COMMUNITY_SEEN_KEY = 'community_seen_at';
 
@@ -250,6 +305,7 @@ export function communityNewCount(viewerId) {
     `SELECT COUNT(*) AS c
        FROM materials m
        JOIN users u ON u.id = m.user_id
+       LEFT JOIN courses c ON c.id = m.course_id
       WHERE ${scope.where}
         AND COALESCE(m.updated_at, m.created_at, '') > ?`,
     ...scope.params, seen,

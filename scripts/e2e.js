@@ -3336,6 +3336,127 @@ async function run() {
           !/back=/.test((await req('GET', '/materials')).text));
       }
 
+      // ---- 社区搜索与筛选 ----
+      // 关键词要能搜到（标题/说明/标签/正文），而且**筛选和计数必须一致** ——
+      // 两者用的是 community.js 里同一组条件（feedScope）。
+      // 分开写就会出现"筛出 1 份、底部写共 3 份"这种没人会去查的错。
+      {
+        // ⚠️ 这个块**自己造数据**，不依赖几百行之前那份"同校同学的笔记"——
+        //    它在社区块收尾时已经被删掉了。第一版就是栽在这儿：
+        //    搜索永远是空的，而报错完全指不到"数据早没了"。
+        const mateCourse = await schoolMate('POST', '/api/courses', {
+          json: { name: '社区搜索测试课' },
+        });
+        const mateCourseId = mateCourse.json?.course?.id || mateCourse.json?.id;
+        ok('（前提）同校同学建了一门课，用来验课程筛选', Boolean(mateCourseId));
+
+        const upSearch = multipart(
+          { title: '搜索用的线代笔记', category: 'exam' },
+          {
+            field: 'file', filename: 's.txt', type: 'text/plain',
+            data: Buffer.from('特征值与特征向量 这一章的重点'),
+          },
+        );
+        const upRes = await schoolMate('POST', '/api/materials', {
+          body: upSearch.body, headers: { 'Content-Type': upSearch.contentType },
+        });
+        const sid = upRes.json?.material?.id || upRes.json?.id;
+        ok('（前提）同校同学上传了一份资料', Boolean(sid));
+        // 先挂课程再公开（分两步做，不依赖上传表单收不收 courseId）
+        await schoolMate('PATCH', `/api/materials/${sid}`, {
+          json: { courseId: mateCourseId, published: 1 },
+        });
+
+        // ⚠️ 再公开一份**搜不到**的：不然"筛出 1 份"和"一共 1 份"永远相等，
+        //    计数和列表算错了也看不出来（第一版就是栽在这儿 ——
+        //    文案用错变量、显示的是未筛选的总数，测试照样全绿）。
+        const upOther = multipart(
+          { title: '另一门课的资料', category: 'courseware' },
+          { field: 'file', filename: 'o.txt', type: 'text/plain', data: Buffer.from('无关内容') },
+        );
+        const upOtherRes = await schoolMate('POST', '/api/materials', {
+          body: upOther.body, headers: { 'Content-Type': upOther.contentType },
+        });
+        const otherId = upOtherRes.json?.material?.id || upOtherRes.json?.id;
+        await schoolMate('PATCH', `/api/materials/${otherId}`, { json: { published: 1 } });
+        ok('（前提）此时同校公开的资料至少有 2 份（这样"筛出"和"一共"才不一样）',
+          Number(/同校公开的一共 (\d+) 份/.exec((await req('GET', '/community')).text)?.[1]) >= 2);
+
+        const base = await req('GET', '/community');
+        ok('★ 社区页有搜索框和两个筛选下拉',
+          base.text.includes('data-community-filter')
+          && /name="q"/.test(base.text)
+          && /name="courseName"/.test(base.text)
+          && /name="category"/.test(base.text));
+
+        // 搜得中（按标题）
+        const hit = await req('GET', '/community?q=' + encodeURIComponent('线代笔记'));
+        ok('★ 关键词能搜到同校同学公开的资料', hit.text.includes('搜索用的线代笔记'),
+          '搜关键词反而搜不到了');
+
+        // 正文也要能搜到 —— 那是搜索最有用的场景（"第 5 周讲的那个概念"）
+        const byText = await req('GET', '/community?q=' + encodeURIComponent('特征向量'));
+        ok('★ 搜正文也能搜到（不只是标题）', byText.text.includes('搜索用的线代笔记'),
+          '正文没进搜索范围 —— text_cache 那一列没接上');
+
+        // ⚠️ 计数和列表必须一致，而且要**区分开**"筛出多少"和"一共多少"——
+        //    两个数都存在时才能验出"用错了变量"。
+        const counted = /筛选出 (\d+) 份（同校公开的一共 (\d+) 份）/.exec(hit.text);
+        const cards = (hit.text.match(/class="community-card"/g) || []).length;
+        ok('★★ 「筛选出 N 份」和实际列出的卡片数一致',
+          Boolean(counted) && Number(counted[1]) === cards,
+          `说 ${counted?.[1]} 份，实际列了 ${cards} 张卡 —— 筛选和计数用了两套条件`);
+        ok('★★ 「筛出」的数和「一共」的数不是一个数（否则等于没筛）',
+          Boolean(counted) && Number(counted[1]) < Number(counted[2]),
+          `筛出 ${counted?.[1]}、一共 ${counted?.[2]} —— 筛选没起作用，或者文案用错了变量`);
+
+        // 按分类筛：有这一类就有结果，而且**确实变少**。
+        // ⚠️ 这里断言"变少"，不是断言"某个分类是空的" —— 后者取决于此刻
+        //    库里恰好没有什么，我造的第二份资料（courseware）就曾经把
+        //    "courseware 应该筛成空"这条打翻了。断言要挂在**不变量**上。
+        const byCat = await req('GET', '/community?category=exam');
+        const catCount = /筛选出 (\d+) 份（同校公开的一共 (\d+) 份）/.exec(byCat.text);
+        ok('★ 按分类筛得出来', byCat.text.includes('搜索用的线代笔记'));
+        ok('★★ 按分类筛之后数量确实变少了（不是把全部列出来）',
+          Boolean(catCount) && Number(catCount[1]) < Number(catCount[2]),
+          `筛出 ${catCount?.[1]}、一共 ${catCount?.[2]} —— 分类筛选没生效`);
+
+        // 按课程名筛
+        const byCourse = await req('GET', '/community?courseName=' + encodeURIComponent('社区搜索测试课'));
+        ok('★ 按课程名筛得出来（用的是名字，不是别人的 course_id）',
+          byCourse.text.includes('搜索用的线代笔记'));
+
+        // 搜不中：必须说"没有匹配"，不能说"同学还没公开"
+        const miss = await req('GET', '/community?q=' + encodeURIComponent('绝对不存在的关键词zzz'));
+        ok('★ 搜不到时说的是「没有匹配的资料」，而不是「同学还没公开」',
+          /没有匹配的资料/.test(miss.text) && !/同校同学还没公开什么资料/.test(miss.text),
+          '★ 两种空结果混成了一句 —— 用户会以为社区是空的然后放弃');
+        ok('★ 而且给了「看全部」这条出路', /看全部/.test(miss.text));
+
+        // 筛选状态下 ?show= 不能把筛选弄丢
+        const deep = await req('GET', '/community?q=' + encodeURIComponent('线代笔记') + '&show=80');
+        ok('★ 输入框里回填了关键词（让人看得见自己在筛什么）',
+          /name="q"[^>]*value="线代笔记"/.test(deep.text),
+          '★ 翻页把关键词丢了 —— 用户得重新输一遍');
+
+        // 筛选项列表不该被自己的筛选缩掉，否则换不回别的课程
+        const courseSelect = (hit.text.match(/name="courseName"[\s\S]{0,900}?<\/select>/) || [''])[0];
+        ok('★ 课程下拉里仍然列着可选项（没被当前筛选缩成一空）',
+          /<option value="[^"]+"/.test(courseSelect),
+          '筛选之后可选项全没了 —— 换不回别的课程');
+
+        // 非法分类当"没筛"处理：不报错，也不假装社区是空的
+        const badCat = await req('GET', '/community?category=' + encodeURIComponent('不存在的分类'));
+        ok('★ 手改 URL 传个不存在的分类：当成"没筛"，不报错也不假装社区是空的',
+          badCat.status === 200 && !/没有匹配的资料/.test(badCat.text),
+          `状态码 ${badCat.status}`);
+
+        // 收尾：把造的数据删掉，别影响后面的用例
+        if (sid) await schoolMate('DELETE', `/api/materials/${sid}`);
+        if (otherId) await schoolMate('DELETE', `/api/materials/${otherId}`);
+        if (mateCourseId) await schoolMate('DELETE', `/api/courses/${mateCourseId}`);
+      }
+
 
       // ---- 「公开了但谁也看不到」必须在界面上说清楚 ----
       // 学校没从名单里选过的人**可以**勾「公开给同校」，但他公开出去的东西
