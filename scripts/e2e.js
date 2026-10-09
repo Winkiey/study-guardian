@@ -4465,6 +4465,97 @@ async function run() {
     ok('课表页有「周次不对？」的入口',
       ttHint.text.includes('周次不对？') && ttHint.text.includes('/settings#term'));
 
+    // ---- 考试：作为一种日程，最实质的差别是提醒节奏 ----
+    {
+      const board = await req('GET', '/assignments');
+      ok('★ 作业页的表单里有「这是什么」（作业/考试）和考场/形式/范围',
+        /name="kind"/.test(board.text)
+        && /name="location"/.test(board.text)
+        && /name="examFormat"/.test(board.text)
+        && /name="examScope"/.test(board.text));
+      ok('★ 提前量里多了一个「当天早上 7 点」（考试专用，不是分钟数）',
+        /name="offset" value="morning"/.test(board.text)
+        && /当天早上/.test(board.text));
+
+      // 造一场考试：时间放在将来（写死日期会随着时间推移烂掉）
+      const future = new Date(Date.now() + 60 * 24 * 3600 * 1000);
+      const pad = (n) => String(n).padStart(2, '0');
+      const day = `${future.getFullYear()}-${pad(future.getMonth() + 1)}-${pad(future.getDate())}`;
+      const examDue = `${day} 14:00`;
+
+      const made = await req('POST', '/api/assignments', {
+        json: {
+          title: 'E2E 期末考试', kind: 'exam', dueAt: examDue,
+          location: '之远楼 301', examFormat: '闭卷', examScope: '第 1-8 章',
+        },
+      });
+      const examId = made.json?.id || made.json?.assignment?.id;
+      ok('（前提）建了一场考试', Boolean(examId), JSON.stringify(made.json).slice(0, 200));
+
+      const detail = await req('GET', `/api/assignments/${examId}`);
+      const exam = detail.json?.assignment || detail.json;
+      ok('★ 考试的类型存住了', exam?.kind === 'exam', `kind=${exam?.kind}`);
+      ok('★ 考场/形式/范围都存住了',
+        exam?.location === '之远楼 301' && exam?.exam_format === '闭卷' && exam?.exam_scope === '第 1-8 章',
+        JSON.stringify({ l: exam?.location, f: exam?.exam_format, s: exam?.exam_scope }));
+
+      // ⚠️ 提醒是**跟着作业详情一起返回**的（assignment.reminders），
+      //    没有 /api/assignments/:id/reminders 这个接口 —— 第一版就是那么写的，
+      //    拿到 404 的 JSON，于是"0 条提醒"，看起来像功能坏了。
+      const remindersOf = async (id) => {
+        const r = await req('GET', `/api/assignments/${id}`);
+        return r.json?.assignment?.reminders || [];
+      };
+
+      // ★★ 这一条是本项的核心：考试的提醒节奏和作业不一样
+      const fires = (await remindersOf(examId)).map((r) => r.fire_at).sort();
+      ok('★★ 考试默认三条提醒：提前一周、提前一天、当天早上 07:00',
+        fires.length === 3, `实际 ${fires.length} 条：${fires.join(' / ')}`);
+      const minus = (d, n) => {
+        const t = new Date(`${d}T12:00:00`);
+        t.setDate(t.getDate() - n);
+        return `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())}`;
+      };
+      ok('★★ 三条分别是"提前一周 / 提前一天 / 当天早上 07:00"',
+        fires.includes(`${minus(day, 7)} 14:00:00`)
+        && fires.includes(`${minus(day, 1)} 14:00:00`)
+        && fires.includes(`${day} 07:00:00`),
+        `实际：${fires.join(' / ')}`);
+
+      // 措辞：考试说「开考」不说「截止」
+      const examRems = await remindersOf(examId);
+      const titles = examRems.map((r) => r.title).join(' | ');
+      ok('★★ 考试的提醒说「开考」而不是「截止」',
+        /开考/.test(titles) && !/截止/.test(titles),
+        `★ 考试提醒的词不对：${titles}`);
+      ok('★ 提醒正文里带上了考场/形式/范围',
+        examRems.some((r) => /之远楼 301/.test(r.body) && /闭卷/.test(r.body)),
+        '正文里没带考场所需的信息');
+
+      // 页面上的呈现
+      const withExam = await req('GET', '/assignments');
+      ok('★ 列表上标出了「考试」', /考试/.test(withExam.text) && /E2E 期末考试/.test(withExam.text));
+      ok('★ 卡片上直接写「开考」和考场（考生不用点开）',
+        /开考/.test(withExam.text) && /之远楼 301/.test(withExam.text));
+
+      // ★ 对照：作业的节奏不能被顺手改掉
+      const hwMade = await req('POST', '/api/assignments', {
+        json: { title: 'E2E 普通作业', dueAt: examDue },
+      });
+      const hwId = hwMade.json?.id || hwMade.json?.assignment?.id;
+      const hwRems = await remindersOf(hwId);
+      const hwTitles = hwRems.map((r) => r.title).join(' | ');
+      ok('★★ 对照：作业仍然是 2 条、而且说的是「截止」',
+        hwRems.length === 2 && /截止/.test(hwTitles) && !/开考/.test(hwTitles),
+        `作业的节奏被改了：${hwRems.length} 条，${hwTitles}`);
+      ok('★★ 对照：作业没有「当天早上」那条（那是考试的节奏）',
+        !hwRems.some((r) => r.fire_at.includes('07:00:00')));
+
+      // 收尾
+      if (examId) await req('DELETE', `/api/assignments/${examId}`);
+      if (hwId) await req('DELETE', `/api/assignments/${hwId}`);
+    }
+
     // ---- 停课 / 调休覆盖（整条链路：表单 → 落库 → 课表跟着变 → 能删）----
     // 课表原本每周固定重复，法定节假日调休会让**某一周整周都错** ——
     // 而且错得很自然（看起来就是一张正常课表，你不会去怀疑它）。

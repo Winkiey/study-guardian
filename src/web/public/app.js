@@ -1031,14 +1031,26 @@ function initAssignments() {
     // 模板克隆后 id 会重复，但因为我们一次只插一个弹窗，实际不会冲突
 
     const offsetPreview = () => {
-      const checked = [...form.querySelectorAll('input[name=offset]:checked')].map((c) => Number(c.value));
+      // ⚠️ 'morning' 不是分钟数（考试专用：「当天早上 07:00 提醒」）。
+      //    这里以前对所有勾选项直接 Number()，勾上「当天早上」会变成 NaN，
+      //    然后被拼进 remindOffsets —— 服务端的 parseInt 同样拿到 NaN、
+      //    把它丢掉，结果是**静默少一条提醒**。所以数值和记号要分开处理。
+      const MORNING = 'morning';
+      const raw = [...form.querySelectorAll('input[name=offset]:checked')].map((c) => c.value);
+      const checked = raw.filter((v) => v !== MORNING).map(Number);
+      const hasMorning = raw.includes(MORNING);
       const custom = String(form.querySelector('input[name=remindOffsets]').dataset.custom || '')
         .split(',').map((s) => s.trim()).filter(Boolean).map(Number);
       const all = [...new Set([...checked, ...custom])].sort((a, b) => b - a);
 
-      form.querySelector('input[name=remindOffsets]').value = all.join(',');
-      form.querySelector('[data-offset-preview]').textContent = all.length
-        ? `将在截止前 ${all.map(humanOffset).join('、')}提醒你（共 ${all.length} 次）`
+      const parts = all.map((n) => String(n));
+      if (hasMorning) parts.push(MORNING);
+      form.querySelector('input[name=remindOffsets]').value = parts.join(',');
+
+      const labels = all.map(humanOffset);
+      if (hasMorning) labels.push('当天早上 7 点');
+      form.querySelector('[data-offset-preview]').textContent = parts.length
+        ? `将在${hasMorning && !all.length ? '' : '截止前 '}${labels.join('、')}提醒你（共 ${parts.length} 次）`
         : '没有设置提醒，到点不会通知你';
     };
 
@@ -1061,9 +1073,30 @@ function initAssignments() {
       offsetPreview();
     });
 
+    // 考场/形式/范围三格只有考试才显示。默认 hidden（没有 JS 时它们一直显示着
+    // 也不算错 —— 作业多填两格不影响什么，比"点了没反应"好）。
+    const syncKindFields = () => {
+      const isExam = form.querySelector('[name=kind]').value === 'exam';
+      for (const el of form.querySelectorAll('[data-exam-fields]')) el.hidden = !isExam;
+      const help = form.querySelector('[data-due-help]');
+      if (help) {
+        help.textContent = isExam
+          ? '填「开考」时间（不是结束时间）。考试的默认提醒是提前一周、提前一天、当天早上 7 点。'
+          : '填截止时间。提醒会按下面的「提前多久」自动排好。';
+      }
+      // 勾选框里那个「当天早上」是考试专用的，作业这边留着但说明一下
+      const morningChip = form.querySelector('input[name=offset][value=morning]');
+      if (morningChip) morningChip.closest('.chip')?.classList.toggle('is-exam-only', !isExam);
+    };
+    form.querySelector('[name=kind]')?.addEventListener('change', syncKindFields);
+
     if (assignment) {
       form.querySelector('[name=id]').value = assignment.id;
       form.querySelector('[name=title]').value = assignment.title || '';
+      form.querySelector('[name=kind]').value = assignment.kind === 'exam' ? 'exam' : 'homework';
+      form.querySelector('[name=location]').value = assignment.location || '';
+      form.querySelector('[name=examFormat]').value = assignment.exam_format || '';
+      form.querySelector('[name=examScope]').value = assignment.exam_scope || '';
       form.querySelector('[name=courseId]').value = assignment.course_id ?? '';
       form.querySelector('[name=priority]').value = String(assignment.priority ?? 1);
       form.querySelector('[name=description]').value = assignment.description || '';
@@ -1100,6 +1133,7 @@ function initAssignments() {
     }
 
     offsetPreview();
+    syncKindFields();
 
     form.querySelector('[data-modal-close]')?.addEventListener('click', closeModal);
 
@@ -1122,14 +1156,19 @@ function initAssignments() {
           score: raw.score === '' ? null : Number(raw.score),
           remindOffsets: raw.remindOffsets,
           notifyChannels: Array.isArray(raw.channel) ? raw.channel.join(',') : (raw.channel || ''),
+          // 考试专属。作业时 kind='homework'、三格留空即可。
+          kind: raw.kind === 'exam' ? 'exam' : 'homework',
+          location: raw.location || '',
+          examFormat: raw.examFormat || '',
+          examScope: raw.examScope || '',
         };
 
         if (raw.id) {
           await api(`/api/assignments/${raw.id}`, { method: 'PATCH', body: payload });
-          toast('作业已更新，提醒规则同步重建', 'success');
+          toast('已更新，提醒规则同步重建', 'success');
         } else {
           await api('/api/assignments', { method: 'POST', body: payload });
-          toast('作业已创建，提醒已排好', 'success');
+          toast(payload.kind === 'exam' ? '考试已创建，提醒已排好' : '作业已创建，提醒已排好', 'success');
         }
         clearFieldErrors(form);
         closeModal();

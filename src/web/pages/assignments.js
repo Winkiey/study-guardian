@@ -146,6 +146,7 @@ function assignmentCard(a, highlightId) {
     <header class="assignment__head">
       <h3 class="assignment__title">${escapeHtml(a.title)}</h3>
       <div class="assignment__badges">
+        ${a.isExam ? badge('考试', 'warn') : ''}
         ${a.priority === 2 ? badge('高优先级', 'danger') : ''}
         ${a.status === 'doing' ? badge('进行中', 'primary') : ''}
         ${isDone ? badge('已完成', 'success') : badge(URGENCY_LABELS[a.urgency] || '', tone)}
@@ -154,8 +155,13 @@ function assignmentCard(a, highlightId) {
 
     <div class="assignment__meta">
       ${a.course_name ? `<a class="meta-item" href="/courses/${a.course_id}"><span class="dot" style="--dot-color:${escapeHtml(a.course_color || '#3a63e8')}"></span>${escapeHtml(a.course_name)}</a>` : '<span class="meta-item muted">未关联课程</span>'}
-      <span class="meta-item">${icon('clock', 14)} ${escapeHtml(a.dueLabel)}</span>
+      ${/* 考试说「开考」，作业说「截止」—— 同一个时间点对考生的意思完全不同 */ ''}
+      <span class="meta-item">${icon('clock', 14)} ${escapeHtml(a.isExam ? '开考 ' : '')}${escapeHtml(a.dueLabel)}</span>
       ${!isDone && a.dueDistance ? `<span class="meta-item ${a.isOverdue ? 'text-danger' : ''}">${escapeHtml(a.dueDistance)}</span>` : ''}
+      ${/* 考生最在意的三件事，直接摆在卡片上，不用点开 */ ''}
+      ${a.isExam && a.location ? `<span class="meta-item">${icon('user', 14)} ${escapeHtml(a.location)}</span>` : ''}
+      ${a.isExam && a.exam_format ? `<span class="meta-item">${escapeHtml(a.exam_format)}</span>` : ''}
+      ${a.isExam && a.exam_scope ? `<span class="meta-item muted">范围：${escapeHtml(a.exam_scope)}</span>` : ''}
     </div>
 
     ${a.description ? `<p class="assignment__desc">${escapeHtml(a.description.slice(0, 200))}${a.description.length > 200 ? '…' : ''}</p>` : ''}
@@ -197,9 +203,40 @@ export function renderAssignmentForm({ courses, channels, defaultOffsets }) {
 
     <div class="form__row">
       <div class="field field--grow">
-        <label class="field__label" for="af_title">作业标题<span class="field__req">*</span></label>
+        <label class="field__label" for="af_title">标题<span class="field__req">*</span></label>
         <input id="af_title" class="input" name="title" required placeholder="例如：第三章课后习题" maxlength="200">
       </div>
+      <div class="field">
+        <label class="field__label" for="af_kind">这是什么</label>
+        <select id="af_kind" class="input" name="kind" data-kind-select>
+          <option value="homework">作业</option>
+          <option value="exam">考试</option>
+        </select>
+      </div>
+    </div>
+
+    ${/* 只有考试才用的三格。默认 hidden，由前端按上面那个下拉显示/隐藏；
+         没有 JS 时它们一直显示着也不算错（多填两格不影响作业）。 */ ''}
+    <div class="form__row" data-exam-fields hidden>
+      <div class="field field--grow">
+        <label class="field__label" for="af_location">考场</label>
+        <input id="af_location" class="input" name="location" maxlength="100" placeholder="例如：之远楼 301">
+      </div>
+      <div class="field">
+        <label class="field__label" for="af_format">形式</label>
+        <select id="af_format" class="input" name="examFormat">
+          <option value="">不确定</option>
+          <option value="闭卷">闭卷</option>
+          <option value="开卷">开卷</option>
+          <option value="机考">机考</option>
+          <option value="口试">口试</option>
+          <option value="论文/报告">论文 / 报告</option>
+        </select>
+      </div>
+    </div>
+    <div class="field" data-exam-fields hidden>
+      <label class="field__label" for="af_scope">考试范围</label>
+      <input id="af_scope" class="input" name="examScope" maxlength="200" placeholder="例如：第 1-8 章 + 课堂补充">
     </div>
 
     <div class="form__row">
@@ -222,9 +259,9 @@ export function renderAssignmentForm({ courses, channels, defaultOffsets }) {
 
     <div class="form__row">
       <div class="field field--grow">
-        <label class="field__label" for="af_due">截止时间<span class="field__req">*</span></label>
+        <label class="field__label" for="af_due">时间<span class="field__req">*</span></label>
         <input id="af_due" class="input" type="datetime-local" name="dueAt" required>
-        <p class="field__help">提醒会按下面的「提前多久」自动排好。</p>
+        <p class="field__help" data-due-help>作业填截止时间；考试填<strong>开考</strong>时间。提醒会按下面的「提前多久」自动排好。</p>
       </div>
     </div>
 
@@ -232,6 +269,7 @@ export function renderAssignmentForm({ courses, channels, defaultOffsets }) {
       <label class="field__label">提前多久提醒</label>
       <div class="chip-group" data-offset-group>
         ${[
+      ['morning', '当天早上 7 点'],
       [10080, '提前 1 周'],
       [4320, '提前 3 天'],
       [1440, '提前 1 天'],
