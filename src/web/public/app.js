@@ -3915,6 +3915,112 @@ function initNowLine() {
 }
 
 /**
+ * 「正在上的这节课」还剩多久、走到哪儿了。
+ *
+ * 纯函数，方便直接测（见 tests/now-class.test.js，它按源码取函数体来跑）。
+ *
+ * 用**秒**算而不是分钟：分钟精度下进度条一分钟才跳一格，看着像卡住了；
+ * 秒精度 + 1 秒的线性过渡，它才是连续爬的。
+ *
+ * @returns {{percent:number, leftSec:number, elapsedSec:number}|null}
+ *   null = 现在不在这一节课里，别显示（和上面那条时间线一个规矩：
+ *   宁可不显示，也不要给一个错的位置）
+ */
+function nowClassProgress({ startHm, endHm, nowSec }) {
+  const start = hmToMinutes(startHm);
+  const end = hmToMinutes(endHm);
+  if (start === null || end === null) return null;
+  // 起止一样（或者反了）是坏数据：算出来是除以 0 或者一条乱进度
+  if (end <= start) return null;
+  // ⚠️ 必须要求"是个有限数字"，不能 `Number(x)` 之后再判断：
+  //    `Number(null)` 是 **0**（不是 NaN），而 0 是"午夜零点"那个合法值 ——
+  //    传了 null 时会算出一条看起来正常的 0% 进度。（服务端那边同样的坑，
+  //    是自测抓出来的；两边一起收紧，口径才不会分叉。）
+  if (typeof nowSec !== 'number' || !Number.isFinite(nowSec)) return null;
+  const now = nowSec;
+
+  const totalSec = (end - start) * 60;
+  const passedSec = now - start * 60;
+  // 时间已经走出这一节了 —— 交给调用方决定是藏起来还是改文案
+  if (passedSec < 0 || passedSec > totalSec) return null;
+
+  return {
+    percent: (passedSec / totalSec) * 100,
+    elapsedSec: passedSec,
+    leftSec: totalSec - passedSec,
+  };
+}
+
+/**
+ * 那张「正在上课」的卡：每秒把进度条和倒计时推进一格。
+ *
+ * 和 initNowLine 是一套节奏（每分钟/每秒 + 切回标签页补算），
+ * 但这里必须**每秒**——倒计时要跳秒，进度条要连续爬。
+ * 一秒几次 DOM 写入的开销可以忽略，而且标签页在后台时浏览器本来就会降频。
+ */
+function initNowClass() {
+  const el = document.querySelector('[data-now-class]');
+  if (!el) return;
+
+  const fill = el.querySelector('.now-class__fill');
+  const leftEl = el.querySelector('[data-now-left]');
+  const elapsedEl = el.querySelector('[data-now-elapsed]');
+  const startHm = el.dataset.start;
+  const endHm = el.dataset.end;
+  const date = el.dataset.date;
+  // 5 分钟以内就提示快下课了（和服务端 ENDING_SOON_SEC 同一个数）
+  const ENDING_SOON_SEC = 5 * 60;
+
+  const pad2 = (n) => String(n).padStart(2, '0');
+
+  const tick = () => {
+    const now = new Date();
+    // 页面可能是昨天打开的（挂了一夜）——日期对不上就收起来，
+    // 否则会拿今天的"现在"去算昨天的课，进度看着对、其实是错的
+    const todayStr = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`;
+    if (date && todayStr !== date) {
+      el.hidden = true;
+      return;
+    }
+
+    const nowSec = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
+    const p = nowClassProgress({ startHm, endHm, nowSec });
+    if (!p) {
+      // 已经下课了（或者还没开始）：收起来。不给一个错的进度。
+      el.hidden = true;
+      return;
+    }
+    el.hidden = false;
+
+    // 进度条：写 CSS 变量，样式里用 width: var(--pct) 加线性过渡
+    if (fill) fill.style.setProperty('--pct', `${p.percent.toFixed(2)}%`);
+
+    const leftSec = Math.round(p.leftSec);
+    const ending = leftSec <= ENDING_SOON_SEC;
+    el.classList.toggle('is-ending', ending);
+
+    if (leftEl) {
+      const text = leftSec >= 60
+        ? `还剩 ${Math.ceil(leftSec / 60)} 分钟`
+        : `还剩 ${leftSec} 秒`;
+      // 只在文字真的变了时才写 DOM：每秒无脑写一遍会让浏览器
+      // 反复重排那一行（数字宽度虽一样，但节点内容变了就要重绘）
+      if (leftEl.textContent !== text) leftEl.textContent = text;
+    }
+    if (elapsedEl) {
+      const s = Math.round(p.elapsedSec);
+      const text = s < 60 ? '刚上课' : `已上课 ${Math.floor(s / 60)} 分钟`;
+      if (elapsedEl.textContent !== text) elapsedEl.textContent = text;
+    }
+  };
+
+  tick();
+  setInterval(tick, 1000);
+  // 后台标签页里定时器会被降频，切回来先补一次
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
+}
+
+/**
  * 「服务端这句话是在说哪个字段」的对照表。
  *
  * ⚠️ 关键词要写得**具体**。写宽了会指错字段，而指错比不指更糟 ——
@@ -4228,6 +4334,7 @@ function boot() {
   initManualImport();
   initTimetable();
   initNowLine();
+  initNowClass();
 
   // 全局错误兜底：漏网的失败（没被任何地方 catch 的）也要说出来，不能静默。
   //

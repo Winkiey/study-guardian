@@ -821,6 +821,123 @@ async function run() {
       ok('★ 时间线样式是细线 + 小圆点，不是大面积高亮',
         /\.now-line\s*\{[^}]*pointer-events:\s*none/.test(cssForLine.text)
         && cssForLine.text.includes('.now-line::after'));
+
+      // ---- 「正在上课」那张卡（进度条 + 倒计时）----
+      // 它只在**现在真的在上课**时才出现，所以要先造一节"正在上"的课。
+      // 时间窗取 [现在-30分钟, 现在+20分钟]：既保证"现在"落在里面，
+      // 也不会跨过午夜（跨了就变成 end < start，那是坏数据）。
+      {
+        const now = new Date();
+        // 注意：不要用 pad2 这个名字 —— 它在同一个函数作用域里更靠下的地方
+        // 还有一次 const 声明，这里会撞上"暂时性死区"直接抛错。
+        const two = (n) => String(n).padStart(2, '0');
+        const hhmm = (mins) => {
+          const v = ((mins % 1440) + 1440) % 1440;
+          return `${two(Math.floor(v / 60))}:${two(v % 60)}`;
+        };
+        const nowMin = now.getHours() * 60 + now.getMinutes();
+        // 23:40 之后不跑这一段：时间窗会跨午夜，而那是"坏数据"的场景，
+        // 不该拿来当"正在上课"的用例（写死"一定跑"会让晚上的构建莫名变红）
+        if (nowMin >= 23 * 60 + 20) {
+          ok(`（这次跳过「正在上课」卡片：现在 ${hhmm(nowMin)} 太接近午夜，时间窗会跨天，不是失败）`,
+            pageHasGrid);
+        } else {
+          const todayWeekday = now.getDay() === 0 ? 7 : now.getDay();
+          const spanStart = hhmm(nowMin - 30);
+          const spanEnd = hhmm(nowMin + 20);
+
+          const cNow = await req('POST', '/api/courses', { json: { name: 'E2E 正在上的课' } });
+          const cNowId = cNow.json?.course?.id || cNow.json?.id;
+          await req('PUT', `/api/courses/${cNowId}/sessions`, {
+            json: { sessions: [{ weekday: todayWeekday, startTime: spanStart, endTime: spanEnd, weeks: '1-30' }] },
+          });
+          // 对照：另一门**不是现在**上的课，卡片里不该出现它
+          const cLater = await req('POST', '/api/courses', { json: { name: 'E2E 不是现在的课' } });
+          const cLaterId = cLater.json?.course?.id || cLater.json?.id;
+          await req('PUT', `/api/courses/${cLaterId}/sessions`, {
+            json: {
+              sessions: [{
+                weekday: todayWeekday,
+                startTime: hhmm(nowMin + 60),
+                endTime: hhmm(nowMin + 120),
+                weeks: '1-30',
+              }],
+            },
+          });
+
+          const board = await req('GET', '/timetable');
+          const card = /<section class="now-class[^>]*data-now-class[\s\S]*?<\/section>/.exec(board.text)?.[0] || '';
+          ok('★★ 正在上课时，页面顶部出现那张卡', Boolean(card),
+            `现在 ${hhmm(nowMin)}，课是 ${spanStart}-${spanEnd}，卡片没渲染出来`);
+          if (card) {
+            // 先确认网格真的在，再比先后 —— 否则两个 indexOf 都可能是 -1，
+            // "谁在前面"就变成了永远为真的空断言。
+            ok('★ 卡片在最上面（排在周网格之前）',
+              board.text.includes('data-week-grid')
+              && board.text.indexOf('data-now-class') < board.text.indexOf('data-week-grid'),
+              '★ 卡片跑到网格下面去了（或者网格根本没渲染）');
+            ok('★ 卡片里是**正在上**的那节课，不是别的时间的课',
+              card.includes('E2E 正在上的课') && !card.includes('E2E 不是现在的课'),
+              '★ 卡片认错了课（或者把不相干的课也显示进来了）');
+            ok('★ 有进度条，而且宽度是个百分比',
+              /class="now-class__fill"[^>]*--pct:\s*[\d.]+%/.test(card),
+              `没找到进度：${card.slice(0, 200)}`);
+            // 现在在窗口的 60% 处（前面 30 分钟、后面 20 分钟）
+            const pct = Number(/--pct:\s*([\d.]+)%/.exec(card)?.[1]);
+            ok('★★ 进度落在合理区间（现在在窗口的约 60% 处）',
+              pct > 40 && pct < 80, `算出来 ${pct}%`);
+            ok('★ 有倒计时，而且说的是「还剩」+ 具体的分钟数',
+              /data-now-left>还剩 \d+ 分钟/.test(card),
+              `没找到倒计时：${card.slice(-200)}`);
+            ok('★ 也说清了已经上了多久',
+              /data-now-elapsed>(刚上课|已上课 \d+ 分钟)/.test(card));
+            ok('★ 进度条对读屏是隐藏的（每秒都在动，不该念出来）',
+              /class="now-class__track" aria-hidden="true"/.test(card),
+              '★ 进度条没标 aria-hidden —— 读屏会一直念那个变化的进度');
+          }
+
+          // 前端那一半：每秒推进 + 切回标签页补算 + 越界就收起来
+          const jsNow = await req('GET', '/static/app.js');
+          // ⚠️ 必须把断言**限定在 initNowClass 的函数体里**。
+          //    `el.hidden = true` 在整个 app.js 里出现过 3 次，直接对全文匹配的话，
+          //    就算把这个函数里那两处删光，断言照样是绿的（空断言）。
+          const initNowSrc = /\nfunction initNowClass\(\)[\s\S]*?\n}\n/.exec(jsNow.text)?.[0] || '';
+          ok('★ 能按源码取出 initNowClass 的函数体（下面几条都靠它）',
+            initNowSrc.includes('function initNowClass'), '★ 取不到函数体，下面的断言等于没跑');
+          ok('★ 前端每秒推进一次（原来是每分钟，倒计时不会跳）',
+            initNowSrc.includes('setInterval(tick, 1000)'));
+          ok('★ 切回标签页时补算一次（后台会被降频）',
+            /visibilitychange/.test(initNowSrc));
+          ok('★ 而且被 boot 真的调用了（写了函数不等于会跑）',
+            /^\s*initNowClass\(\);/m.test(jsNow.text));
+          ok('★★ 前端在时间走出这一节之后会**收起来**，而不是继续显示错进度',
+            initNowSrc.includes('el.hidden = true'));
+          ok('★ 界面挂过夜（日期对不上）时也收起来',
+            /todayStr !== date/.test(initNowSrc), '★ 没做日期检查，第二天会拿今天的"现在"算昨天的课');
+          const cssNow = await req('GET', '/static/app.css');
+          ok('★ 进度条的宽过渡是 1 秒线性（和每秒推一次的节奏对上才是连续爬）',
+            /\.now-class__fill\s*\{[^}]*transition:\s*width 1s linear/.test(cssNow.text));
+          // 「快下课了」那行字必须是**一直渲染 + 靠 CSS 显示**的：
+          // 写成"服务端按 ending 决定渲不渲染"的话，页面一直开着、跨过
+          // 「还剩 5 分钟」那一刻就不会出现（前端改不了已经发出的 HTML）。
+          ok('★★ 「快下课了」那行字一直在 HTML 里（页面开着跨过 5 分钟时才出得来）',
+            card.includes('now-class__hint'),
+            '★ 那行字没渲染出来 —— 它就永远不会在页面不刷新时出现');
+          ok('★ 默认不显示，只有 is-ending 时才显示',
+            /\.now-class__hint\s*\{[^}]*display:\s*none/.test(cssNow.text)
+            && /\.now-class\.is-ending\s+\.now-class__hint\s*\{\s*display:\s*block/.test(cssNow.text),
+            '★ 要么默认就露出来了，要么切成 is-ending 也不会出来');
+          ok('★ 前端会切 is-ending 那个类（就是它让那行字和警示色出现）',
+            initNowSrc.includes("classList.toggle('is-ending'"));
+          ok('★★ 尊重系统的「减弱动态效果」',
+            /prefers-reduced-motion[\s\S]{0,400}?\.now-class__fill\s*\{\s*transition:\s*none/.test(cssNow.text),
+            '没写减弱动态效果的兜底 —— 关不掉那个一直在扫的高光');
+
+          // 收尾：删掉这两门课，别影响后面的统计
+          await req('DELETE', `/api/courses/${cNowId}`);
+          await req('DELETE', `/api/courses/${cLaterId}`);
+        }
+      }
     }
 
     // --------------------------------------------------------

@@ -169,6 +169,7 @@ describe('令牌引用不许写错名字', () => {
       'color',        // 各处通用的"这个元素的颜色"占位
       'size', 'delay', 'tx', 'ty', 'rot', // 动画参数（入场位移、旋转、错峰延迟）
       'now-offset',   // 课表「当前时间线」的纵向位置，由 app.js 按实测行高算出来再 setProperty
+      'pct',          // 课表「正在上课」进度条的宽度百分比：服务端内联渲染一份，之后 app.js 每秒更新
     ]);
 
     const missing = new Set();

@@ -11,6 +11,169 @@ import { addDays, formatDateCn, nowStr, todayStr, weekdayCn, WEEKDAY_SHORT } fro
 import { OVERRIDE_KINDS, describeOverride } from '../../lib/schedule-overrides.js';
 import { buildTimetableGrid } from '../../lib/weeks.js';
 
+/**
+ * `'HH:MM'` → 一天中的分钟数；**格式不对返回 null**。
+ *
+ * ⚠️ 这里**不能**直接用 datetime.js 的 `timeToMinutes()`：它认不出的写法
+ *    返回 **0**，也就是"午夜零点"。于是「乱写」会被当成 00:00，
+ *    算出一条看起来完全正常的进度 —— 而下面那些 `=== null` 的判断
+ *    就成了**永远不会执行的死代码**。
+ *
+ *    这是自测抓出来的：坏数据那条断言没红，一路算出了 0.28% 的进度。
+ *    前端 app.js 里的 hmToMinutes 本来就是严格版（返回 null），
+ *    服务端这边漏了 —— 两边口径不一致，页面就会"服务端说没有、前端说有"。
+ */
+function hhmmToMinutes(value) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(value ?? '').trim());
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (h > 23 || min > 59) return null;
+  return h * 60 + min;
+}
+
+/**
+ * 「现在正在上哪节课」。
+ *
+ * 抽成导出的纯函数是为了能直接测边界 —— 这件事最容易错的就是边界：
+ *   · 正好到**开始**那一刻 → 已经在上课了（算在内）
+ *   · 正好到**下课**那一刻 → 已经下课了（**不算**）
+ * 也就是半开区间 `[start, end)`。这和课表的其它地方口径一致
+ * （见 tests/timetable-now-line.test.js 里那条「边界那一刻算在下一行的开头」）。
+ *
+ * 区间用**分钟数**比而不是比字符串：`'8:00'` 这种没补零的写法
+ * 按字符串比会排到 `'10:00'` 后面去（那是导入回来的脏数据）。
+ *
+ * @param {Array} occurrences 某一周的课（每条有 date / startTime / endTime）
+ * @param {{date:string, hm:string}} now 今天是哪一天、现在几点几分
+ * @returns {object|null} 正在上的那节课；不在上课时间就返回 null
+ */
+export function currentOccurrence(occurrences, { date, hm }) {
+  // ⚠️ 先挡住不是数组的情况：调用方把 undefined 传进来时，
+  //    `for...of` 会直接抛 TypeError，而那会让整张课程表页 500 ——
+  //    "没有课"和"传错了"在页面上都该是"没有"，不该炸。
+  if (!Array.isArray(occurrences)) return null;
+
+  const now = hhmmToMinutes(hm);
+  if (now === null) return null;
+
+  let best = null;
+  let bestStart = Infinity;
+  for (const o of occurrences) {
+    if (o.date !== date) continue;
+    const start = hhmmToMinutes(o.startTime);
+    const end = hhmmToMinutes(o.endTime);
+    // 起止时间一样（或者反了）是坏数据：算出来会是除以 0 或者一条乱进度
+    if (start === null || end === null || end <= start) continue;
+    if (now < start || now >= end) continue;
+    // 真要有重叠的课（理论上不该有），取**开始得最早**的那节 ——
+    // 至少是个确定的结果，而不是"看遍历顺序"
+    if (start < bestStart) {
+      best = o;
+      bestStart = start;
+    }
+  }
+  return best;
+}
+
+/**
+ * 这节课的进度和剩余时间（服务端先算一份、前端接手继续算）。
+ *
+ * 用**秒**而不是分钟：分钟精度下进度条一分钟才跳一格，看起来是卡住的；
+ * 秒精度配上 1 秒的线性过渡，它就是一格一格连续爬的。
+ *
+ * @returns {{percent:number, elapsedSec:number, leftSec:number}|null}
+ */
+export function classProgress({ startTime, endTime, nowSec }) {
+  const start = hhmmToMinutes(startTime);
+  const end = hhmmToMinutes(endTime);
+  if (start === null || end === null || end <= start) return null;
+  // ⚠️ 必须写成"必须是个有限数字"，不能写成 `Number(nowSec)` 之后再 isFinite：
+  //    `Number(null)` 是 **0**（不是 NaN），而 0 是"午夜零点"那个合法值 ——
+  //    于是 nowSec 传了 null 时会算出一条看起来完全正常的 0% 进度。
+  //    这也是自测抓出来的：坏数据那条断言没红，一路算出了 36000 秒。
+  if (typeof nowSec !== 'number' || !Number.isFinite(nowSec)) return null;
+  const now = nowSec;
+
+  const totalSec = (end - start) * 60;
+  const passedSec = now - start * 60;
+  // 夹在 [0,100]：页面开着跨过了下课时间时，不该出现 103% 或者负数。
+  // ⚠️ 这里的夹取是**真的会用到的**（不像 nowLineOffset 里那条被删掉的假保险）：
+  //    服务端渲染那一刻可能刚好在下课前后一两秒。
+  const percent = Math.max(0, Math.min(100, (passedSec / totalSec) * 100));
+  return {
+    percent,
+    elapsedSec: Math.max(0, passedSec),
+    leftSec: Math.max(0, totalSec - passedSec),
+  };
+}
+
+/**
+ * 剩余时间的人话。
+ * 超过 1 分钟说「还剩 N 分钟」（向上取整：还剩 30 秒时说"还剩 1 分钟"比说
+ * "还剩 0 分钟"顺耳，也不会让人以为已经下课了），不到 1 分钟才报秒。
+ */
+export function humanLeft(leftSec) {
+  const s = Math.max(0, Math.round(Number(leftSec) || 0));
+  if (s >= 60) return `还剩 ${Math.ceil(s / 60)} 分钟`;
+  return `还剩 ${s} 秒`;
+}
+
+/** 已经上了多久（不足 1 分钟时不说"已上课 0 分钟"） */
+export function humanElapsed(elapsedSec) {
+  const s = Math.max(0, Math.round(Number(elapsedSec) || 0));
+  if (s < 60) return '刚上课';
+  return `已上课 ${Math.floor(s / 60)} 分钟`;
+}
+
+/** 还剩这么多就该提示「快下课了」（5 分钟是个够起身收东西的量） */
+const ENDING_SOON_SEC = 5 * 60;
+
+/**
+ * 「正在上这节课」那张卡。
+ *
+ * 位置在页面**最上面**（紧跟页头、在周网格之前）：它是这一屏里唯一
+ * "此刻正在发生"的东西，扫一眼就知道还有多久下课，不用去网格里找。
+ *
+ * 服务端先把进度和文字算好渲染出来 —— 这样没有 JS 也能看到准确的一份，
+ * 而且不会先闪一个 0% 再跳到真实位置。之后由 app.js 每秒接着算
+ * （见 initNowClass）。
+ */
+function nowClassCard(o, progress, { date, hm }) {
+  if (!o || !progress) return '';
+  const ending = progress.leftSec <= ENDING_SOON_SEC;
+  const metaParts = [o.location, o.teacher].filter(Boolean).map((s) => escapeHtml(String(s)));
+  return `<section class="now-class${ending ? ' is-ending' : ''}" data-now-class
+     data-start="${escapeHtml(o.startTime)}" data-end="${escapeHtml(o.endTime)}"
+     data-date="${escapeHtml(date)}" data-hm="${escapeHtml(hm)}">
+  <div class="now-class__head">
+    <span class="now-class__live">
+      <span class="now-class__dot" aria-hidden="true"></span>正在上课
+    </span>
+    <span class="now-class__when">${escapeHtml(o.startTime)} – ${escapeHtml(o.endTime)}</span>
+  </div>
+  <a class="now-class__title" href="/courses/${Number(o.courseId)}">${escapeHtml(o.courseName || '')}</a>
+  ${metaParts.length ? `<div class="now-class__meta">${metaParts.join(' · ')}</div>` : ''}
+
+  ${/* 进度条对读屏是噪音（每秒都在动），所以整条 aria-hidden，
+        "还有多久"由下面那行文字表达 —— 那句话才是信息。 */ ''}
+  <div class="now-class__track" aria-hidden="true">
+    <div class="now-class__fill" style="--pct:${progress.percent.toFixed(2)}%">
+      <span class="now-class__sheen"></span>
+    </div>
+  </div>
+
+  <div class="now-class__foot">
+    <span class="now-class__elapsed" data-now-elapsed>${escapeHtml(humanElapsed(progress.elapsedSec))}</span>
+    <span class="now-class__left" data-now-left>${escapeHtml(humanLeft(progress.leftSec))}</span>
+  </div>
+  ${/* 这行提示**一直渲染**（默认 display:none，见 app.css）：
+        只按 ending 决定渲不渲染的话，页面一直开着、跨过「还剩 5 分钟」那一刻
+        就不会出现 —— 前端只能切 class，改不了服务端已经吐出去的 HTML。 */ ''}
+  <p class="now-class__hint">快下课了 —— 提前把东西收好。</p>
+</section>`;
+}
+
 export function timetablePage({
   user,
   term,
@@ -30,6 +193,22 @@ export function timetablePage({
 }) {
   const today = todayStr();
   const currentHm = nowStr().slice(11, 16);
+
+  // 现在正在上哪节课（不在上课时间就是 null，那张卡根本不渲染）
+  const nowCourse = currentOccurrence(occurrences, { date: today, hm: currentHm });
+  // 秒数从 nowStr() 的 'YYYY-MM-DD HH:MM:SS' 里取；取不到就退回分钟（进度会整分钟跳）
+  const nowSecOfDay = (() => {
+    const t = nowStr().slice(11, 19).split(':').map(Number);
+    return t.length === 3 && t.every((n) => Number.isFinite(n))
+      ? t[0] * 3600 + t[1] * 60 + t[2] : null;
+  })();
+  const nowProgress = nowCourse
+    ? classProgress({
+      startTime: nowCourse.startTime,
+      endTime: nowCourse.endTime,
+      nowSec: nowSecOfDay,
+    })
+    : null;
 
   // 按天分组，便于同时渲染「网格视图」和「列表视图」
   const byDate = new Map();
@@ -53,7 +232,7 @@ export function timetablePage({
     });
   }
 
-  // 有作息表就按「第 1-2 节」分行；对不上则自动退回整点分行
+/** 有作息表就按「第 1-2 节」分行；对不上则自动退回整点分行 */
   const grid = buildTimetableGrid(occurrences, { periods: periodSchedule });
   const usingPeriodRows = grid.mode === 'periods';
 
@@ -100,6 +279,8 @@ ${pageHeader({
     actions,
     breadcrumb: `<a href="/">总览</a> ${icon('chevronRight', 12)} 课程表`,
   })}
+
+${nowClassCard(nowCourse, nowProgress, { date: today, hm: currentHm })}
 
 ${usingPeriodRows
       ? ''
