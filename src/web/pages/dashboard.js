@@ -7,6 +7,26 @@
 
 import { escapeHtml } from '../../lib/http.js';
 import { icon, pageHeader, card, emptyState, statTile, timeTag } from '../layout.js';
+
+/**
+ * 「待办」那张卡的副标题。
+ *
+ * 两个数**分开写**（「作业 3 · 考试 1」），但只在真的有两种东西时才拆 ——
+ * 一场考试都没有的时候写「作业 4」是废话，那个数就是总数本身。
+ *
+ * 为什么值得拆：这两件事的紧迫感不一样。作业晚交还有商量的余地，
+ * 考试到点就进考场。合成一个数的时候，一条考试会被三份作业淹没。
+ * 只在**有考试**的时候才多这半句，免得每张卡都拖一条尾巴。
+ */
+function todoHint(stats) {
+  const parts = [];
+  if (stats.overdue > 0) parts.push(`${stats.overdue} 项已过期`);
+  else if (stats.dueToday > 0) parts.push(`${stats.dueToday} 项今天截止`);
+  if (Number(stats.pendingExams) > 0) {
+    parts.push(`作业 ${stats.pendingHomework} · 考试 ${stats.pendingExams}`);
+  }
+  return parts.length ? parts.join(' · ') : '暂无紧急';
+}
 import {
   formatDateCn,
   humanizeDistance,
@@ -123,9 +143,11 @@ ${/* 只留三个数字。原来有四个（今日课程 / 待办作业 / 资料
     href: '/timetable',
   })}
   ${statTile({
-    label: '待办作业',
+    // ⚠️ 标签从「待办作业」改成「待办」：这个数字**包含考试**，
+    //    还写「待办作业」就是错的（一场考试被算进"作业"里）。
+    label: '待办',
     value: stats.pending,
-    hint: stats.overdue > 0 ? `${stats.overdue} 项已过期` : (stats.dueToday > 0 ? `${stats.dueToday} 项今天截止` : '暂无紧急'),
+    hint: todoHint(stats),
     tone: stats.overdue > 0 ? 'danger' : (stats.dueToday > 0 ? 'warn' : 'default'),
     href: '/assignments',
   })}

@@ -267,15 +267,42 @@ ${scripts}
 function navLink(item, active, stats, compact = false) {
   const isActive = item.key === active;
   const badge = navBadge(item.key, stats);
+  // ⚠️ 这里必须是 item.key —— 参数叫 item 不叫 key。
+  //    写成 key 的话它是 undefined，于是**每一个带侧栏的页面**都
+  //    ReferenceError → 500（登录页用的是 bare 骨架、没有侧栏，所以它没事，
+  //    这正是定位这个 bug 的线索）。node --check 查不出未定义的变量，
+  //    是端到端自测当场抓出来的。
+  const badgeTitle_ = badgeTitle(item.key, stats);
   return `<a class="nav__item${isActive ? ' is-active' : ''}" href="${item.href}"`
     + `${isActive ? ' aria-current="page"' : ''}>`
     + `<span class="nav__icon">${icon(item.icon, compact ? 20 : 18)}</span>`
     + `<span class="nav__label">${escapeHtml(item.label)}</span>`
-    + (badge ? `<span class="nav__badge">${badge}</span>` : '')
+    + (badge ? `<span class="nav__badge"${badgeTitle_ ? ` title="${escapeHtml(badgeTitle_)}"` : ''}>${badge}</span>` : '')
     + '</a>';
 }
 
+/**
+ * 角标的悬停说明。
+ *
+ * 「待办」这个角标只放得下一个数字，而那个数字里可能混着一条**不可延期**的
+ * 考试 —— 悬停时把两个数说清楚，比在角标里塞「3·1」有用得多。
+ */
+function badgeTitle(key, stats) {
+  if (key !== 'assignments' || !(stats.pendingAssignments > 0)) return '';
+  const e = Number(stats.pendingExams || 0);
+  const h = Number(stats.pendingHomework || 0);
+  if (!e) return `待办 ${stats.pendingAssignments} 项（都是作业）`;
+  if (!h) return `待办 ${stats.pendingAssignments} 项（都是考试）`;
+  return `待办 ${stats.pendingAssignments} 项：作业 ${h} · 考试 ${e}`;
+}
+
 function navBadge(key, stats) {
+  // ⚠️ 导航角标只放**一个**数字（合计），两个数分开放不下 ——
+  //    那一格只有几个像素宽，写成「3·1」没人看得懂。
+  //    但「分开显示」这件事不能因此丢掉：它落在三处看得清的地方 ——
+  //      · 这个角标的 title（悬停能看清「作业 3、考试 1」）
+  //      · 作业页副标题和统计卡（「作业 3 · 考试 1」）
+  //      · 作业页里考试和作业本来就是两段，各带各的数量
   if (key === 'assignments' && stats.pendingAssignments > 0) return String(stats.pendingAssignments);
   if (key === 'materials' && stats.materialCount > 0) return String(stats.materialCount);
   // 社区：同校同学**上次我看过之后**又公开/更新了几份。

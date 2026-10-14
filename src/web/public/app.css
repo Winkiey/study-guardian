@@ -1676,6 +1676,27 @@ button.filter-tab {
   font-variant-numeric: tabular-nums;
 }
 
+/* ---- 考试与作业之间的分界 ----
+   这两段不是"同一堆东西里的两个分类"，而是两类不同性质的事：
+   作业晚交还有商量的余地，考试到点就进考场 —— 而一条考试混在三份作业里时，
+   那个合计数字完全看不出其中有一件是不可延期的。
+   所以中间要有一条看得见的分界，否则扫下来还是一个大列表。 */
+.group-divider {
+  display: flex; align-items: center; gap: 12px;
+  margin: 26px 0 14px;
+  color: var(--c-text-3);
+  font-size: 12.5px; font-weight: 600;
+}
+.group-divider::before,
+.group-divider::after {
+  content: ''; height: 1px; background: var(--c-border); flex: 1 1 auto;
+}
+/* 考试那一段的标题用提醒色（不是靠颜色单独表意 —— 标题里就写着「考试」） */
+.group--exam .group__title { color: var(--c-warn); }
+
+/* 统计卡上的第二行小字（「作业 3 · 考试 1」） */
+.stat__sub { display: block; margin-top: 2px; font-size: 11.5px; color: var(--c-text-3); }
+
 /* ==========================================================================
    18 · 课程卡片
    ========================================================================== */

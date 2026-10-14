@@ -43,6 +43,19 @@ export function assignmentsPage({
 }) {
   const activeCount = assignments.filter((a) => a.status !== 'done').length;
 
+  // ⚠️ 考试和作业**分成两段**，不混在同一个列表里。
+  //    理由不是"分类好看"，而是这两件事的紧迫感不一样：
+  //    作业晚交还有商量的余地，考试到点就进考场。
+  //    混在一起按时间排的时候，一条考试会被三份作业淹没 ——
+  //    而它是这堆东西里唯一**不可延期**的。
+  //
+  //    两段各排各的：考试按**开考时间正序**（就那么几场，看时间线最直观），
+  //    作业保持原来的**紧急程度分组**（作业多，分组才扫得动）。
+  const examList = assignments.filter((a) => a.isExam);
+  const hwList = assignments.filter((a) => !a.isExam);
+  const examPending = examList.filter((a) => a.status !== 'done').length;
+  const hwPending = hwList.filter((a) => a.status !== 'done').length;
+
   // 「待办」视图里完成的作业会从列表消失。告诉前端这件事，
   // 它才知道打勾之后该把整张卡片做退场动画，而不是让它原地变灰。
   // 让服务端说了算，比前端去猜当前是哪个筛选页可靠。
@@ -51,10 +64,11 @@ export function assignmentsPage({
   const body = `
 ${pageHeader({
     title: '作业',
-    // 副标题跟着当前筛选走：在「已逾期」页说「共 12 项待办」是答非所问
+    // 副标题跟着当前筛选走：在「已逾期」页说「共 12 项待办」是答非所问。
+    // 待办的两个数分开写 —— 合成一个数的时候，一条考试会被淹没在三份作业里。
     subtitle: filters.status === 'overdue'
       ? `${activeCount} 项已逾期${filters.courseId ? '（已按课程筛选）' : ''}`
-      : `共 ${activeCount} 项待办${filters.courseId ? '（已按课程筛选）' : ''}`,
+      : `${pendingLine(examPending, hwPending)}${filters.courseId ? '（已按课程筛选）' : ''}`,
     actions: `<button type="button" class="btn btn--primary" data-new-assignment>${icon('plus', 17)}<span>新建作业</span></button>`,
   })}
 
@@ -65,7 +79,11 @@ ${pageHeader({
   <div class="stat ${stats.dueToday > 0 ? 'stat--warn' : ''}">
     <span class="stat__label">今天截止</span><span class="stat__value">${stats.dueToday}</span>
   </div>
-  <div class="stat"><span class="stat__label">待办合计</span><span class="stat__value">${stats.pending}</span></div>
+  <div class="stat"><span class="stat__label">待办合计</span><span class="stat__value">${stats.pending}</span>
+    ${/* 把「待办 N」拆开写出来。一个混在一起的数字看不出"其中有一条是考试"，
+         而这两件事的紧迫感不一样。 */ ''}
+    <span class="stat__sub">作业 ${stats.pendingHomework} · 考试 ${stats.pendingExams}</span>
+  </div>
   <div class="stat"><span class="stat__label">已完成</span><span class="stat__value">${stats.done}</span></div>
 </section>
 
@@ -108,8 +126,9 @@ ${activeCount === 0 && filters.status !== 'done' && filters.status !== 'all'
           ? `<a class="btn btn--outline" href="/assignments">${icon('chevronRight', 15)}<span>看全部待办</span></a>`
           : `<button type="button" class="btn btn--primary" data-new-assignment>${icon('plus', 17)}<span>新建作业</span></button>`,
       })
-      : GROUP_META.map((meta) => {
-        const list = grouped[meta.key] || [];
+      : `${examSection(examList, hidesDone, highlightId, filters)}
+${GROUP_META.map((meta) => {
+        const list = (grouped[meta.key] || []).filter((a) => !a.isExam);
         if (!list.length) return '';
         return `<section class="group" id="group-${meta.key}">
     <div class="group__head">
@@ -120,12 +139,52 @@ ${activeCount === 0 && filters.status !== 'done' && filters.status !== 'all'
       ${list.map((a) => assignmentCard(a, highlightId)).join('')}
     </div>
   </section>`;
-      }).join('')}
+      }).join('')}${hwList.length === 0 && examList.length > 0 ? `
+<p class="muted small">没有待办的作业。</p>` : ''}`}
 
 ${renderAssignmentForm({ courses, channels, defaultOffsets })}
 `;
 
   return { title: '作业', active: 'assignments', body };
+}
+
+/**
+ * 「等待即将到来的考试」那一行字。
+ *
+ * 两个数都写出来，而不是一个合计：一条考试混在三份作业里的时候，
+ * 那个"4"完全看不出其中有一件是不可延期的。
+ * 只在**确实有考试**的时候才带考试那半句，否则每句话都拖一条尾巴。
+ */
+function pendingLine(examPending, hwPending) {
+  if (!examPending && !hwPending) return '共 0 项待办';
+  if (!examPending) return `共 ${hwPending} 项作业待办`;
+  if (!hwPending) return `共 ${examPending} 场考试`;
+  return `共 ${hwPending + examPending} 项待办（作业 ${hwPending} · 考试 ${examPending}）`;
+}
+
+/**
+ * 考试那一段。
+ *
+ * 按**开考时间正序**排，不按紧急程度分组：考试一学期就那么几场，
+ * 直接看时间线最直观；而且考试"逾期"这件事没有意义 ——
+ * 考完了就是考完了，不存在"补交"。
+ */
+function examSection(list, hidesDone, highlightId, filters) {
+  if (!list.length) return '';
+  const exams = [...list].sort((a, b) => String(a.due_at || '').localeCompare(String(b.due_at || '')));
+  return `<section class="group group--exam" id="group-exam">
+    <div class="group__head">
+      <h2 class="group__title">考试 <span class="group__count">${exams.length}</span></h2>
+      <span class="muted small">按开考时间排；考试不能延期，所以单独放一栏</span>
+    </div>
+    <div class="assignment-list"${hidesDone ? ' data-hides-done="1"' : ''}>
+      ${exams.map((a) => assignmentCard(a, highlightId)).join('')}
+    </div>
+  </section>
+  ${/* 这一段和下面的作业之间要有个明显的分界，否则看起来还是一个大列表 */ ''}
+  <div class="group-divider" role="presentation">
+    <span>${filters.status === 'done' || filters.status === 'all' ? '作业' : '作业待办'}</span>
+  </div>`;
 }
 
 function assignmentCard(a, highlightId) {

@@ -112,8 +112,12 @@ function output(res, page, extras = {}) {
 
 /** 每个页面都要的导航角标数据 */
 function navStats(userId) {
+  const asgStats = assignments.assignmentStats(userId);
   return {
-    pendingAssignments: assignments.assignmentStats(userId).pending,
+    pendingAssignments: asgStats.pending,
+    // 拆开的两个数：角标的 title 和作业页都要用（「作业 3 · 考试 1」）
+    pendingExams: asgStats.pendingExams,
+    pendingHomework: asgStats.pendingHomework,
     materialCount: Number(get('SELECT COUNT(*) AS c FROM materials WHERE user_id = ?', userId)?.c || 0),
     // 社区角标：同校同学上次我看过之后又公开/更新了几份（看过即清零）
     communityNew: communityNewCount(userId),

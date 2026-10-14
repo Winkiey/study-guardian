@@ -4538,6 +4538,45 @@ async function run() {
       ok('★ 卡片上直接写「开考」和考场（考生不用点开）',
         /开考/.test(withExam.text) && /之远楼 301/.test(withExam.text));
 
+      // ---- 考试和作业分成两段，不混在同一个列表里 ----
+      // 理由不是"分类好看"：作业晚交还有商量的余地，考试到点就进考场。
+      // 混在一起按时间排的时候，一条考试会被三份作业淹没 ——
+      // 而它是这堆东西里唯一**不可延期**的。
+      ok('★ 考试单独成段（有自己的标题和容器）',
+        withExam.text.includes('id="group-exam"') && /group--exam/.test(withExam.text),
+        '★ 考试还是混在作业那个列表里');
+      ok('★ 两段之间有看得见的分界（不是一个大列表）',
+        withExam.text.includes('group-divider'));
+      {
+        // ⚠️ 必须分段看：整页找「E2E 期末考试」的话，不管它落在哪一段都是绿的。
+        const examSecStart = withExam.text.indexOf('id="group-exam"');
+        const dividerAt = withExam.text.indexOf('group-divider');
+        ok('（前提）考试段和分界都在，而且顺序是「考试段 → 分界」',
+          examSecStart >= 0 && dividerAt > examSecStart,
+          `考试段在 ${examSecStart}、分界在 ${dividerAt}`);
+        const examSec = withExam.text.slice(examSecStart, dividerAt);
+        const hwSec = withExam.text.slice(dividerAt);
+        ok('★★ 考试卡片只在考试那一段里，作业段里没有它',
+          /E2E 期末考试/.test(examSec) && !/E2E 期末考试/.test(hwSec),
+          '★ 考试卡片落在了作业那一段（或者两段都有）');
+      }
+
+      // ---- 待办的两个数分开写 ----
+      const subMatch = /作业 (\d+) · 考试 (\d+)/.exec(withExam.text);
+      ok('★★ 页面上把待办拆成「作业 N · 考试 M」两个数',
+        Boolean(subMatch) && Number(subMatch[2]) >= 1,
+        '没找到拆开的两个数');
+      ok('★★ 拆开的两个数加起来等于「待办合计」（对不上就是两个数都错）',
+        (() => {
+          const total = Number(/待办合计<\/span><span class="stat__value">(\d+)</.exec(withExam.text)?.[1]);
+          if (!subMatch || !Number.isFinite(total)) return false;
+          return Number(subMatch[1]) + Number(subMatch[2]) === total;
+        })(),
+        '★ 「作业 N · 考试 M」加起来不等于「待办合计」');
+      ok('★ 导航角标的 title 里也说清了两个数（角标只有几个像素宽）',
+        /nav__badge" title="[^"]*考试/.test(withExam.text),
+        '角标只有一个数字、也没有说明 —— 那"分开显示"就没落地');
+
       // ★ 对照：作业的节奏不能被顺手改掉
       const hwMade = await req('POST', '/api/assignments', {
         json: { title: 'E2E 普通作业', dueAt: examDue },

@@ -279,12 +279,26 @@ export function groupByUrgency(list) {
   return groups;
 }
 
-/** 仪表盘用的统计 */
+/**
+ * 仪表盘用的统计。
+ *
+ * `pendingExams` / `pendingHomework` 是把 `pending` **拆开**的两个数：
+ * 界面上要写「作业 3 · 考试 1」，而不是一个混在一起的总数。
+ * 为什么要拆：这两件事的紧迫感不一样 —— 作业晚交还有商量的余地，
+ * 考试到点就进考场。合成一个数的时候，一条考试会被淹没在三份作业里。
+ *
+ * ⚠️ 两个拆出来的数**加起来必须等于 pending**。这是它们的全部意义 ——
+ *    对不上的话界面上的两个数就是错的，而且不会有任何报错。
+ *    所以两个 SUM 的条件和 pending 的完全一致（status != 'done'），
+ *    只多一个 kind 判断（缺 kind 列的老数据默认 'homework'，归到作业那边）。
+ */
 export function assignmentStats(userId) {
   const today = todayStr();
   const row = get(
     `SELECT
        SUM(CASE WHEN status != 'done' THEN 1 ELSE 0 END) AS pending,
+       SUM(CASE WHEN status != 'done' AND kind = 'exam' THEN 1 ELSE 0 END) AS pendingExams,
+       SUM(CASE WHEN status != 'done' AND kind != 'exam' THEN 1 ELSE 0 END) AS pendingHomework,
        SUM(CASE WHEN status != 'done' AND due_at IS NOT NULL AND date(due_at) < date(?) THEN 1 ELSE 0 END) AS overdue,
        SUM(CASE WHEN status != 'done' AND date(due_at) = date(?) THEN 1 ELSE 0 END) AS dueToday,
        SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done
@@ -296,6 +310,8 @@ export function assignmentStats(userId) {
 
   return {
     pending: Number(row?.pending || 0),
+    pendingExams: Number(row?.pendingExams || 0),
+    pendingHomework: Number(row?.pendingHomework || 0),
     overdue: Number(row?.overdue || 0),
     dueToday: Number(row?.dueToday || 0),
     done: Number(row?.done || 0),
